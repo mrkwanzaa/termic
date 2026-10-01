@@ -59,13 +59,16 @@ export function parseStatusBucketCollapsed(raw: string | null | undefined): Stat
   return out;
 }
 
-/** Status rows the user expanded to their agent tabs: `{ [taskId]: true }`.
- *  Its own map, not the tree's collapse state, so opening a row here never
- *  opens the tree's. Parsed defensively from localStorage: only `true`
- *  values survive. */
-export type StatusTaskExpanded = Readonly<Record<string, true>>;
+/** A set of ids kept as `{ [id]: true }`, for the section's own fold state:
+ *  rows expanded to their agent tabs (`StatusTaskExpanded`) and group
+ *  captions folded (`StatusGroupCollapsed`). Its own maps, never the tree's
+ *  collapse state, so folding something here never folds the tree. Parsed
+ *  defensively from localStorage: only `true` values survive. */
+export type IdFlags = Readonly<Record<string, true>>;
+export type StatusTaskExpanded = IdFlags;
+export type StatusGroupCollapsed = IdFlags;
 
-export function parseStatusTaskExpanded(raw: string | null | undefined): StatusTaskExpanded {
+export function parseIdFlags(raw: string | null | undefined): IdFlags {
   if (!raw) return {};
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { return {}; }
@@ -77,16 +80,16 @@ export function parseStatusTaskExpanded(raw: string | null | undefined): StatusT
 
 /** The next map after a toggle, or the SAME map when nothing changes (so the
  *  setter can bail). Ids no longer in `liveIds` are dropped on the way, so
- *  archived tasks do not pile up in localStorage. */
-export function nextStatusTaskExpanded(
-  cur: StatusTaskExpanded, taskId: string, expanded: boolean, liveIds: readonly string[],
-): StatusTaskExpanded {
+ *  archived tasks and dissolved groups do not pile up in localStorage. */
+export function nextIdFlags(
+  cur: IdFlags, id: string, on: boolean, liveIds: readonly string[],
+): IdFlags {
   const live = new Set(liveIds);
   const stale = Object.keys(cur).some(k => !live.has(k));
-  if (!!cur[taskId] === expanded && !stale) return cur;
+  if (!!cur[id] === on && !stale) return cur;
   const next: Record<string, true> = {};
-  for (const k of Object.keys(cur)) if (live.has(k) && k !== taskId) next[k] = true;
-  if (expanded) next[taskId] = true;
+  for (const k of Object.keys(cur)) if (live.has(k) && k !== id) next[k] = true;
+  if (on) next[id] = true;
   return next;
 }
 

@@ -29,7 +29,8 @@ import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { usePr } from "@/store/pr";
 import {
-  selectStatusRowActiveChild, selectStatusRowBadge, selectStatusRowDelegated, selectStatusRowTabCount,
+  selectStatusGroupMarks, selectStatusRowActiveChild, selectStatusRowBadge, selectStatusRowDelegated,
+  selectStatusRowTabCount,
   useRowTabs, useStatusTabFacts,
 } from "@/store/sidebarTabs";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
@@ -143,8 +144,9 @@ export function StatusSection() {
                 group={item.group}
                 label={groupLabel(item.group, tasks, t)}
                 projectName={projectName.get(item.tasks[0]?.project_id ?? "") ?? ""}
-              >
-                {item.tasks.map(w => (
+                tasks={item.tasks}
+                workPrefs={workPrefs}
+                renderRow={w => (
                   <StatusTaskRow
                     key={w.id}
                     task={w}
@@ -153,8 +155,8 @@ export function StatusSection() {
                     useBranchAsTaskName={useBranchAsTaskName}
                     workPrefs={workPrefs}
                   />
-                ))}
-              </StatusGroupBlock>
+                )}
+              />
             ))}
           </div>
         );
@@ -165,38 +167,108 @@ export function StatusSection() {
 
 /** A task group, drawn the way the tree draws one: a caption in the group's
  *  colour and its members behind a rail of the same colour, at the same
- *  offsets as TaskGroupBlock. Lighter than that block: no fold, no rename, no
- *  menu, no drag. The project name moves to the caption, since a group lives
- *  in one project. Carries `data-status-group-id`, never the tree's
- *  `data-task-group-id`, which the task drag hit-tests. */
-function StatusGroupBlock({ group, label, projectName, children }: {
+ *  offsets as TaskGroupBlock, and it folds the same way: chevron, member
+ *  count, the members' marks on the caption while folded, and the active
+ *  task's row kept in view. The project name moves to the caption, since a
+ *  group lives in one project.
+ *
+ *  Its OWN component and its own fold state (`statusGroupCollapsed`), never
+ *  the tree's: TaskGroupBlock carries the tree's drag, rename and menu, and
+ *  its `data-task-group-id` is what the task drag hit-tests, so a second one
+ *  per group would be a second drop target. This carries
+ *  `data-status-group-id`, and folding it never folds the tree. */
+function StatusGroupBlock({ group, label, projectName, tasks, workPrefs, renderRow }: {
   group: TaskGroup;
   label: string;
   projectName: string;
-  children: React.ReactNode;
+  tasks: Task[];
+  workPrefs: WorkStatePrefs;
+  renderRow: (w: Task) => React.ReactNode;
 }) {
+  const { t } = useTranslation("sidebar");
   const color = groupColorCss(group);
+  const collapsed = usePrefs(s => !!s.statusGroupCollapsed[group.id]);
+  const setCollapsed = usePrefs(s => s.setStatusGroupCollapsed);
+  // A string, so a task switch outside this group re-renders nothing here.
+  const activeMember = useApp(s => (tasks.some(w => w.id === s.activeTaskId) ? s.activeTaskId : null));
+  const toggle = () => {
+    const live = useApp.getState().tasks;
+    setCollapsed(group.id, !collapsed,
+      [...new Set(live.filter(x => !x.archived && x.group).map(x => x.group!.id))]);
+  };
+  // Folded, the tree keeps the task you are on in view rather than hiding it
+  // behind the caption.
+  const shown = collapsed ? tasks.filter(w => w.id === activeMember) : tasks;
   return (
     <div data-status-group-id={group.id} className="flex flex-col">
       <div
         data-testid="status-group-caption"
-        className="ml-3 flex h-[var(--task-row-h)] select-none items-center gap-1 px-1 text-[13px] font-medium"
+        role="button"
+        tabIndex={0}
+        aria-expanded={!collapsed}
+        onClick={toggle}
+        onKeyDown={ev => {
+          if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); }
+        }}
+        className="ml-3 flex h-[var(--task-row-h)] cursor-pointer select-none items-center gap-1 rounded-md px-1 text-[13px] font-medium transition-colors hover:bg-[var(--color-hover)]"
         style={{ color }}
       >
-        {/* The width of a row's chevron, so the caption's label lines up with
-            the rows' labels, as the tree's does behind its own chevron. */}
-        <span aria-hidden className="h-3.5 w-[18px] shrink-0" />
+        {/* Where a row's chevron sits, as the tree's caption does it. */}
+        <span
+          data-testid="status-group-toggle"
+          aria-label={collapsed ? t("taskGroup.expand") : t("taskGroup.collapse")}
+          title={collapsed ? t("taskGroup.expand") : t("taskGroup.collapse")}
+          className="shrink-0 rounded p-0.5"
+        >
+          {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+        </span>
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <span className="min-w-0 shrink truncate">{label}</span>
           {projectName && (
             <span className="min-w-0 shrink-[2] truncate text-[11.5px] font-normal text-[var(--color-fg-faint)]">{projectName}</span>
           )}
         </div>
+        {collapsed
+          ? <StatusGroupMarks memberIds={tasks.map(w => w.id)} count={tasks.length} workPrefs={workPrefs} />
+          : <span data-testid="status-group-count" className="ml-auto shrink-0 pr-1 text-[11px] font-normal tabular-nums text-[var(--color-fg-faint)]">{tasks.length}</span>}
       </div>
-      <div data-status-group-rail className="ml-6 border-l-2" style={{ borderColor: color }}>
-        <div className="-ml-1.5">{children}</div>
-      </div>
+      {shown.length > 0 && (
+        <div data-status-group-rail className="ml-6 border-l-2" style={{ borderColor: color }}>
+          <div className="-ml-1.5">{shown.map(renderRow)}</div>
+        </div>
+      )}
     </div>
+  );
+}
+
+/** A folded caption's marks: one of each that a member's row would draw
+ *  (`groupBadgeKinds`, the tree's own helper), then the count. Mounted only
+ *  while folded, and subscribed through a joined string, so the caption
+ *  re-renders when the SET of marks changes, not on every tab write. */
+function StatusGroupMarks({ memberIds, count, workPrefs }: {
+  memberIds: string[];
+  count: number;
+  workPrefs: WorkStatePrefs;
+}) {
+  const { t } = useTranslation("sidebar");
+  const partialPref = usePrefs(s => s.partialDoneIndicator);
+  const ids = memberIds.join(",");
+  const select = useMemo(
+    () => selectStatusGroupMarks(ids.split(","), workPrefs, partialPref),
+    [ids, workPrefs, partialPref],
+  );
+  const key = useApp(select);
+  return (
+    <span data-testid="status-group-marks" data-kinds={key} className="ml-auto flex shrink-0 items-center gap-1 pr-1">
+      {key && key.split(",").map(k => k === "partial" ? (
+        <span key={k} title={t("taskGroup.delegatedPartialTip")} aria-label={t("taskGroup.delegatedPartialAria")} className="flex items-center justify-center">
+          <span className="block h-2 w-2 rounded-full border-[1.5px]" style={{ borderColor: "var(--color-info)" }} />
+        </span>
+      ) : (
+        <TaskWorkBadge key={k} reason={k as "attention" | "done" | "working" | "delegated"} testId="status-work-badge" />
+      ))}
+      <span data-testid="status-group-count" className="ml-0.5 shrink-0 text-[11px] font-normal tabular-nums text-[var(--color-fg-faint)]">{count}</span>
+    </span>
   );
 }
 

@@ -44,7 +44,7 @@ import { useAgentUsage, usageKey } from "@/store/agentUsage";
 import {
   createSidebarFactsSelector, createRowTabsSelector, tabRenderEqual, tabListRenderEqual,
   createStatusFactsSelector, selectStatusRowBadge, selectStatusRowDelegated,
-  selectStatusRowTabCount, selectStatusRowActiveChild,
+  selectStatusRowTabCount, selectStatusRowActiveChild, selectStatusGroupMarks,
 } from "@/store/sidebarTabs";
 import { selectBoardColumnKey } from "@/lib/boardColumnKey";
 import type { AppState } from "@/store/app";
@@ -604,6 +604,8 @@ describe("status section under streaming output (bear traps 5, 8)", () => {
     ...ids.map(id => selectStatusRowDelegated(id, PREFS)),
     ...ids.map(id => selectStatusRowTabCount(id)),
     ...ids.map(id => selectStatusRowActiveChild(id)),
+    // A folded group of four of them: its caption's marks.
+    selectStatusGroupMarks(ids.slice(4, 8), PREFS, true),
   ];
 
   const stamp = (i: number) => {
@@ -649,7 +651,9 @@ describe("status section under streaming output (bear traps 5, 8)", () => {
     expect(r.perSub[0]).toBe(1);
     // Its badge (index 1 + OWNER) and nobody else's.
     expect(r.perSub.slice(1, 1 + TASKS)).toEqual(ids.map((_, i) => (i === OWNER ? 1 : 0)));
-    expect(r.invalidations).toBe(2);
+    // ...and the folded group it is a member of: the caption gains a mark.
+    expect(r.perSub[r.perSub.length - 1]).toBe(1);
+    expect(r.invalidations).toBe(3);
   });
 
   it("an agent starting a turn does NOT reach the Sidebar body", () => {

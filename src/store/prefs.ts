@@ -47,11 +47,12 @@ import {
 } from "@/lib/taskBoardState";
 import {
   isStatusBucketCollapsed,
-  nextStatusTaskExpanded,
-  parseStatusTaskExpanded,
+  nextIdFlags,
+  parseIdFlags,
   parseStatusBucketCollapsed,
   type StatusBucket,
   type StatusBucketCollapsed,
+  type StatusGroupCollapsed,
   type StatusTaskExpanded,
 } from "@/lib/sidebarStatus";
 
@@ -105,6 +106,7 @@ const LS_BOARD_PINNED_COLUMNS = scoped("boardPinnedColumns");
 const LS_SHOW_STATUS_SECTION = scoped("showStatusSection");
 const LS_STATUS_BUCKET_COLLAPSED = scoped("statusBucketCollapsed");
 const LS_STATUS_TASK_EXPANDED = scoped("statusTaskExpanded");
+const LS_STATUS_GROUP_COLLAPSED = scoped("statusGroupCollapsed");
 const LS_BRANCH_AS_TASK_NAME = "useBranchAsTaskName";
 const LS_DOUBLE_SHIFT_MODE = "doubleShiftMode";
 const LS_CTRL_TAB_MODE = "ctrlTabMode";
@@ -808,6 +810,9 @@ interface PrefsState {
   /** Status rows expanded to their agent tabs. Separate from the tree's
    *  task collapse, so opening one here never opens the tree's. */
   statusTaskExpanded: StatusTaskExpanded;
+  /** Group captions folded in the status section. Separate from the tree's
+   *  task-group collapse, so folding one here never folds the tree's. */
+  statusGroupCollapsed: StatusGroupCollapsed;
   /** When true (GH #260), a WORKTREE task is labelled by its branch
    *  everywhere it is named in the UI, instead of by the title typed at
    *  creation. A week-old task's typed name goes stale; the branch is what
@@ -972,6 +977,8 @@ interface PrefsState {
   setStatusBucketCollapsed: (bucket: StatusBucket, collapsed: boolean) => void;
   /** `liveIds`: the tasks that still exist, so dead ids are pruned on write. */
   setStatusTaskExpanded: (taskId: string, expanded: boolean, liveIds: readonly string[]) => void;
+  /** `liveGroupIds`: the groups that still exist, pruned on write the same way. */
+  setStatusGroupCollapsed: (groupId: string, collapsed: boolean, liveGroupIds: readonly string[]) => void;
   setUseBranchAsTaskName: (v: boolean) => void;
   setDoubleShiftMode: (v: DoubleShiftMode) => void;
   setCtrlTabMode: (v: CtrlTabMode) => void;
@@ -1198,7 +1205,8 @@ const initialBoardArchiveLimit = (() => {
 const initialBoardPinnedColumns = parseBoardPinnedColumns(lsGet(LS_BOARD_PINNED_COLUMNS, ""));
 const initialShowStatusSection = lsGet(LS_SHOW_STATUS_SECTION, "") === "1";
 const initialStatusBucketCollapsed = parseStatusBucketCollapsed(lsGet(LS_STATUS_BUCKET_COLLAPSED, ""));
-const initialStatusTaskExpanded = parseStatusTaskExpanded(lsGet(LS_STATUS_TASK_EXPANDED, ""));
+const initialStatusTaskExpanded = parseIdFlags(lsGet(LS_STATUS_TASK_EXPANDED, ""));
+const initialStatusGroupCollapsed = parseIdFlags(lsGet(LS_STATUS_GROUP_COLLAPSED, ""));
 const initialUseBranchAsTaskName = lsGet(LS_BRANCH_AS_TASK_NAME, "") === "1";
 // Absent means never set, and the gesture ships on, left-Shift only.
 const initialDoubleShiftMode: DoubleShiftMode = (() => {
@@ -1290,6 +1298,7 @@ export const usePrefs = create<PrefsState>(set => ({
   showStatusSection: initialShowStatusSection,
   statusBucketCollapsed: initialStatusBucketCollapsed,
   statusTaskExpanded: initialStatusTaskExpanded,
+  statusGroupCollapsed: initialStatusGroupCollapsed,
   useBranchAsTaskName: initialUseBranchAsTaskName,
   doubleShiftMode: initialDoubleShiftMode,
   ctrlTabMode: initialCtrlTabMode,
@@ -1646,10 +1655,16 @@ export const usePrefs = create<PrefsState>(set => ({
     return { statusBucketCollapsed: next };
   }),
   setStatusTaskExpanded: (taskId, expanded, liveIds) => set(s => {
-    const next = nextStatusTaskExpanded(s.statusTaskExpanded, taskId, expanded, liveIds);
+    const next = nextIdFlags(s.statusTaskExpanded, taskId, expanded, liveIds);
     if (next === s.statusTaskExpanded) return s;
     try { localStorage.setItem(LS_STATUS_TASK_EXPANDED, JSON.stringify(next)); } catch {}
     return { statusTaskExpanded: next };
+  }),
+  setStatusGroupCollapsed: (groupId, collapsed, liveGroupIds) => set(s => {
+    const next = nextIdFlags(s.statusGroupCollapsed, groupId, collapsed, liveGroupIds);
+    if (next === s.statusGroupCollapsed) return s;
+    try { localStorage.setItem(LS_STATUS_GROUP_COLLAPSED, JSON.stringify(next)); } catch {}
+    return { statusGroupCollapsed: next };
   }),
   setUseBranchAsTaskName: (v) => {
     try { localStorage.setItem(LS_BRANCH_AS_TASK_NAME, v ? "1" : "0"); } catch {}

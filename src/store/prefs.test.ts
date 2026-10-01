@@ -744,4 +744,12 @@ describe("prefs: status section", () => {
     expect(notified).toBe(1);
     unsub();
   });
+
+  it("remembers folded group captions apart from the tree's, pruned the same way", async () => {
+    localStorage.setItem("statusGroupCollapsed", '{"dissolved":true}');
+    const { usePrefs } = await import("./prefs");
+    usePrefs.getState().setStatusGroupCollapsed("g1", true, ["g1"]);
+    expect(usePrefs.getState().statusGroupCollapsed).toEqual({ g1: true });
+    expect(JSON.parse(localStorage.getItem("statusGroupCollapsed")!)).toEqual({ g1: true });
+  });
 });

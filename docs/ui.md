@@ -538,10 +538,14 @@ attention while one of its workers asks something; every member keeps its own
 badge, so the row that put the group there says so. This is a layout rule over
 the board's buckets, not a state: each task's own bucket is still
 `boardColumnFromFacts`. A bucket's count is task rows, members included. The
-caption does not fold, rename or open a menu, and it carries
-`data-status-group-id`, never the tree's `data-task-group-id` (the task drag
-hit-tests that one). A legacy cross-project group draws as plain rows, as in
-the tree.
+caption folds the tree's way (chevron, member count, the members' marks on
+the caption while folded, the active task's row kept in view), from its own
+pref (`statusGroupCollapsed`), so folding it never folds the tree's. It does
+not rename or open a menu. It is its own component, not the tree's
+TaskGroupBlock, because that one carries the tree's drag, rename and menu,
+and its `data-task-group-id` is what the task drag hit-tests: a second one per
+group would be a second drop target. This one carries `data-status-group-id`.
+A legacy cross-project group draws as plain rows, as in the tree.
 
 `TaskRow` is not reused: its rename and auto-expand effects would run twice
 per task, and every auto-expand would be a second whole-state write.

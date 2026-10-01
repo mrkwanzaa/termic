@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   STATUS_BUCKETS,
   isStatusBucketCollapsed,
-  nextStatusTaskExpanded,
+  nextIdFlags,
   parseStatusBucketCollapsed,
-  parseStatusTaskExpanded,
+  parseIdFlags,
   statusBucketCollapsedByDefault,
   statusBuckets,
   statusItemTasks,
@@ -177,25 +177,25 @@ describe("status bucket collapse", () => {
   });
 });
 
-describe("status row expansion", () => {
+describe("the section's own fold state (rows expanded, groups folded)", () => {
   it("parses only true values from localStorage", () => {
-    expect(parseStatusTaskExpanded(null)).toEqual({});
-    expect(parseStatusTaskExpanded("nope")).toEqual({});
-    expect(parseStatusTaskExpanded('["a"]')).toEqual({});
-    expect(parseStatusTaskExpanded('{"a":true,"b":false,"c":1}')).toEqual({ a: true });
+    expect(parseIdFlags(null)).toEqual({});
+    expect(parseIdFlags("nope")).toEqual({});
+    expect(parseIdFlags('["a"]')).toEqual({});
+    expect(parseIdFlags('{"a":true,"b":false,"c":1}')).toEqual({ a: true });
   });
 
   it("toggles, and hands back the SAME map when nothing changes", () => {
     const cur = { a: true } as const;
-    expect(nextStatusTaskExpanded(cur, "a", true, ["a", "b"])).toBe(cur);
-    expect(nextStatusTaskExpanded(cur, "b", false, ["a", "b"])).toBe(cur);
-    expect(nextStatusTaskExpanded(cur, "b", true, ["a", "b"])).toEqual({ a: true, b: true });
-    expect(nextStatusTaskExpanded(cur, "a", false, ["a", "b"])).toEqual({});
+    expect(nextIdFlags(cur, "a", true, ["a", "b"])).toBe(cur);
+    expect(nextIdFlags(cur, "b", false, ["a", "b"])).toBe(cur);
+    expect(nextIdFlags(cur, "b", true, ["a", "b"])).toEqual({ a: true, b: true });
+    expect(nextIdFlags(cur, "a", false, ["a", "b"])).toEqual({});
   });
 
   it("drops tasks that no longer exist on the way", () => {
     const cur = { gone: true, a: true } as const;
     // Even a no-op toggle writes, once, to prune the dead id.
-    expect(nextStatusTaskExpanded(cur, "a", true, ["a"])).toEqual({ a: true });
+    expect(nextIdFlags(cur, "a", true, ["a"])).toEqual({ a: true });
   });
 });

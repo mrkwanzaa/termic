@@ -439,6 +439,32 @@ describe("sidebar status section", () => {
     expect(shape.count).toBe(shape.rows);
     await snap("sidebar-status-group.png");
 
+    // It folds the tree's way: the members go behind the caption, which then
+    // carries their marks (the bell) and the count. Its own fold state, so
+    // the tree's block for the same group keeps its members on screen.
+    const CAPTION = `${BLOCK("attention")} [data-testid="status-group-caption"]`;
+    const treeMembers = () => browser.execute(gid =>
+      document.querySelectorAll(`[data-task-group-id="${gid}"] [data-sidebar-task-id]`).length, groupId);
+    const treeBefore = await treeMembers();
+    expect(await ariaExpanded(CAPTION)).toBe("true");
+    await click(CAPTION);
+    await browser.waitUntil(async () => (await ariaExpanded(CAPTION)) === "false",
+      { timeout: 5_000, timeoutMsg: "the group caption never folded" });
+    const folded = await browser.execute(sel => {
+      const block = document.querySelector(sel) as HTMLElement;
+      return {
+        rows: block.querySelectorAll("[data-status-task-id]").length,
+        bell: !!block.querySelector('[data-testid="status-group-marks"] [data-testid="status-work-badge"][data-work-state="attention"]'),
+        count: block.querySelector('[data-testid="status-group-marks"] [data-testid="status-group-count"]')?.textContent,
+      };
+    }, BLOCK("attention"));
+    expect(folded).toEqual({ rows: 0, bell: true, count: "2" });
+    expect(await treeMembers()).toBe(treeBefore);
+    expect(JSON.parse((await stored("statusGroupCollapsed")) ?? "{}")[groupId]).toBe(true);
+    await click(CAPTION);
+    await browser.waitUntil(async () => (await ariaExpanded(CAPTION)) === "true",
+      { timeout: 5_000, timeoutMsg: "the group caption never unfolded" });
+
     // Answered: the member has no other work evidence, so the group goes
     // back to Not started, whole.
     await ensureActiveTask(groupMember);

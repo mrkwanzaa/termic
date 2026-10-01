@@ -31,6 +31,7 @@ import {
   type WorkBadgeReason, type WorkStatePrefs,
 } from "@/lib/taskWorkState";
 import { boardTaskFacts, type BoardTaskFacts } from "@/lib/taskBoardState";
+import { groupBadgeKinds } from "@/lib/taskGroups";
 import type { Tab, TerminalTab } from "@/lib/types";
 
 // ─── Sidebar body: per-task facts ───────────────────────────────────────
@@ -165,6 +166,13 @@ export const selectStatusRowBadge = (taskId: string, prefs: WorkStatePrefs) =>
  *  identity holds until that report is rewritten. */
 export const selectStatusRowDelegated = (taskId: string, prefs: WorkStatePrefs) =>
   (s: AppState) => taskDelegatedWork(s.tabs[taskId] ?? EMPTY_TABS, prefs);
+
+/** A folded group caption's marks, as one string (`groupBadgeKinds`, the
+ *  tree's helper), so the caption re-renders when the SET of marks changes,
+ *  not on every tab write. */
+export const selectStatusGroupMarks = (memberIds: readonly string[], prefs: WorkStatePrefs, partialPref: boolean) =>
+  (s: AppState): string =>
+    groupBadgeKinds(memberIds.map(id => s.tabs[id] ?? EMPTY_TABS), prefs, partialPref).join(",");
 
 /** Main-pane terminal tabs, the rows the tree (and an expanded status row)
  *  lists under a task: a number, so a collapsed status row draws its `(n)`
