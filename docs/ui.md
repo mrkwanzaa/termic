@@ -506,11 +506,11 @@ children, no drag, no rename, no run controls, no menu. Clicking it is
 folder and group) the way every other way of opening a task does. The active
 task is marked in both places (`data-active` here).
 
-Opening a task is also "I've seen this": `setActiveTask` clears `unread` on
-every tab, the write that silences the tree's bell. So a row clicked under
-Needs attention leaves it straight away, for whatever bucket its other
-evidence gives it, and when that is Settled (folded by default) it drops out
-of view. The board behaves the same way; the section has no rule of its own.
+Opening a task does not answer it. A row under Needs attention stays there,
+open task or not, until you answer in that terminal or the agent's turn ends
+(docs/agent-states.md "A question is not answered by looking at it"); then it
+moves to whatever bucket its other evidence gives it. The board reads the same
+field, so it agrees; the section has no rule of its own.
 
 Rows keep TREE order: `visualProjectOrder`, then each project's rows as the
 tree lays them out (`layoutTaskList`, so a task group is one block at its

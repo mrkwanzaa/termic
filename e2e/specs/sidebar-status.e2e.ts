@@ -20,6 +20,7 @@ import {
   sidebarBadge,
   snap,
   textOf,
+  typeIntoAgent,
   waitForAgentReady,
   waitForAppShell,
   waitForText,
@@ -224,7 +225,7 @@ describe("sidebar status section", () => {
     await snap("sidebar-status-attention.png");
   });
 
-  it("a click opens the task, reveals it in the tree, and the row follows it out of Needs attention", async () => {
+  it("a click opens the task and reveals it in the tree; the row leaves Needs attention only when you answer", async () => {
     // Fold the project first, so the reveal is something the click has to do.
     await browser.execute(pid => window.__termic!.useApp.getState().setProjectCollapsed(pid, true), projectId);
     await waitGone(`[data-sidebar-task-id="${blocked}"]`);
@@ -236,26 +237,54 @@ describe("sidebar status section", () => {
     );
     await waitVisible(`[data-sidebar-task-id="${blocked}"]`);
 
-    // Opening a task is "I've seen this": setActiveTask clears `unread` on
-    // every tab, the same write that silences the tree's bell. So the row
-    // leaves Needs attention, and with no other work evidence (the seed was
-    // the only one) the board's rule files it back under Not started.
-    await waitGone(ROW_IN("attention", blocked));
-    // Measured, not looked at: the active mark and a painted background
-    // (waited for, since the row eases its colour in).
+    // Opening a task is not answering it: the agent is still blocked, so
+    // the row stays under Needs attention (`unreadClearsOnSight`). Measured,
+    // not looked at: the active mark, and the background it paints.
+    //
+    // The background is read with the row's colour transition switched off.
+    // Measured in this window: with it running, the background sat at its
+    // start value (alpha 0, then 0.016) while data-active was already true,
+    // because `document.timeline.currentTime`, the clock CSS transitions run
+    // on, moved 13 ms in about 1.5 s of wall time: the window was painting no
+    // frames. One class change, one transition, never restarted. With
+    // `transition: none` the same element reads the selection colour, so the
+    // transition's end state is what is asserted.
     await browser.waitUntil(
       () => browser.execute(sel => {
         const el = document.querySelector(sel) as HTMLElement | null;
-        return el?.dataset.active === "true" && getComputedStyle(el).backgroundColor !== "rgba(0, 0, 0, 0)";
-      }, ROW_IN("backlog", blocked)),
-      { timeout: 5_000, timeoutMsg: "the status row never painted itself active under Not started" },
-    );
+        if (el?.dataset.active !== "true") return false;
+        const was = el.style.transition;
+        el.style.transition = "none";
+        const bg = getComputedStyle(el).backgroundColor;
+        el.style.transition = was;
+        return bg !== "rgba(0, 0, 0, 0)" && !/, 0\)$/.test(bg);
+      }, ROW_IN("attention", blocked)),
+      { timeout: 5_000 },
+    ).catch(async () => {
+      const why = await browser.execute(id => {
+        const t = (window.__termic!.useApp.getState().tabs[id] ?? []).find((x: any) => x.type === "terminal");
+        const row = document.querySelector(`[data-status-task-id="${id}"]`) as HTMLElement | null;
+        return JSON.stringify({
+          unread: t?.unread ?? null, workState: t?.workState ?? null,
+          bucket: row?.closest("[data-status-bucket]")?.getAttribute("data-status-bucket") ?? null,
+          active: row?.dataset.active ?? null,
+        });
+      }, blocked);
+      throw new Error(`the status row never painted itself active under Needs attention: ${why}`);
+    });
     // And no other status row claims it.
     const actives = await browser.execute(
       sec => [...document.querySelectorAll<HTMLElement>(`${sec} [data-active]`)].map(el => el.dataset.statusTaskId),
       SECTION,
     );
     expect(actives).toEqual([blocked]);
+
+    // Answering it is a key in that terminal. With no other work evidence
+    // (the seed was the only one) the board's rule files it under Not started.
+    await typeIntoAgent(blocked, "1");
+    await waitGone(ROW_IN("attention", blocked));
+    await waitVisible(ROW_IN("backlog", blocked));
+    await typeIntoAgent(blocked, "\x7f");
   });
 
   it("remembers each bucket's fold", async () => {
@@ -277,10 +306,8 @@ describe("sidebar status section", () => {
     await waitVisible(BUCKET_HEADER("backlog"));
     expect(await ariaExpanded(BUCKET_HEADER("backlog"))).toBe("false");
     // And a listed bucket folds too. Re-seed the bell (SETUP), which the
-    // visit in the case above cleared. Off the task first: on the ACTIVE task
-    // the seeded mark does not hold (measured: the store's `unread` reads
-    // null straight after, and the tree's badge shows nothing either).
-    await browser.execute(() => window.__termic!.useApp.getState().setView("dashboard"));
+    // answer in the case above cleared. On the task you are looking at, which
+    // is where a bell used to vanish on sight.
     await browser.execute(id => {
       const app = window.__termic!.useApp.getState();
       const tab = (app.tabs[id] ?? []).find((t: any) => t.type === "terminal");
