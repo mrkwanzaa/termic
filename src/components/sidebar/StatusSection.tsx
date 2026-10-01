@@ -60,8 +60,6 @@ export function StatusSection() {
   const workingIndicator = usePrefs(s => s.workingIndicator);
   const attentionIndicator = usePrefs(s => s.attentionIndicator);
   const useBranchAsTaskName = usePrefs(s => s.useBranchAsTaskName);
-  const collapsed = usePrefs(s => s.statusSectionCollapsed);
-  const setCollapsed = usePrefs(s => s.setStatusSectionCollapsed);
   const bucketCollapsed = usePrefs(s => s.statusBucketCollapsed);
   const setBucketCollapsed = usePrefs(s => s.setStatusBucketCollapsed);
   // The board's pref set, so the same toggles fill the same buckets. Stable
@@ -86,24 +84,17 @@ export function StatusSection() {
 
   return (
     <div data-testid="status-section" className="mb-1">
-      {/* Same type treatment as the PROJECTS header, with the inactive fold's
-          chevron. It stays when every bucket is empty, so the section cannot
-          silently vanish. */}
-      <button
-        type="button"
+      {/* A label, exactly like the PROJECTS header, and NOT a fold: the
+          on/off switch is how the section goes away, and a chevron here made
+          it the odd one out next to PROJECTS. It stays when every bucket is
+          empty, so the section cannot silently vanish. */}
+      <div
         data-testid="status-section-header"
-        aria-expanded={!collapsed}
-        onClick={() => setCollapsed(!collapsed)}
-        className="flex w-full items-center px-2 py-1 text-[12px] uppercase tracking-wider text-[var(--color-fg-dim)] hover:text-[var(--color-fg)] transition-colors"
+        className="flex items-center px-2 py-1 text-[12px] uppercase tracking-wider text-[var(--color-fg-dim)]"
       >
-        <span className="flex items-center gap-1">
-          {collapsed
-            ? <ChevronRight className="h-3 w-3 shrink-0" />
-            : <ChevronDown className="h-3 w-3 shrink-0" />}
-          {t("statusHeader")}
-        </span>
-      </button>
-      {!collapsed && groups.map(g => {
+        <span>{t("statusHeader")}</span>
+      </div>
+      {groups.map(g => {
         const open = !isStatusBucketCollapsed(g.bucket, bucketCollapsed);
         const count = g.tasks.length;
         const countLabel = count === 1

@@ -106,7 +106,6 @@ describe("sidebar status section", () => {
     browser.execute(() => {
       const p = window.__termic!.usePrefs.getState();
       p.setShowStatusSection(false);
-      p.setStatusSectionCollapsed(false);
       const defaults = [["attention", false], ["working", false], ["review", false], ["settled", true], ["backlog", true]] as const;
       for (const [b, c] of defaults) p.setStatusBucketCollapsed(b, c);
     });
@@ -139,8 +138,14 @@ describe("sidebar status section", () => {
     await click(TOGGLE_ROW);
     await waitVisible(SECTION);
 
-    // Open by default: turning the section on is already the choice to see it.
-    expect(await ariaExpanded(HEADER)).toBe("true");
+    // The header is a label like PROJECTS, not a fold: the switch is how the
+    // section goes away.
+    const header = await browser.execute(sel => {
+      const el = document.querySelector(sel) as HTMLElement;
+      // textContent, not innerText: the capitals are CSS, not the string.
+      return { tag: el.tagName, expandable: el.hasAttribute("aria-expanded"), text: el.textContent?.trim() };
+    }, HEADER);
+    expect(header).toEqual({ tag: "DIV", expandable: false, text: "Status" });
     // Above the PROJECTS header (which holds the Add project button), in
     // document order.
     const above = await browser.execute(sec => {
@@ -253,25 +258,10 @@ describe("sidebar status section", () => {
     expect(actives).toEqual([blocked]);
   });
 
-  it("remembers the section's fold and each bucket's", async () => {
-    // The whole section folds to its header; the buckets go, the header stays.
+  it("remembers each bucket's fold", async () => {
+    // Clicking the header does nothing: it is a label.
     await click(HEADER);
-    await waitGone(`${SECTION} [data-status-bucket]`);
-    await waitVisible(HEADER);
-    expect(await ariaExpanded(HEADER)).toBe("false");
-    expect(await stored("statusSectionCollapsed")).toBe("1");
-
-    // Turning the section off and on keeps the fold: it is a pref, not
-    // component state.
-    await browser.execute(() => window.__termic!.usePrefs.getState().setShowStatusSection(false));
-    await waitGone(SECTION);
-    await browser.execute(() => window.__termic!.usePrefs.getState().setShowStatusSection(true));
-    await waitVisible(HEADER);
-    expect(await ariaExpanded(HEADER)).toBe("false");
-
-    await click(HEADER);
-    await waitVisible(BUCKET_HEADER("backlog"));
-    expect(await stored("statusSectionCollapsed")).toBe("0");
+    expect(await present(BUCKET_HEADER("backlog"))).toBe(true);
 
     // A bucket's fold is stored as an override of its default. Not started
     // was opened earlier; folding it again writes that back.
@@ -279,6 +269,13 @@ describe("sidebar status section", () => {
     expect(JSON.parse((await stored("statusBucketCollapsed")) ?? "{}").backlog).toBe(false);
     await setBucketOpen("backlog", false);
     expect(JSON.parse((await stored("statusBucketCollapsed")) ?? "{}").backlog).toBe(true);
+    // Turning the section off and on keeps the fold: it is a pref, not
+    // component state.
+    await browser.execute(() => window.__termic!.usePrefs.getState().setShowStatusSection(false));
+    await waitGone(SECTION);
+    await browser.execute(() => window.__termic!.usePrefs.getState().setShowStatusSection(true));
+    await waitVisible(BUCKET_HEADER("backlog"));
+    expect(await ariaExpanded(BUCKET_HEADER("backlog"))).toBe("false");
     // And a listed bucket folds too. Re-seed the bell (SETUP), which the
     // visit in the case above cleared. Off the task first: on the ACTIVE task
     // the seeded mark does not hold (measured: the store's `unread` reads

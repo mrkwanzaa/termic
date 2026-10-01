@@ -691,32 +691,27 @@ describe("prefs: status section", () => {
   });
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  it("ships off, and open once turned on, with the count-only buckets folded", async () => {
+  it("ships off, with no bucket overrides (count-only buckets folded)", async () => {
     const { usePrefs } = await import("./prefs");
     const s = usePrefs.getState();
     expect(s.showStatusSection).toBe(false);
-    expect(s.statusSectionCollapsed).toBe(false);
     expect(s.statusBucketCollapsed).toEqual({});
   });
 
-  it("reads all three back from localStorage, dropping junk bucket entries", async () => {
+  it("reads both back from localStorage, dropping junk bucket entries", async () => {
     localStorage.setItem("showStatusSection", "1");
-    localStorage.setItem("statusSectionCollapsed", "1");
     localStorage.setItem("statusBucketCollapsed", '{"settled":false,"archived":true}');
     const { usePrefs } = await import("./prefs");
     const s = usePrefs.getState();
     expect(s.showStatusSection).toBe(true);
-    expect(s.statusSectionCollapsed).toBe(true);
     expect(s.statusBucketCollapsed).toEqual({ settled: false });
   });
 
   it("the setters persist", async () => {
     const { usePrefs } = await import("./prefs");
     usePrefs.getState().setShowStatusSection(true);
-    usePrefs.getState().setStatusSectionCollapsed(true);
     usePrefs.getState().setStatusBucketCollapsed("settled", false);
     expect(localStorage.getItem("showStatusSection")).toBe("1");
-    expect(localStorage.getItem("statusSectionCollapsed")).toBe("1");
     expect(JSON.parse(localStorage.getItem("statusBucketCollapsed")!)).toEqual({ settled: false });
   });
 
@@ -725,7 +720,6 @@ describe("prefs: status section", () => {
     let notified = 0;
     const unsub = usePrefs.subscribe(() => { notified++; });
     usePrefs.getState().setShowStatusSection(false);
-    usePrefs.getState().setStatusSectionCollapsed(false);
     // Already the default for both, so there is no override to write.
     usePrefs.getState().setStatusBucketCollapsed("attention", false);
     usePrefs.getState().setStatusBucketCollapsed("backlog", true);
