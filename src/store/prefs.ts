@@ -45,6 +45,12 @@ import {
   type BoardArchiveLimitMode,
   type BoardStateColumn,
 } from "@/lib/taskBoardState";
+import {
+  isStatusBucketCollapsed,
+  parseStatusBucketCollapsed,
+  type StatusBucket,
+  type StatusBucketCollapsed,
+} from "@/lib/sidebarStatus";
 
 /** The two readouts an agent's footer chip can carry. */
 export const AGENT_FOOTER_PARTS = ["usage", "context"] as const;
@@ -93,6 +99,9 @@ const LS_HIDE_INACTIVE_PROJECTS = scoped("hideInactiveProjects");
 const LS_BOARD_ARCHIVE_LIMIT_MODE = scoped("boardArchiveLimitMode");
 const LS_BOARD_ARCHIVE_LIMIT = scoped("boardArchiveLimit");
 const LS_BOARD_PINNED_COLUMNS = scoped("boardPinnedColumns");
+const LS_SHOW_STATUS_SECTION = scoped("showStatusSection");
+const LS_STATUS_SECTION_COLLAPSED = scoped("statusSectionCollapsed");
+const LS_STATUS_BUCKET_COLLAPSED = scoped("statusBucketCollapsed");
 const LS_BRANCH_AS_TASK_NAME = "useBranchAsTaskName";
 const LS_DOUBLE_SHIFT_MODE = "doubleShiftMode";
 const LS_CTRL_TAB_MODE = "ctrlTabMode";
@@ -786,6 +795,16 @@ interface PrefsState {
    *  this-visit toggle: it used to be BoardView state and did not survive the
    *  view unmounting, which read as the column randomly disappearing. */
   boardPinnedColumns: BoardStateColumn[];
+  /** The sidebar's STATUS section above PROJECTS (docs/ui.md "The sidebar's
+   *  status section"). Off by default: it pays off with many parallel tasks
+   *  and is clutter with two. */
+  showStatusSection: boolean;
+  /** The section folded to its header. Open by default: turning the section
+   *  on is already the choice to see it. */
+  statusSectionCollapsed: boolean;
+  /** Per-bucket overrides of the default fold (count-only buckets start
+   *  closed). Only buckets the user toggled are stored. */
+  statusBucketCollapsed: StatusBucketCollapsed;
   /** When true (GH #260), a WORKTREE task is labelled by its branch
    *  everywhere it is named in the UI, instead of by the title typed at
    *  creation. A week-old task's typed name goes stale; the branch is what
@@ -946,6 +965,9 @@ interface PrefsState {
   setBoardArchiveLimitMode: (m: BoardArchiveLimitMode) => void;
   setBoardArchiveLimit: (n: number) => void;
   setBoardPinnedColumns: (cols: readonly BoardStateColumn[]) => void;
+  setShowStatusSection: (v: boolean) => void;
+  setStatusSectionCollapsed: (v: boolean) => void;
+  setStatusBucketCollapsed: (bucket: StatusBucket, collapsed: boolean) => void;
   setUseBranchAsTaskName: (v: boolean) => void;
   setDoubleShiftMode: (v: DoubleShiftMode) => void;
   setCtrlTabMode: (v: CtrlTabMode) => void;
@@ -1170,6 +1192,9 @@ const initialBoardArchiveLimit = (() => {
   return Number.isFinite(n) ? n : BOARD_ARCHIVE_LIMIT_DEFAULT;
 })();
 const initialBoardPinnedColumns = parseBoardPinnedColumns(lsGet(LS_BOARD_PINNED_COLUMNS, ""));
+const initialShowStatusSection = lsGet(LS_SHOW_STATUS_SECTION, "") === "1";
+const initialStatusSectionCollapsed = lsGet(LS_STATUS_SECTION_COLLAPSED, "") === "1";
+const initialStatusBucketCollapsed = parseStatusBucketCollapsed(lsGet(LS_STATUS_BUCKET_COLLAPSED, ""));
 const initialUseBranchAsTaskName = lsGet(LS_BRANCH_AS_TASK_NAME, "") === "1";
 // Absent means never set, and the gesture ships on, left-Shift only.
 const initialDoubleShiftMode: DoubleShiftMode = (() => {
@@ -1258,6 +1283,9 @@ export const usePrefs = create<PrefsState>(set => ({
   boardArchiveLimitMode: initialBoardArchiveLimitMode,
   boardArchiveLimit: initialBoardArchiveLimit,
   boardPinnedColumns: initialBoardPinnedColumns,
+  showStatusSection: initialShowStatusSection,
+  statusSectionCollapsed: initialStatusSectionCollapsed,
+  statusBucketCollapsed: initialStatusBucketCollapsed,
   useBranchAsTaskName: initialUseBranchAsTaskName,
   doubleShiftMode: initialDoubleShiftMode,
   ctrlTabMode: initialCtrlTabMode,
@@ -1597,6 +1625,27 @@ export const usePrefs = create<PrefsState>(set => ({
     try { localStorage.setItem(LS_BOARD_PINNED_COLUMNS, JSON.stringify(v)); } catch {}
     set({ boardPinnedColumns: v });
   },
+  // The three status-section setters bail on an unchanged value (returning
+  // `s` is a no-op notify): a fold click re-renders the section, and a
+  // repeated one should not.
+  setShowStatusSection: (v) => set(s => {
+    if (s.showStatusSection === v) return s;
+    try { localStorage.setItem(LS_SHOW_STATUS_SECTION, v ? "1" : "0"); } catch {}
+    return { showStatusSection: v };
+  }),
+  setStatusSectionCollapsed: (v) => set(s => {
+    if (s.statusSectionCollapsed === v) return s;
+    try { localStorage.setItem(LS_STATUS_SECTION_COLLAPSED, v ? "1" : "0"); } catch {}
+    return { statusSectionCollapsed: v };
+  }),
+  setStatusBucketCollapsed: (bucket, collapsed) => set(s => {
+    // Effective state, not the stored override: an absent override already
+    // means the default, so writing the default would change nothing.
+    if (isStatusBucketCollapsed(bucket, s.statusBucketCollapsed) === collapsed) return s;
+    const next = { ...s.statusBucketCollapsed, [bucket]: collapsed };
+    try { localStorage.setItem(LS_STATUS_BUCKET_COLLAPSED, JSON.stringify(next)); } catch {}
+    return { statusBucketCollapsed: next };
+  }),
   setUseBranchAsTaskName: (v) => {
     try { localStorage.setItem(LS_BRANCH_AS_TASK_NAME, v ? "1" : "0"); } catch {}
     set({ useBranchAsTaskName: v });
