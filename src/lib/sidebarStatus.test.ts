@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   STATUS_BUCKETS,
   isStatusBucketCollapsed,
+  nextStatusTaskExpanded,
   parseStatusBucketCollapsed,
+  parseStatusTaskExpanded,
   statusBucketCollapsedByDefault,
   statusBuckets,
   statusItemTasks,
@@ -172,5 +174,28 @@ describe("status bucket collapse", () => {
     // Unknown buckets (archived is not one) and non-booleans are dropped.
     expect(parseStatusBucketCollapsed('{"settled":false,"archived":true,"working":"yes","backlog":true}'))
       .toEqual({ settled: false, backlog: true });
+  });
+});
+
+describe("status row expansion", () => {
+  it("parses only true values from localStorage", () => {
+    expect(parseStatusTaskExpanded(null)).toEqual({});
+    expect(parseStatusTaskExpanded("nope")).toEqual({});
+    expect(parseStatusTaskExpanded('["a"]')).toEqual({});
+    expect(parseStatusTaskExpanded('{"a":true,"b":false,"c":1}')).toEqual({ a: true });
+  });
+
+  it("toggles, and hands back the SAME map when nothing changes", () => {
+    const cur = { a: true } as const;
+    expect(nextStatusTaskExpanded(cur, "a", true, ["a", "b"])).toBe(cur);
+    expect(nextStatusTaskExpanded(cur, "b", false, ["a", "b"])).toBe(cur);
+    expect(nextStatusTaskExpanded(cur, "b", true, ["a", "b"])).toEqual({ a: true, b: true });
+    expect(nextStatusTaskExpanded(cur, "a", false, ["a", "b"])).toEqual({});
+  });
+
+  it("drops tasks that no longer exist on the way", () => {
+    const cur = { gone: true, a: true } as const;
+    // Even a no-op toggle writes, once, to prune the dead id.
+    expect(nextStatusTaskExpanded(cur, "a", true, ["a"])).toEqual({ a: true });
   });
 });

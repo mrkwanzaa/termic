@@ -59,6 +59,37 @@ export function parseStatusBucketCollapsed(raw: string | null | undefined): Stat
   return out;
 }
 
+/** Status rows the user expanded to their agent tabs: `{ [taskId]: true }`.
+ *  Its own map, not the tree's collapse state, so opening a row here never
+ *  opens the tree's. Parsed defensively from localStorage: only `true`
+ *  values survive. */
+export type StatusTaskExpanded = Readonly<Record<string, true>>;
+
+export function parseStatusTaskExpanded(raw: string | null | undefined): StatusTaskExpanded {
+  if (!raw) return {};
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return {}; }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out: Record<string, true> = {};
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) if (v === true) out[k] = true;
+  return out;
+}
+
+/** The next map after a toggle, or the SAME map when nothing changes (so the
+ *  setter can bail). Ids no longer in `liveIds` are dropped on the way, so
+ *  archived tasks do not pile up in localStorage. */
+export function nextStatusTaskExpanded(
+  cur: StatusTaskExpanded, taskId: string, expanded: boolean, liveIds: readonly string[],
+): StatusTaskExpanded {
+  const live = new Set(liveIds);
+  const stale = Object.keys(cur).some(k => !live.has(k));
+  if (!!cur[taskId] === expanded && !stale) return cur;
+  const next: Record<string, true> = {};
+  for (const k of Object.keys(cur)) if (live.has(k) && k !== taskId) next[k] = true;
+  if (expanded) next[taskId] = true;
+  return next;
+}
+
 /** A task whose tabs never loaded this session: no evidence of anything, the
  *  same reading the board gives `EMPTY_TABS`. */
 const UNLOADED: BoardTaskFacts = Object.freeze({ attention: false, working: false, untouched: true });

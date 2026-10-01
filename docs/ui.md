@@ -499,12 +499,23 @@ attention, `workingIndicator` off empties Working.
 
 ### Rows
 
-A lighter row than the tree's, modelled on the dashboard's: agent glyph,
-label, project name in the faint colour, PR chip, work badge. No terminal
-children, no drag, no rename, no run controls, no menu. Clicking it is
-`setActiveTask`, which reveals the task in the tree (expands its project,
-folder and group) the way every other way of opening a task does. The active
-task is marked in both places (`data-active` here).
+A lighter row than the tree's: chevron, label, project name in the faint
+colour, the tree's `(n)` from two terminals up, PR chip, work badge. No drag,
+no rename, no run controls, no menu. Clicking it is `setActiveTask`, which
+reveals the task in the tree (expands its project, folder and group) the way
+every other way of opening a task does. The active task is marked in both
+places (`data-active` here).
+
+It expands the tree's way: one child row per main-pane terminal tab, each with
+its own agent, title and badge, and a click on a child opens that tab. The
+task's row carries no agent glyph of its own. It used to show the one from
+`task.cli`, the agent the task was created with, so a task running claude and
+codex read as claude alone; the board solves the same problem with extra
+icons on the card, the tree with child rows, and the section follows the
+tree. Expanded rows are their own pref (`statusTaskExpanded`, pruned of dead
+ids on write), NOT the tree's task collapse, so opening a row here never
+opens the tree's. Expanded, the children carry the badges and the selection,
+as in the tree.
 
 Opening a task does not answer it. A row under Needs attention stays there,
 open task or not, until you answer in that terminal or the agent's turn ends
@@ -558,8 +569,10 @@ flip of every agent would then re-render the whole Sidebar body, section on
 or off. Not derived per row from `useRowTabs`: `untouched` reads
 `lastInputAt`, which the row selector holds back on purpose. The PR snapshot
 is read non-reactively, with a `usePr` re-render trigger like `BoardView`'s.
-A row selects its badge as a VALUE, so a working agent's once-a-second title
-rewrite re-renders no status row. `selectorFanout.test.ts` pins all of it.
+A collapsed row selects values only (its badge, its tab count, whether a
+child holds the selection), so a working agent's once-a-second title rewrite
+re-renders no status row. Only an EXPANDED row's children hold the tabs
+(`useRowTabs`, timestamps held back), since they draw the titles. `selectorFanout.test.ts` pins all of it.
 
 ### Not built
 

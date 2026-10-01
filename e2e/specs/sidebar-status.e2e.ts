@@ -102,6 +102,7 @@ describe("sidebar status section", () => {
   let reviewed = "";
   let groupLead = "";
   let groupMember = "";
+  let multi = "";
   let hoverRevealWas = false;
 
   /** Every pref this spec touches, back to the shipped defaults. */
@@ -131,7 +132,7 @@ describe("sidebar status section", () => {
       t.useApp.getState().closeSettings();
     }, hoverRevealWas);
     await resetPrefs();
-    for (const id of [fresh, blocked, reviewed, groupLead, groupMember]) if (id) await archiveTask(id);
+    for (const id of [fresh, blocked, reviewed, groupLead, groupMember, multi]) if (id) await archiveTask(id);
   });
 
   it("is off by default, and the list options menu turns it on above PROJECTS", async () => {
@@ -445,6 +446,66 @@ describe("sidebar status section", () => {
     await waitGone(BLOCK("attention"));
     await waitVisible(BLOCK("backlog"));
     await typeIntoAgent(groupMember, "\x7f");
+  });
+
+  it("a row running two agents expands to both, the tree's way, without opening the tree's row", async () => {
+    multi = await openTask("status-multi", false);
+    await ensureActiveTask(multi);
+    await waitForAgentReady(multi);
+    // SETUP: a second agent in the same task, the way the tab strip's + adds
+    // one. A different agent, so the rows can say which is which.
+    const second = await browser.execute(t => {
+      const tab = { id: crypto.randomUUID(), type: "terminal", cli: "fakecapture", title: "second" };
+      window.__termic!.useApp.getState().addTab(t, tab as never);
+      return tab.id;
+    }, multi);
+    await browser.execute(() => window.__termic!.useApp.getState().setView("dashboard"));
+    await setBucketOpen("backlog", true);
+
+    const WRAP = `${SECTION} [data-status-task-row="${multi}"]`;
+    const TOGGLE = `${WRAP} [data-testid="status-task-toggle"]`;
+    const CHILD = `${WRAP} [data-status-tab-id]`;
+    // Collapsed: the tree's `(2)`, and no children.
+    await waitVisible(`${WRAP} [data-testid="status-task-count"]`);
+    expect(await textOf(`${WRAP} [data-testid="status-task-count"]`)).toBe("(2)");
+    expect(await ariaExpanded(TOGGLE)).toBe("false");
+    expect(await present(CHILD)).toBe(false);
+
+    // The tree's row for the same task, measured before and after: its own
+    // collapse state, untouched by this one.
+    const treeRows = () => browser.execute(
+      id => document.querySelector(`[data-sidebar-task-row="${id}"]`)?.children.length ?? -1, multi);
+    const treeBefore = await treeRows();
+
+    await click(TOGGLE);
+    await browser.waitUntil(async () => (await browser.execute(
+      sel => document.querySelectorAll(sel).length, CHILD)) === 2,
+    { timeout: 5_000, timeoutMsg: "the expanded row never listed both agent tabs" });
+    // Each child is its own agent, in tab order.
+    expect(await browser.execute(
+      sel => [...document.querySelectorAll<HTMLElement>(sel)].map(el => el.dataset.cli), CHILD))
+      .toEqual(["fakeagent", "fakecapture"]);
+    expect(await treeRows()).toBe(treeBefore);
+
+    // A child opens ITS tab, and then carries the selection instead of the
+    // task's row.
+    await click(`${WRAP} [data-status-tab-id="${second}"]`);
+    await browser.waitUntil(() => browser.execute((id, tab) => {
+      const s = window.__termic!.useApp.getState();
+      return s.activeTaskId === id && s.activeTab[id] === tab;
+    }, multi, second), { timeout: 8_000, timeoutMsg: "clicking the child did not open its tab" });
+    await browser.waitUntil(() => browser.execute((wrap, tab, id) =>
+      document.querySelector(`${wrap} [data-status-tab-id="${tab}"]`)?.getAttribute("data-active") === "true"
+        && !document.querySelector(`${wrap} [data-status-task-id="${id}"]`)?.hasAttribute("data-active"),
+    WRAP, second, multi), { timeout: 5_000, timeoutMsg: "the selection did not move to the child row" });
+
+    // Remembered, as a pref: off and on again, still expanded.
+    expect(JSON.parse((await stored("statusTaskExpanded")) ?? "{}")[multi]).toBe(true);
+    await browser.execute(() => window.__termic!.usePrefs.getState().setShowStatusSection(false));
+    await waitGone(SECTION);
+    await browser.execute(() => window.__termic!.usePrefs.getState().setShowStatusSection(true));
+    await waitVisible(`${WRAP} [data-status-tab-id="${second}"]`);
+    await snap("sidebar-status-expanded.png");
   });
 
   it("Settings > Appearance > Sidebar writes the same switch", async () => {

@@ -166,6 +166,25 @@ export const selectStatusRowBadge = (taskId: string, prefs: WorkStatePrefs) =>
 export const selectStatusRowDelegated = (taskId: string, prefs: WorkStatePrefs) =>
   (s: AppState) => taskDelegatedWork(s.tabs[taskId] ?? EMPTY_TABS, prefs);
 
+/** Main-pane terminal tabs, the rows the tree (and an expanded status row)
+ *  lists under a task: a number, so a collapsed status row draws its `(n)`
+ *  without holding the tabs. */
+export const selectStatusRowTabCount = (taskId: string) =>
+  (s: AppState): number => {
+    let n = 0;
+    for (const t of s.tabs[taskId] ?? EMPTY_TABS) if (t.type === "terminal" && !t.paneId) n++;
+    return n;
+  };
+
+/** The active tab is one of this task's child rows, which then carries the
+ *  selection instead of the task's row (the tree's rule). */
+export const selectStatusRowActiveChild = (taskId: string) =>
+  (s: AppState): boolean => {
+    if (s.activeTaskId !== taskId) return false;
+    const tabId = s.activeTab[taskId];
+    return (s.tabs[taskId] ?? EMPTY_TABS).some(t => t.id === tabId && t.type === "terminal" && !t.paneId);
+  };
+
 // ─── TaskRow: its own tabs, minus the fields it never draws ─────────────
 
 /** Tab fields a PTY-driven path rewrites that no sidebar row draws: the idle

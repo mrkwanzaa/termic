@@ -24,11 +24,14 @@
 import { memo, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Moon } from "lucide-react";
 import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { usePr } from "@/store/pr";
-import { selectStatusRowBadge, selectStatusRowDelegated, useStatusTabFacts } from "@/store/sidebarTabs";
+import {
+  selectStatusRowActiveChild, selectStatusRowBadge, selectStatusRowDelegated, selectStatusRowTabCount,
+  useRowTabs, useStatusTabFacts,
+} from "@/store/sidebarTabs";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
 import { TaskPrBadge } from "@/components/TaskPrBadge";
@@ -36,8 +39,10 @@ import { cn } from "@/lib/utils";
 import { taskLabel } from "@/lib/taskLabel";
 import { isStatusBucketCollapsed, statusBuckets, type StatusBucket } from "@/lib/sidebarStatus";
 import { groupColorCss, groupLabel } from "@/lib/taskGroups";
+import { formatTerminalTitle } from "@/lib/terminalTitle";
+import { taskDelegatedWork, taskWorkBadge } from "@/lib/taskWorkState";
 import type { WorkStatePrefs } from "@/lib/taskWorkState";
-import type { Agent, Task, TaskGroup } from "@/lib/types";
+import type { Agent, Task, TaskGroup, TerminalTab } from "@/lib/types";
 
 /** Literal keys, so usedKeys.test.ts can see them. The board's own labels:
  *  a bucket and its column must not be called two different things. */
@@ -175,16 +180,18 @@ function StatusGroupBlock({ group, label, projectName, children }: {
     <div data-status-group-id={group.id} className="flex flex-col">
       <div
         data-testid="status-group-caption"
-        className="ml-3 flex h-[var(--task-row-h)] select-none items-center gap-1.5 px-1 text-[13px] font-medium"
+        className="ml-3 flex h-[var(--task-row-h)] select-none items-center gap-1 px-1 text-[13px] font-medium"
         style={{ color }}
       >
-        {/* The width of a row's agent glyph, so the caption's label lines up
-            with the loose rows' labels, as the tree's does behind its chevron. */}
-        <span aria-hidden className="h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0 shrink truncate">{label}</span>
-        {projectName && (
-          <span className="min-w-0 shrink-[2] truncate text-[11.5px] font-normal text-[var(--color-fg-faint)]">{projectName}</span>
-        )}
+        {/* The width of a row's chevron, so the caption's label lines up with
+            the rows' labels, as the tree's does behind its own chevron. */}
+        <span aria-hidden className="h-3.5 w-[18px] shrink-0" />
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <span className="min-w-0 shrink truncate">{label}</span>
+          {projectName && (
+            <span className="min-w-0 shrink-[2] truncate text-[11.5px] font-normal text-[var(--color-fg-faint)]">{projectName}</span>
+          )}
+        </div>
       </div>
       <div data-status-group-rail className="ml-6 border-l-2" style={{ borderColor: color }}>
         <div className="-ml-1.5">{children}</div>
@@ -193,10 +200,13 @@ function StatusGroupBlock({ group, label, projectName, children }: {
   );
 }
 
-/** A lighter row than the tree's TaskRow, modelled on the dashboard's: no
- *  terminal children, no drag, no rename, no run controls, no menu. TaskRow
- *  is NOT reused: its rename and auto-expand effects would run twice per
- *  task, and every auto-expand would be a second whole-state write. */
+/** A lighter row than the tree's TaskRow: no drag, no rename, no run
+ *  controls, no menu. It does expand to its agent tabs the way the tree's
+ *  row does (chevron, `(n)`, one child row per main-pane terminal tab with
+ *  that tab's own agent and badge), because a task running claude AND codex
+ *  is two things, and one glyph on the row said only one of them. TaskRow is
+ *  NOT reused: its rename and auto-expand effects would run twice per task,
+ *  and every auto-expand would be a second whole-state write. */
 const StatusTaskRow = memo(function StatusTaskRow({ task: w, projectName, agents, useBranchAsTaskName, workPrefs }: {
   task: Task;
   projectName: string;
@@ -209,53 +219,152 @@ const StatusTaskRow = memo(function StatusTaskRow({ task: w, projectName, agents
   const isActive = useApp(s => s.activeTaskId === w.id);
   const selectBadge = useMemo(() => selectStatusRowBadge(w.id, workPrefs), [w.id, workPrefs]);
   const selectDelegated = useMemo(() => selectStatusRowDelegated(w.id, workPrefs), [w.id, workPrefs]);
+  const selectCount = useMemo(() => selectStatusRowTabCount(w.id), [w.id]);
+  const selectActiveChild = useMemo(() => selectStatusRowActiveChild(w.id), [w.id]);
   const badge = useApp(selectBadge);
   const delegated = useApp(selectDelegated);
+  const tabCount = useApp(selectCount);
+  const activeChild = useApp(selectActiveChild);
+  const expanded = usePrefs(s => !!s.statusTaskExpanded[w.id]);
+  const setExpanded = usePrefs(s => s.setStatusTaskExpanded);
+  const open = expanded && tabCount > 0;
   const label = taskLabel(w, useBranchAsTaskName);
   const labelIsBranch = label !== w.name;
-  const icon = resolveIconId(w.cli, agents);
+  const toggle = () => setExpanded(w.id, !expanded,
+    useApp.getState().tasks.filter(x => !x.archived).map(x => x.id));
 
   return (
-    // A div with a button role, not a <button>: the PR chip is itself a
-    // button, and a button inside a button is invalid content WebKit
-    // reparents. Same reason as the tree's row and the dashboard's.
-    <div
-      data-status-task-id={w.id}
-      data-active={isActive || undefined}
-      role="button"
-      tabIndex={0}
-      onClick={() => setActive(w.id)}
-      onKeyDown={ev => {
-        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); setActive(w.id); }
-      }}
-      className={cn(
-        "ml-3 flex h-[var(--task-row-h)] cursor-pointer select-none items-center gap-1.5 rounded-md px-1 text-[13px] transition-colors",
-        isActive
-          ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
-          : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
-      )}
-    >
-      <span className={cn("shrink-0", CLI_BRAND_COLOR[icon] || "text-[var(--color-fg-faint)]")}>
-        <CliIcon cli={icon} className="h-3.5 w-3.5" />
-      </span>
-      <span
-        title={labelIsBranch ? t("taskNameTitle", { name: w.name }) : undefined}
-        className={cn("min-w-0 shrink truncate font-medium", labelIsBranch && "font-mono text-[12px]")}
+    <div data-status-task-row={w.id} className="flex flex-col">
+      {/* A div with a button role, not a <button>: the chevron and the PR
+          chip are buttons, and a button inside a button is invalid content
+          WebKit reparents. Same reason as the tree's row. */}
+      <div
+        data-status-task-id={w.id}
+        data-active={(isActive && (!open || !activeChild)) || undefined}
+        role="button"
+        tabIndex={0}
+        onClick={() => setActive(w.id)}
+        onKeyDown={ev => {
+          if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); setActive(w.id); }
+        }}
+        className={cn(
+          "ml-3 flex h-[var(--task-row-h)] cursor-pointer select-none items-center gap-1 rounded-md px-1 text-[13px] transition-colors",
+          // The tree's rule: the selection sits on the task's row unless an
+          // expanded child row (its active tab) carries it.
+          isActive && (!open || !activeChild)
+            ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
+            : isActive
+              ? "text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
+              : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+        )}
       >
-        {label}
-      </span>
-      {/* Which project, since a bucket mixes them. Faint and shrinks first:
-          the task's own name is what the row is for. A group member has it
-          on its caption instead. */}
-      {projectName && (
-        <span className="min-w-0 shrink-[2] truncate text-[11.5px] text-[var(--color-fg-faint)]">{projectName}</span>
-      )}
-      <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-1">
-        <TaskPrBadge task={w} testId="status-pr-badge" />
-        <span className="flex h-[18px] w-[18px] items-center justify-center">
-          {badge && <TaskWorkBadge reason={badge} delegated={delegated} testId="status-work-badge" />}
+        {tabCount === 0
+          // No terminals this session: the tree's dormant mark, nothing to expand.
+          ? <Moon className="mx-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)] opacity-40" />
+          : (
+            <button
+              type="button"
+              data-testid="status-task-toggle"
+              aria-expanded={open}
+              onClick={e => { e.stopPropagation(); toggle(); }}
+              className="shrink-0 rounded p-0.5 transition-colors hover:bg-[var(--color-bg-3)]"
+            >
+              {open
+                ? <ChevronDown className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
+                : <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />}
+            </button>
+          )}
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <span
+            title={labelIsBranch ? t("taskNameTitle", { name: w.name }) : undefined}
+            className={cn("min-w-0 shrink truncate font-medium", labelIsBranch && "font-mono text-[12px]")}
+          >
+            {label}
+          </span>
+          {/* Which project, since a bucket mixes them. Faint and shrinks
+              first: the task's own name is what the row is for. A group
+              member has it on its caption instead. */}
+          {projectName && (
+            <span className="min-w-0 shrink-[2] truncate text-[11.5px] text-[var(--color-fg-faint)]">{projectName}</span>
+          )}
+          {/* The tree's terminal count, from two up. */}
+          {tabCount > 1 && (
+            <span data-testid="status-task-count" className="shrink-0 text-[11px] font-medium tabular-nums text-[var(--color-fg-dim)]">
+              ({tabCount})
+            </span>
+          )}
+        </div>
+        <span className="flex shrink-0 items-center gap-1.5 pl-1">
+          <TaskPrBadge task={w} testId="status-pr-badge" />
+          {/* Expanded, the children carry the badges, as in the tree. */}
+          <span className="flex h-[18px] w-[18px] items-center justify-center">
+            {!open && badge && <TaskWorkBadge reason={badge} delegated={delegated} testId="status-work-badge" />}
+          </span>
         </span>
-      </span>
+      </div>
+      {open && <StatusTaskTabs taskId={w.id} agents={agents} workPrefs={workPrefs} />}
     </div>
   );
 });
+
+/** An expanded status row's children: one per main-pane terminal tab, with
+ *  the tab's own agent, title and badge, the way the tree lists them.
+ *  Mounted only while expanded, which is the one place this section holds a
+ *  task's tabs (titles are drawn here); the timestamps stay held back by
+ *  useRowTabs, as for the tree's rows. */
+function StatusTaskTabs({ taskId, agents, workPrefs }: {
+  taskId: string;
+  agents: Agent[];
+  workPrefs: WorkStatePrefs;
+}) {
+  const tabs = useRowTabs(taskId);
+  const isActive = useApp(s => s.activeTaskId === taskId);
+  const activeTabId = useApp(s => s.activeTab[taskId]);
+  const setActive = useApp(s => s.setActiveTask);
+  const setActiveTabId = useApp(s => s.setActiveTabId);
+  const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal" && !t.paneId);
+  return (
+    <>
+      {terminalTabs.map(tab => {
+        const hot = isActive && tab.id === activeTabId;
+        const reason = taskWorkBadge([tab], workPrefs);
+        const working = reason === "working";
+        const raw = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
+        const title = tab.customTitle ? raw : formatTerminalTitle(raw, tab.cli, working);
+        const icon = resolveIconId(tab.cli, agents);
+        return (
+          <div
+            key={tab.id}
+            data-status-tab-id={tab.id}
+            data-cli={tab.cli}
+            data-active={hot || undefined}
+            role="button"
+            tabIndex={0}
+            onClick={() => { setActive(taskId); setActiveTabId(taskId, tab.id); }}
+            onKeyDown={ev => {
+              if (ev.key === "Enter" || ev.key === " ") {
+                ev.preventDefault(); setActive(taskId); setActiveTabId(taskId, tab.id);
+              }
+            }}
+            className={cn(
+              "ml-8 flex cursor-pointer select-none items-center gap-1.5 rounded-md px-1.5 py-[3px] text-[12.5px] transition-colors",
+              hot
+                ? "bg-[var(--color-sel)] text-[var(--color-fg)]"
+                : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+            )}
+          >
+            <span className={cn("shrink-0", CLI_BRAND_COLOR[icon] || "text-[var(--color-fg-dim)]")}>
+              <CliIcon cli={icon} className="h-3.5 w-3.5" />
+            </span>
+            <span className="min-w-0 flex-1 truncate">{title}</span>
+            <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center">
+              {reason && (
+                <TaskWorkBadge reason={reason} delegated={taskDelegatedWork([tab], workPrefs)} testId="status-work-badge" />
+              )}
+            </span>
+          </div>
+        );
+      })}
+    </>
+  );
+}

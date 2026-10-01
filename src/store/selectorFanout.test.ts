@@ -44,6 +44,7 @@ import { useAgentUsage, usageKey } from "@/store/agentUsage";
 import {
   createSidebarFactsSelector, createRowTabsSelector, tabRenderEqual, tabListRenderEqual,
   createStatusFactsSelector, selectStatusRowBadge, selectStatusRowDelegated,
+  selectStatusRowTabCount, selectStatusRowActiveChild,
 } from "@/store/sidebarTabs";
 import { selectBoardColumnKey } from "@/lib/boardColumnKey";
 import type { AppState } from "@/store/app";
@@ -594,12 +595,15 @@ describe("status section under streaming output (bear traps 5, 8)", () => {
     });
   });
 
-  /** The mounted section: one facts selector, and per row its badge and its
-   *  delegated-work report. perSub[0] is the facts record. */
+  /** The mounted section, rows collapsed: one facts selector, and per row
+   *  its badge, its delegated-work report, its tab count and whether a child
+   *  carries the selection. perSub[0] is the facts record. */
   const mountSection = () => [
     createStatusFactsSelector(),
     ...ids.map(id => selectStatusRowBadge(id, PREFS)),
     ...ids.map(id => selectStatusRowDelegated(id, PREFS)),
+    ...ids.map(id => selectStatusRowTabCount(id)),
+    ...ids.map(id => selectStatusRowActiveChild(id)),
   ];
 
   const stamp = (i: number) => {
@@ -668,7 +672,12 @@ describe("status section under streaming output (bear traps 5, 8)", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const src = readFileSync(resolve(here, "../components/sidebar/StatusSection.tsx"), "utf8");
     expect(src).not.toMatch(/=>\s*s\.tabs\s*\)/);
-    expect(src).not.toMatch(/useRowTabs|selectTaskTabs/);
+    expect(src).not.toMatch(/selectTaskTabs/);
+    // A row's tabs are held only by an EXPANDED row's children, which draw
+    // the titles; a collapsed row selects values.
+    expect(src.match(/useRowTabs\(/g)?.length).toBe(1);
+    const children = src.slice(src.indexOf("function StatusTaskTabs("));
+    expect(children).toMatch(/useRowTabs\(taskId\)/);
     expect(src).toMatch(/useStatusTabFacts\(\)/);
     expect(src).toMatch(/selectStatusRowBadge\(/);
     // Mounted only with the pref on and never on the icon rail, so the off

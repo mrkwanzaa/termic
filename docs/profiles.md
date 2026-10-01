@@ -275,7 +275,7 @@ migration, and nothing resets on the release that ships this.
 
 Scoped: project/task/group collapse state, folder colors, `taskExpandMode`,
 `hideInactiveProjects`, the status section's switch and folds
-(`showStatusSection`, `statusBucketCollapsed`),
+(`showStatusSection`, `statusBucketCollapsed`, `statusTaskExpanded`),
 `newTaskLast*`, member modes, the prompt library.
 
 **NOT scoped, on purpose:** theme, fonts, terminal and editor settings, shortcut

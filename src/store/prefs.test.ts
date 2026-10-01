@@ -730,4 +730,18 @@ describe("prefs: status section", () => {
     expect(notified).toBe(1);
     unsub();
   });
+
+  it("remembers expanded rows, prunes dead ones, and bails on no change", async () => {
+    localStorage.setItem("statusTaskExpanded", '{"old":true}');
+    const { usePrefs } = await import("./prefs");
+    expect(usePrefs.getState().statusTaskExpanded).toEqual({ old: true });
+    let notified = 0;
+    const unsub = usePrefs.subscribe(() => { notified++; });
+    usePrefs.getState().setStatusTaskExpanded("t1", true, ["t1"]);
+    expect(usePrefs.getState().statusTaskExpanded).toEqual({ t1: true });
+    expect(JSON.parse(localStorage.getItem("statusTaskExpanded")!)).toEqual({ t1: true });
+    usePrefs.getState().setStatusTaskExpanded("t1", true, ["t1"]);
+    expect(notified).toBe(1);
+    unsub();
+  });
 });
