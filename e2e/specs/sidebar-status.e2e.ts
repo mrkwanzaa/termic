@@ -100,6 +100,8 @@ describe("sidebar status section", () => {
   let fresh = "";
   let blocked = "";
   let reviewed = "";
+  let groupLead = "";
+  let groupMember = "";
   let hoverRevealWas = false;
 
   /** Every pref this spec touches, back to the shipped defaults. */
@@ -129,7 +131,7 @@ describe("sidebar status section", () => {
       t.useApp.getState().closeSettings();
     }, hoverRevealWas);
     await resetPrefs();
-    for (const id of [fresh, blocked, reviewed]) if (id) await archiveTask(id);
+    for (const id of [fresh, blocked, reviewed, groupLead, groupMember]) if (id) await archiveTask(id);
   });
 
   it("is off by default, and the list options menu turns it on above PROJECTS", async () => {
@@ -369,6 +371,80 @@ describe("sidebar status section", () => {
     "a merged PR never left In review");
     await setBucketOpen("backlog", true);
     await waitVisible(ROW_IN("backlog", reviewed));
+  });
+
+  it("keeps a task group whole, in its colour, under its most urgent member's bucket", async () => {
+    groupLead = await openTask("status-group-lead", false);
+    groupMember = await openTask("status-group-member", false);
+    // SETUP through the app's own IPC: the lead founds a group, the member
+    // joins it, the way the task menu's Move to group does.
+    const groupId = await browser.execute(async (a, b) => {
+      const t = window.__termic!;
+      await t.invoke("task_group_new", { taskId: a, color: "teal" });
+      await t.invoke("task_group_join", { taskId: b, targetId: a, color: null });
+      await t.useApp.getState().loadAll();
+      return t.useApp.getState().tasks.find((w: any) => w.id === a).group.id as string;
+    }, groupLead, groupMember);
+    const BLOCK = (bucket: string) => `${BUCKET(bucket)} [data-status-group-id="${groupId}"]`;
+
+    // Both untouched, so the whole group is one unit under Not started.
+    await setBucketOpen("backlog", true);
+    await waitVisible(BLOCK("backlog"));
+
+    // The member's agent asks something (SETUP on a background task): the
+    // group moves as a unit, the untouched lead with it.
+    await ensureActiveTask(groupMember);
+    await waitForAgentReady(groupMember);
+    await browser.execute(() => window.__termic!.useApp.getState().setView("dashboard"));
+    await browser.execute(id => {
+      const app = window.__termic!.useApp.getState();
+      const tab = (app.tabs[id] ?? []).find((t: any) => t.type === "terminal");
+      app.markAttention(id, tab.id, "attention", "needs you");
+    }, groupMember);
+    await waitVisible(BLOCK("attention"));
+    expect(await present(BLOCK("backlog"))).toBe(false);
+
+    const shape = await browser.execute((sel, gid, lead, member) => {
+      const block = document.querySelector(sel) as HTMLElement;
+      const caption = block.querySelector('[data-testid="status-group-caption"]') as HTMLElement;
+      const rail = block.querySelector("[data-status-group-rail]") as HTMLElement;
+      const tree = document.querySelector(`[data-testid="task-group-header-${gid}"]`) as HTMLElement | null;
+      const bucket = block.closest("[data-status-bucket]") as HTMLElement;
+      return {
+        members: [...block.querySelectorAll<HTMLElement>("[data-status-task-id]")].map(el => el.dataset.statusTaskId),
+        // Only the member that asked carries the bell; the lead rides along.
+        bells: [lead, member].map(id =>
+          !!block.querySelector(`[data-status-task-id="${id}"] [data-testid="status-work-badge"][data-work-state="attention"]`)),
+        caption: getComputedStyle(caption).color,
+        rail: getComputedStyle(rail).borderLeftColor,
+        treeCaption: tree ? getComputedStyle(tree).color : null,
+        // Identity: the tree's group block is still the only one the task
+        // drag can hit-test.
+        treeBlocks: document.querySelectorAll(`[data-task-group-id="${gid}"]`).length,
+        copyHasTreeAttr: !!block.querySelector("[data-task-group-id]") || block.hasAttribute("data-task-group-id"),
+        count: Number(bucket.querySelector('[data-testid="status-bucket-count"]')?.textContent),
+        rows: bucket.querySelectorAll("[data-status-task-id]").length,
+      };
+    }, BLOCK("attention"), groupId, groupLead, groupMember);
+    expect(shape.members).toEqual([groupLead, groupMember]);
+    expect(shape.bells).toEqual([false, true]);
+    // The group's own colour, measured: the caption and the rail agree, and
+    // match the tree's caption for the same group.
+    expect(shape.caption).toBe(shape.rail);
+    expect(shape.caption).toBe(shape.treeCaption);
+    expect(shape.treeBlocks).toBe(1);
+    expect(shape.copyHasTreeAttr).toBe(false);
+    // A bucket counts task rows, group members included.
+    expect(shape.count).toBe(shape.rows);
+    await snap("sidebar-status-group.png");
+
+    // Answered: the member has no other work evidence, so the group goes
+    // back to Not started, whole.
+    await ensureActiveTask(groupMember);
+    await typeIntoAgent(groupMember, "1");
+    await waitGone(BLOCK("attention"));
+    await waitVisible(BLOCK("backlog"));
+    await typeIntoAgent(groupMember, "\x7f");
   });
 
   it("Settings > Appearance > Sidebar writes the same switch", async () => {

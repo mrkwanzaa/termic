@@ -9,9 +9,9 @@
 // Pure and store-free on purpose (the pr store's import chain touches the DOM
 // at module scope): the caller passes the PR snapshot in as plain data.
 
-import type { Project, Task } from "./types";
+import type { Project, Task, TaskGroup } from "./types";
 import { visualProjectOrder } from "./projectGroups";
-import { crossProjectStrays, flattenSegments, layoutTaskList } from "./taskGroups";
+import { crossProjectStrays, layoutTaskList } from "./taskGroups";
 import {
   boardColumnFromFacts,
   type BoardPrInfo,
@@ -63,17 +63,32 @@ export function parseStatusBucketCollapsed(raw: string | null | undefined): Stat
  *  same reading the board gives `EMPTY_TABS`. */
 const UNLOADED: BoardTaskFacts = Object.freeze({ attention: false, working: false, untouched: true });
 
+/** One thing a bucket draws: a loose task, or a task group with its members
+ *  (the tree's own grouping, in its own colour). */
+export type StatusItem =
+  | { kind: "task"; task: Task }
+  | { kind: "group"; group: TaskGroup; tasks: Task[] };
+
 export interface StatusBucketGroup {
   bucket: StatusBucket;
-  tasks: Task[];
+  items: StatusItem[];
+  /** Task rows, group members included: what the bucket's count says. */
+  count: number;
 }
 
 /** The section's contents: non-empty buckets in display order, each holding
- *  its tasks in TREE order: the sidebar's visual project order (which the
- *  keyboard walks too), then each project's rows as the tree lays them out,
- *  a task group drawn as one block at its first member's position. A row
- *  therefore never shuffles inside its bucket; it moves only when its
- *  bucket changes.
+ *  its items in TREE order: the sidebar's visual project order (which the
+ *  keyboard walks too), then each project's rows as the tree lays them out.
+ *  An item never shuffles inside its bucket; it moves only when its bucket
+ *  changes.
+ *
+ *  A task group stays ONE unit, as it is in the tree: drawn whole, in the
+ *  bucket of its most urgent member (display order is urgency order). Every
+ *  member keeps its own badge, so the row that put the group there says so.
+ *  This is a layout rule over the board's buckets, not a state: each task's
+ *  own bucket is still boardColumnFromFacts, unchanged. Cross-project
+ *  batches (a spawn tree via `spawned_by`) are the same rule one level up,
+ *  and not built yet.
  *
  *  Walks projects rather than tasks, so a task whose project is not in this
  *  profile's list is skipped exactly as the tree skips it. */
@@ -95,17 +110,41 @@ export function statusBuckets(
   // cross-project group), and the same grouping for everything else.
   const strays = crossProjectStrays(tasks);
   const groupFor = (t: Task) => (strays.has(t.id) ? null : t.group ?? null);
-  const buckets = new Map<StatusBucket, Task[]>(STATUS_BUCKETS.map(b => [b, []]));
+  const bucketOf = (w: Task): StatusBucket | null => {
+    const column = boardColumnFromFacts(w, facts[w.id] ?? UNLOADED, prByTask[w.id]?.lookup ?? null, prefs);
+    // Unreachable (archived tasks were skipped above), but the type allows
+    // it, and dropping a task is better than inventing a bucket for it.
+    return column === "archived" ? null : column;
+  };
+  const rank = (b: StatusBucket) => STATUS_BUCKETS.indexOf(b);
+  const buckets = new Map<StatusBucket, { items: StatusItem[]; count: number }>(
+    STATUS_BUCKETS.map(b => [b, { items: [], count: 0 }]));
+  const place = (bucket: StatusBucket, item: StatusItem, rows: number) => {
+    const into = buckets.get(bucket)!;
+    into.items.push(item);
+    into.count += rows;
+  };
   for (const p of visualProjectOrder(projects)) {
-    for (const w of flattenSegments(layoutTaskList(byProject.get(p.id) ?? [], groupFor))) {
-      const column = boardColumnFromFacts(w, facts[w.id] ?? UNLOADED, prByTask[w.id]?.lookup ?? null, prefs);
-      // Unreachable (archived tasks were skipped above), but the type allows
-      // it, and dropping a task is better than inventing a bucket for it.
-      if (column === "archived") continue;
-      buckets.get(column)!.push(w);
+    for (const seg of layoutTaskList(byProject.get(p.id) ?? [], groupFor)) {
+      if (seg.kind === "task") {
+        const b = bucketOf(seg.task);
+        if (b) place(b, { kind: "task", task: seg.task }, 1);
+        continue;
+      }
+      let most: StatusBucket | null = null;
+      for (const w of seg.tasks) {
+        const b = bucketOf(w);
+        if (b && (most === null || rank(b) < rank(most))) most = b;
+      }
+      if (most) place(most, { kind: "group", group: seg.group, tasks: seg.tasks }, seg.tasks.length);
     }
   }
   return STATUS_BUCKETS
-    .map(bucket => ({ bucket, tasks: buckets.get(bucket)! }))
-    .filter(g => g.tasks.length > 0);
+    .map(bucket => ({ bucket, ...buckets.get(bucket)! }))
+    .filter(g => g.items.length > 0);
+}
+
+/** Every task an item draws, in order. */
+export function statusItemTasks(item: StatusItem): Task[] {
+  return item.kind === "task" ? [item.task] : item.tasks;
 }

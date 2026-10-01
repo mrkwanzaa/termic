@@ -5,6 +5,7 @@ import {
   parseStatusBucketCollapsed,
   statusBucketCollapsedByDefault,
   statusBuckets,
+  statusItemTasks,
 } from "./sidebarStatus";
 import type { BoardTaskFacts } from "./taskBoardState";
 import type { WorkStatePrefs } from "./taskWorkState";
@@ -32,7 +33,7 @@ const F = {
 } satisfies Record<string, BoardTaskFacts>;
 
 const ids = (groups: ReturnType<typeof statusBuckets>) =>
-  Object.fromEntries(groups.map(g => [g.bucket, g.tasks.map(t => t.id)]));
+  Object.fromEntries(groups.map(g => [g.bucket, g.items.flatMap(statusItemTasks).map(t => t.id)]));
 
 describe("statusBuckets", () => {
   it("files each task under its board column, buckets in display order", () => {
@@ -79,6 +80,41 @@ describe("statusBuckets", () => {
     const tasks = [task("a", "web", { group: g }), task("b", "web"), task("c", "web", { group: g })];
     const facts = { a: F.settled, b: F.settled, c: F.settled };
     expect(ids(statusBuckets([project("web")], tasks, facts, {}, prefsOn)).settled).toEqual(["a", "c", "b"]);
+  });
+
+  it("keeps a task group whole, in the bucket of its most urgent member", () => {
+    // One member blocked on the user, one never started, one settled: the
+    // group goes under Needs attention as one unit, every member with it.
+    const g = { id: "lead", color: "teal" };
+    const tasks = [
+      task("lead", "web", { group: g }), task("loose", "web"),
+      task("worker", "web", { group: g }), task("idle", "web", { group: g }),
+    ];
+    const facts = { lead: F.settled, loose: F.settled, worker: F.attention, idle: F.untouched };
+    const groups = statusBuckets([project("web")], tasks, facts, {}, prefsOn);
+    expect(ids(groups)).toEqual({ attention: ["lead", "worker", "idle"], settled: ["loose"] });
+    const attention = groups.find(x => x.bucket === "attention")!;
+    expect(attention.items.map(i => i.kind)).toEqual(["group"]);
+    expect(attention.items[0].kind === "group" && attention.items[0].group.id).toBe("lead");
+  });
+
+  it("counts task rows, group members included", () => {
+    const g = { id: "a" };
+    const tasks = [task("a", "web", { group: g }), task("b", "web", { group: g }), task("c", "web")];
+    const facts = { a: F.working, b: F.settled, c: F.working };
+    const working = statusBuckets([project("web")], tasks, facts, {}, prefsOn).find(x => x.bucket === "working")!;
+    expect(working.items.length).toBe(2);
+    expect(working.count).toBe(3);
+  });
+
+  it("draws a legacy cross-project group as plain rows, as the tree does", () => {
+    // The same group id in two projects, one member each: the tree treats
+    // both as strays (crossProjectStrays) and draws them loose.
+    const g = { id: "x" };
+    const tasks = [task("x", "web", { group: g }), task("y", "api", { group: g })];
+    const facts = { x: F.settled, y: F.settled };
+    const settled = statusBuckets([project("web"), project("api")], tasks, facts, {}, prefsOn)[0];
+    expect(settled.items.map(i => i.kind)).toEqual(["task", "task"]);
   });
 
   it("skips archived tasks and tasks whose project is not in the list", () => {

@@ -519,6 +519,19 @@ task whose project left the profile is skipped exactly as the tree skips it,
 and a row never shuffles inside its bucket; it moves only when its bucket
 changes. The per-project task filter (#324) does not apply here.
 
+**Task groups** draw the way the tree draws them: a caption in the group's
+colour (with the project name, which its members then drop) and the members
+behind a rail of the same colour. A group stays ONE unit, in the bucket of its
+most urgent member, in bucket order, so a settled lead sits under Needs
+attention while one of its workers asks something; every member keeps its own
+badge, so the row that put the group there says so. This is a layout rule over
+the board's buckets, not a state: each task's own bucket is still
+`boardColumnFromFacts`. A bucket's count is task rows, members included. The
+caption does not fold, rename or open a menu, and it carries
+`data-status-group-id`, never the tree's `data-task-group-id` (the task drag
+hit-tests that one). A legacy cross-project group draws as plain rows, as in
+the tree.
+
 `TaskRow` is not reused: its rename and auto-expand effects would run twice
 per task, and every auto-expand would be a second whole-state write.
 
@@ -550,8 +563,9 @@ rewrite re-renders no status row. `selectorFanout.test.ts` pins all of it.
 
 ### Not built
 
-Batches (a spawn tree via `spawned_by` drawn as one unit across projects, in
-the bucket of its most urgent member), a count on the compact rail, and drops
+Batches ACROSS projects (a spawn tree via `spawned_by`, drawn as one unit in
+the bucket of its most urgent member: the task-group rule one level up), a
+count on the compact rail, and drops
 as commands (`boardDropCommand` is reusable once there is a vertical hit
 test). Still open: whether a finished turn you have not looked at belongs in
 Needs attention (the title-bar pill says yes, the board says Settled), and

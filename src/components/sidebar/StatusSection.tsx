@@ -35,8 +35,9 @@ import { TaskPrBadge } from "@/components/TaskPrBadge";
 import { cn } from "@/lib/utils";
 import { taskLabel } from "@/lib/taskLabel";
 import { isStatusBucketCollapsed, statusBuckets, type StatusBucket } from "@/lib/sidebarStatus";
+import { groupColorCss, groupLabel } from "@/lib/taskGroups";
 import type { WorkStatePrefs } from "@/lib/taskWorkState";
-import type { Agent, Task } from "@/lib/types";
+import type { Agent, Task, TaskGroup } from "@/lib/types";
 
 /** Literal keys, so usedKeys.test.ts can see them. The board's own labels:
  *  a bucket and its column must not be called two different things. */
@@ -96,7 +97,7 @@ export function StatusSection() {
       </div>
       {groups.map(g => {
         const open = !isStatusBucketCollapsed(g.bucket, bucketCollapsed);
-        const count = g.tasks.length;
+        const count = g.count;
         const countLabel = count === 1
           ? t("statusBucketCount_one", { count })
           : t("statusBucketCount_other", { count });
@@ -122,19 +123,72 @@ export function StatusSection() {
                 {count}
               </span>
             </button>
-            {open && g.tasks.map(w => (
+            {open && g.items.map(item => item.kind === "task" ? (
               <StatusTaskRow
-                key={w.id}
-                task={w}
-                projectName={projectName.get(w.project_id) ?? ""}
+                key={item.task.id}
+                task={item.task}
+                projectName={projectName.get(item.task.project_id) ?? ""}
                 agents={agents}
                 useBranchAsTaskName={useBranchAsTaskName}
                 workPrefs={workPrefs}
               />
+            ) : (
+              <StatusGroupBlock
+                key={`group:${item.group.id}`}
+                group={item.group}
+                label={groupLabel(item.group, tasks, t)}
+                projectName={projectName.get(item.tasks[0]?.project_id ?? "") ?? ""}
+              >
+                {item.tasks.map(w => (
+                  <StatusTaskRow
+                    key={w.id}
+                    task={w}
+                    projectName=""
+                    agents={agents}
+                    useBranchAsTaskName={useBranchAsTaskName}
+                    workPrefs={workPrefs}
+                  />
+                ))}
+              </StatusGroupBlock>
             ))}
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** A task group, drawn the way the tree draws one: a caption in the group's
+ *  colour and its members behind a rail of the same colour, at the same
+ *  offsets as TaskGroupBlock. Lighter than that block: no fold, no rename, no
+ *  menu, no drag. The project name moves to the caption, since a group lives
+ *  in one project. Carries `data-status-group-id`, never the tree's
+ *  `data-task-group-id`, which the task drag hit-tests. */
+function StatusGroupBlock({ group, label, projectName, children }: {
+  group: TaskGroup;
+  label: string;
+  projectName: string;
+  children: React.ReactNode;
+}) {
+  const color = groupColorCss(group);
+  return (
+    <div data-status-group-id={group.id} className="flex flex-col">
+      <div
+        data-testid="status-group-caption"
+        className="ml-3 flex h-[var(--task-row-h)] select-none items-center gap-1.5 px-1 text-[13px] font-medium"
+        style={{ color }}
+      >
+        {/* The width of a row's agent glyph, so the caption's label lines up
+            with the loose rows' labels, as the tree's does behind its chevron. */}
+        <span aria-hidden className="h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0 shrink truncate">{label}</span>
+        {projectName && (
+          <span className="min-w-0 shrink-[2] truncate text-[11.5px] font-normal text-[var(--color-fg-faint)]">{projectName}</span>
+        )}
+      </div>
+      <div data-status-group-rail className="ml-6 border-l-2" style={{ borderColor: color }}>
+        <div className="-ml-1.5">{children}</div>
+      </div>
     </div>
   );
 }
@@ -191,8 +245,11 @@ const StatusTaskRow = memo(function StatusTaskRow({ task: w, projectName, agents
         {label}
       </span>
       {/* Which project, since a bucket mixes them. Faint and shrinks first:
-          the task's own name is what the row is for. */}
-      <span className="min-w-0 shrink-[2] truncate text-[11.5px] text-[var(--color-fg-faint)]">{projectName}</span>
+          the task's own name is what the row is for. A group member has it
+          on its caption instead. */}
+      {projectName && (
+        <span className="min-w-0 shrink-[2] truncate text-[11.5px] text-[var(--color-fg-faint)]">{projectName}</span>
+      )}
       <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-1">
         <TaskPrBadge task={w} testId="status-pr-badge" />
         <span className="flex h-[18px] w-[18px] items-center justify-center">
