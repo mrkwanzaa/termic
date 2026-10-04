@@ -146,7 +146,8 @@ start another agent beside you (`tab`); launch new tasks with their own agents \
 another project is linked to yours instead), a block you name for the \
 batch of work with `group --name`; prompt another task's agent (`send`) and \
 read what it produced (`logs`, `result`); retitle your own task \
-(`rename`); and keep notes, plans, findings, logs and reports the user \
+(`rename`); label your own tab with what you are working on, shown on \
+the task's sidebar row (`prop ticket ABC-1`); and keep notes, plans, findings, logs and reports the user \
 should READ in a scratchpad (`scratchpad new`, `scratchpad write`), a tab \
 in your task that updates live and stays out of git: use one instead of \
 dropping temporary .md files into the repo. Coordinate by prompting \
@@ -167,7 +168,8 @@ Quick start, from inside a task (your own task is the default target):
   termic scratchpad new --title \"<title>\" -c \"<text>\"    create a scratchpad, prints its id
   termic scratchpad write <id> --append -c \"<text>\"      update it (omit -c to read stdin)
   termic new <name> -p \"<prompt>\"                        launch a new task with its agent
-  termic group --name \"<what this batch is>\"              name the group your new tasks join"
+  termic group --name \"<what this batch is>\"              name the group your new tasks join
+  termic prop ticket ABC-1                                label your tab on the sidebar row"
     };
 }
 
