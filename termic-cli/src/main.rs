@@ -16,5 +16,17 @@ fn main() {
     if args.get(1).is_some_and(|a| a == "hook-emit") {
         std::process::exit(termic_cli::hook_emit(args.get(2).map(std::path::Path::new)));
     }
-    std::process::exit(termic_cli::run());
+    // On a thread with an 8 MB stack, the size macOS and Linux give the main
+    // thread. Windows gives it 1 MB, and building the clap command tree for
+    // `help --json` already sat at that edge: a debug CLI on main overflowed
+    // at 900 KB, and one more verb (`prop`, GH #358) pushed it over 1 MB,
+    // so `help --json` died with a stack overflow on Windows only.
+    // Reproduce on a Mac with `ulimit -s 1024`.
+    let code = std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(termic_cli::run)
+        .expect("spawn the CLI thread")
+        .join()
+        .unwrap_or(1);
+    std::process::exit(code);
 }

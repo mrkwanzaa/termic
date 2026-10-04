@@ -48,6 +48,7 @@ import { TaskPrBadge } from "@/components/TaskPrBadge";
 import { GroupActionsMenuItems } from "./GroupActionsMenuItems";
 import { ProjectFilterBar, ProjectFilterToggle } from "./ProjectTaskFilter";
 import { filterTasks, isFilterActive } from "@/lib/taskFilter";
+import { collectTaskProps, collectedText } from "@/lib/tabProps";
 import { TaskGroupBlock } from "./TaskGroupBlock";
 import { SpawnedFromMark, SpawnLinksOverlay } from "./SpawnLinks";
 import { crossProjectStrays, flattenSegments, groupColorCss as taskGroupColorCss, groupLabel, layoutTaskList, liveGroups, nextGroupColor } from "@/lib/taskGroups";
@@ -2592,6 +2593,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   const stopTask = useApp(s => s.stopTask);
   // Sidebar only shows main-pane terminal tabs; split-pane tabs live in SplitView.
   const terminalTabs = tabs.filter((t): t is TerminalTab => t.type === "terminal" && !t.paneId);
+  const collectedProps = collectTaskProps(tabs);
   const isLoaded = terminalTabs.some(t => t.ptyId);
   // The run controls the COLLAPSED header row carries, mirroring the child rows
   // that are not rendered while collapsed: one button per run tab, each with
@@ -2905,6 +2907,20 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               </span>
               <TaskLocationIcon isMainCheckout={w.is_main_checkout} size="h-3.5 w-3.5" />
               {w.spawned_by && <SpawnedFromMark task={w} />}
+              {/* The task's tab properties, collected (GH #358): after the
+                  name on the LEFT, never in the trailing badge/kebab slot.
+                  Shrinks before the name does; the title lists every value
+                  with the tab it came from. */}
+              {collectedProps.length > 0 && (
+                <span
+                  data-testid="task-props"
+                  title={tabs
+                    .filter((x): x is TerminalTab => x.type === "terminal" && !!x.props?.length)
+                    .flatMap(x => x.props!.map(p => `${p.key}: ${p.value} (${x.title || x.cli})`))
+                    .join("\n")}
+                  className="min-w-0 shrink-[3] truncate text-[11px] text-[var(--color-fg-dim)]"
+                >{collectedText(collectedProps)}</span>
+              )}
             </>
           )}
           {/* PR/MR state: tiny pull-request glyph colored by live state
@@ -3457,6 +3473,15 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 className="min-w-0 flex-1 truncate"
                 title={tab.delegatedWork ? delegatedTitle(tab.delegatedWork, tChrome) : undefined}
               >{title}</span>
+            )}
+            {/* This tab's own properties (GH #358), so it is visible which
+                agent set what; the task row above shows them collected. */}
+            {!isTabRenaming && !!tab.props?.length && (
+              <span
+                data-testid="tab-props"
+                title={tab.props.map(p => `${p.key}: ${p.value}`).join("\n")}
+                className="min-w-0 max-w-[45%] shrink truncate text-[11px] text-[var(--color-fg-dim)]"
+              >{tab.props.map(p => p.value).join(" · ")}</span>
             )}
             {/* Run tabs (GH #54): the same two controls the tab pill carries,
                 because a run is otherwise invisible (and unstoppable) from

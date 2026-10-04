@@ -64,7 +64,9 @@ function sameFacts(a: SidebarTaskFacts, b: SidebarTaskFacts): boolean {
     && a.done === b.done
     && a.liveDefault === b.liveDefault
     && a.titles.length === b.titles.length
-    && a.titles.every((t, i) => t === b.titles[i]);
+    && a.titles.every((t, i) => t === b.titles[i])
+    && a.propValues.length === b.propValues.length
+    && a.propValues.every((v, i) => v === b.propValues[i]);
 }
 
 /** One per mounted Sidebar (the hover reveal mounts two). Returns the SAME

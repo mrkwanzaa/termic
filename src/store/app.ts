@@ -23,6 +23,7 @@ import { failCliQueuedPromptsInTabs } from "@/lib/cliPromptReports";
 import { hydrateScheduled, scheduledOf } from "@/lib/scheduledQueue";
 import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { agentDisplayName, STICKY_DONE_MS } from "@/lib/agents";
+import { applyProp } from "@/lib/tabProps";
 import { visitMayClearWorking } from "@/lib/taskBoardState";
 import { scoped } from "@/lib/profileScope";
 import { pruneMemberSets } from "@/components/dialogs/memberModes";
@@ -440,6 +441,11 @@ export interface AppState {
   flushAgentQueue: (taskId: string, tabId: string) => void;
   renameTab: (taskId: string, tabId: string, title: string) => void;
   clearTabCustomTitle: (taskId: string, tabId: string) => void;
+  /** `termic prop` (GH #358): set `key` to `value` on one tab ("" removes
+   *  it). Returns "too_many" without writing when it would add a key past
+   *  the per-tab limit, "unknown_tab" when the tab is gone, else "ok". An
+   *  unchanged value writes nothing. */
+  setTabProp: (taskId: string, tabId: string, key: string, value: string) => "ok" | "too_many" | "unknown_tab";
   /** Update the tab's PTY-driven `OSC 0/2` title. No-op when the user
    *  has manually renamed the tab (`customTitle === true`). */
   setTabLiveTitle: (taskId: string, tabId: string, liveTitle: string) => void;
@@ -571,6 +577,9 @@ function durablePersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
       // in its pane on relaunch (the run script re-fires, like custom tabs).
       run_member: t.runTab ? t.runTab.member : null,
       pinned: !!t.pinned,
+      // The store is the ONLY writer of tab properties (GH #358), so the
+      // full list rides every sync and the disk copy simply follows it.
+      ...(t.props?.length ? { props: t.props } : {}),
     }));
 }
 
@@ -1916,6 +1925,7 @@ export const useApp = create<AppState>((set, get) => ({
         ...(unattendedRestore && pt.is_default ? { unattended: true } : {}),
         ...(pt.pinned ? { pinned: true } : {}),
         ...(pt.scheduled?.length ? { queue: hydrateScheduled(pt.scheduled) } : {}),
+        ...(pt.props?.length ? { props: pt.props } : {}),
         // idle: restored run tabs keep their spot but never auto-fire the
         // script — the user presses play (RunPane placeholder / pill).
         ...(pt.run_member != null ? { runTab: { member: pt.run_member, previewUrl: null, idle: true } } : {}),
@@ -1963,6 +1973,7 @@ export const useApp = create<AppState>((set, get) => ({
               ...(pt.session_id ? { sessionId: pt.session_id } : {}),
               ...(pt.agent_args?.length ? { agentArgs: pt.agent_args } : {}),
               ...(pt.scheduled?.length ? { queue: hydrateScheduled(pt.scheduled) } : {}),
+              ...(pt.props?.length ? { props: pt.props } : {}),
                     ...(pt.run_member != null ? { runTab: { member: pt.run_member, previewUrl: null, idle: true } } : {}),
             });
           }
@@ -2792,6 +2803,28 @@ export const useApp = create<AppState>((set, get) => ({
     get().syncDurableTabs(taskId);
   },
 
+  setTabProp: (taskId, tabId, key, value) => {
+    const list = get().tabs[taskId] ?? [];
+    const tab = list.find(t => t.id === tabId);
+    if (!tab || tab.type !== "terminal") return "unknown_tab";
+    const cur = (tab as TerminalTab).props;
+    const next = applyProp(cur, key, value, Date.now());
+    if (next === "too_many") return "too_many";
+    // Unchanged: no store write, no durable sync (bear trap 8).
+    if (next === cur) return "ok";
+    set(s => ({
+      tabs: {
+        ...s.tabs,
+        [taskId]: (s.tabs[taskId] ?? []).map(t => {
+          if (t.id !== tabId) return t;
+          const { props: _old, ...rest } = t as TerminalTab;
+          return (next ? { ...rest, props: next } : rest) as Tab;
+        }),
+      },
+    }));
+    get().syncDurableTabs(taskId);
+    return "ok";
+  },
   clearTabCustomTitle: (taskId, tabId) => {
     set(s => {
       const list = s.tabs[taskId] || [];

@@ -563,6 +563,37 @@ pub fn prompts_text(prompts: &[PromptEntry]) -> String {
 /// One line naming the tab and, crucially, its id: that id is the stable
 /// selector, so printing it is what lets a script address the tab it just
 /// made instead of racing an index or an agent-authored title.
+/// `prop`: the collected view (what the task row shows) and each tab's own
+/// properties. `wrote` is a set/clear, which leads with the tab it touched.
+pub fn prop_text(p: &termic_proto::PropData, wrote: bool) -> String {
+    let mut out = String::new();
+    if wrote {
+        if let Some(tab) = &p.tab_id {
+            out.push_str(&format!("Updated tab {tab} in {}.\n", p.task_id));
+        }
+    }
+    if p.collected.is_empty() {
+        out.push_str("No properties.");
+        return out;
+    }
+    out.push_str("Task:\n");
+    for c in &p.collected {
+        out.push_str(&format!("  {}: {}\n", c.key, c.values.join(", ")));
+    }
+    for t in &p.tabs {
+        let label = if t.title.is_empty() || t.title.eq_ignore_ascii_case(&t.cli) {
+            t.cli.clone()
+        } else {
+            format!("{} ({})", t.title, t.cli)
+        };
+        out.push_str(&format!("Tab {} {label}:\n", t.tab_id));
+        for e in &t.props {
+            out.push_str(&format!("  {}: {}\n", e.key, e.value));
+        }
+    }
+    out.trim_end().to_string()
+}
+
 /// `tab --tab X --title Y`: what the tab is called now. `reset` is the
 /// `--title ""` form, where the title printed is the automatic one.
 pub fn tab_rename_text(t: &TabData, reset: bool) -> String {
@@ -758,6 +789,7 @@ mod tests {
         queued: u32,
     ) -> TabStatus {
         TabStatus {
+            props: Default::default(),
             agent_args: Vec::new(),
             id: format!("tab-{index}"),
             index,
@@ -773,6 +805,7 @@ mod tests {
 
     fn summary() -> TaskSummary {
         TaskSummary {
+            props: Default::default(),
             id: "id-1".into(),
             name: "fix-auth".into(),
             project: "web".into(),

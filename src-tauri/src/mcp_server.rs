@@ -755,7 +755,7 @@ fn rpc_response(server: &McpServer, req: &HttpRequest) -> (u16, Vec<u8>) {
 /// (`agent_overview!` in termic-cli/src/lib.rs): keep the two in step. The
 /// point is the first sentence: an agent that does not realise it is running
 /// INSIDE a Termic task never thinks to start siblings or report back.
-const MCP_INSTRUCTIONS: &str = "Termic runs coding agents side by side, each in its own task (a git worktree, or the project's main checkout, with its own terminal), listed in the app's sidebar. If your environment has TERMIC_TASK_ID, you are one of those agents, running INSIDE a Termic task right now, and these tools drive the app around you. From there you can: launch new tasks with their own agents (task_new; in your project they join your task's group in the sidebar, in another they are linked to your task instead; you name the group for the batch of work with task_group); prompt another task's agent (task_send) and read what it produced (task_log, task_result); open another agent tab in a task (task_tab); retitle your own task (task_rename); and keep notes, plans, findings, logs and reports the user should READ in scratchpads (scratchpad_new, scratchpad_write): a tab in your task that updates live and stays out of git, so use one instead of dropping temporary .md files into the repo. Coordinate by prompting each other rather than blocking: end a prompt with how the other agent should report back to you (a task_send to your task id). Sign every prompt you send another agent, first line and last: [message from agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID>] ... -- agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID>, with the values written out (there is no shell here to fill them in; TERMIC_TASK holds your task name). A prompt that arrives WITH that header came from another agent, not the user: the id is where to reply. When Termic set this client up, it tells the server which task you run in, so task_rename, task_group and task_tab default to your own task, exactly like the CLI; name other tasks explicitly. Without TERMIC_TASK_ID you are driving Termic from outside it.";
+const MCP_INSTRUCTIONS: &str = "Termic runs coding agents side by side, each in its own task (a git worktree, or the project's main checkout, with its own terminal), listed in the app's sidebar. If your environment has TERMIC_TASK_ID, you are one of those agents, running INSIDE a Termic task right now, and these tools drive the app around you. From there you can: launch new tasks with their own agents (task_new; in your project they join your task's group in the sidebar, in another they are linked to your task instead; you name the group for the batch of work with task_group); prompt another task's agent (task_send) and read what it produced (task_log, task_result); open another agent tab in a task (task_tab); retitle your own task (task_rename); label your tab with what you are working on, shown on the task's sidebar row (task_prop, e.g. ticket=ABC-1; pass your TERMIC_TAB_ID as tab); and keep notes, plans, findings, logs and reports the user should READ in scratchpads (scratchpad_new, scratchpad_write): a tab in your task that updates live and stays out of git, so use one instead of dropping temporary .md files into the repo. Coordinate by prompting each other rather than blocking: end a prompt with how the other agent should report back to you (a task_send to your task id). Sign every prompt you send another agent, first line and last: [message from agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID>] ... -- agent:<your agent> task:<your task name> id:<your TERMIC_TASK_ID>, with the values written out (there is no shell here to fill them in; TERMIC_TASK holds your task name). A prompt that arrives WITH that header came from another agent, not the user: the id is where to reply. When Termic set this client up, it tells the server which task you run in, so task_rename, task_group, task_tab and task_prop default to your own task, exactly like the CLI; name other tasks explicitly. Without TERMIC_TASK_ID you are driving Termic from outside it.";
 
 /// UnsupportedProtocolVersionError. The `supported` list has to be
 /// machine-readable in `data`: that is what a client retries from, and
@@ -1434,6 +1434,29 @@ const TOOLS: &[ToolDef] = &[
         }),
     },
     ToolDef {
+        name: "task_prop",
+        cli_verb: "prop",
+        description: "Tab properties shown on the task's sidebar row (ticket=ABC-1). key+value+tab sets (\"\" clears); otherwise lists.",
+        params: &[
+            // A flag on the CLI (`prop <key> <value>` takes the positionals).
+            ParamDef { name: "task", json_type: "string", required: false, description: "Omitted: your own task.", cli_flag: Some("--task") },
+            P_PROJECT,
+            ParamDef { name: "key", json_type: "string", required: false, description: "[a-z0-9_-], max 32.", cli_flag: Some("key") },
+            ParamDef { name: "value", json_type: "string", required: false, description: "One line, max 40.", cli_flag: Some("value") },
+            ParamDef { name: "tab", json_type: "string", required: false, description: "Tab id, index or title.", cli_flag: Some("--tab") },
+        ],
+        destructive: false,
+        read_only: false,
+        build: |a| Ok(Command::Prop {
+            task: Some(need_str(a, "task")?),
+            project: arg_str(a, "project")?,
+            tab: arg_str(a, "tab")?,
+            key: arg_str(a, "key")?,
+            value: arg_str(a, "value")?,
+            cwd: None,
+        }),
+    },
+    ToolDef {
         name: "task_agents",
         cli_verb: "agents",
         description: "List the agent CLIs this app can run: the ids task_new and task_tab accept, with whether each is installed and usable. Without this a caller has to guess an agent id and read the refusal.",
@@ -1634,7 +1657,7 @@ fn tools_call(server: &McpServer, id: serde_json::Value, params: &serde_json::Va
 /// Tools whose `task` defaults to the caller's own, as the CLI's `rename`,
 /// `group` and `tab` default to `$TERMIC_TASK_ID`.
 const SELF_DEFAULT_TOOLS: &[&str] = &[
-    "task_rename", "task_group", "task_tab",
+    "task_rename", "task_group", "task_tab", "task_prop",
     "scratchpad_new", "scratchpad_write", "scratchpad_read", "scratchpad_list",
 ];
 
@@ -3165,7 +3188,10 @@ mod tests {
         // without a sixth tab tool. Descriptions cut to one clause each.
         // 17800: task_tab model/args, preserving CLI parity without adding
         // provider-specific model catalogues or a separate launch tool.
-        const RECORDED: usize = 17800;
+        // 18400: task_prop (GH #358), the `termic prop` verb: tab properties
+        // agents set and the sidebar row collects. One tool for set, clear
+        // and list, descriptions cut to a clause, the limits by name only.
+        const RECORDED: usize = 18400;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"
@@ -3292,6 +3318,24 @@ mod tests {
         // The id-bearing kinds say which field is missing.
         let err = build(serde_json::json!({ "task": "t", "kind": "agent" })).unwrap_err();
         assert!(err.contains("agentId"), "{err}");
+    }
+
+    #[test]
+    fn task_prop_sets_clears_and_lists() {
+        let tool = TOOLS.iter().find(|t| t.name == "task_prop").unwrap();
+        let build = |v: serde_json::Value| (tool.build)(v.as_object().unwrap());
+        let c = build(serde_json::json!({ "task": "t", "tab": "2", "key": "ticket", "value": "ABC-1" })).unwrap();
+        assert!(matches!(&c, Command::Prop { tab: Some(tab), key: Some(k), value: Some(v), .. }
+            if tab == "2" && k == "ticket" && v == "ABC-1"));
+        // "" survives as the clear.
+        let c = build(serde_json::json!({ "task": "t", "tab": "2", "key": "ticket", "value": "" })).unwrap();
+        assert!(matches!(&c, Command::Prop { value: Some(v), .. } if v.is_empty()));
+        // Bare: a list.
+        let c = build(serde_json::json!({ "task": "t" })).unwrap();
+        assert!(matches!(c, Command::Prop { tab: None, key: None, value: None, .. }));
+        // It defaults to the caller's task, like the CLI.
+        assert!(SELF_DEFAULT_TOOLS.contains(&"task_prop"));
+        assert_eq!(tool_entry(tool)["annotations"]["destructiveHint"], false);
     }
 
     #[test]
@@ -3441,7 +3485,7 @@ mod tests {
         // Quiescent and capable: wait can settle immediately.
         host.push_states(&[(
             "w3",
-            crate::cli_server::TaskAgentState {
+            crate::cli_server::TaskAgentState { props: Default::default(),
                 state: "done".into(),
                 tabs: 1,
                 queued: 0,

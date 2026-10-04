@@ -83,7 +83,11 @@ use std::io::{self, BufRead, Read, Write};
 /// that then addresses `--tab <title>` would fail far from the cause.
 /// v17: per-tab launch arguments. Older servers would silently discard
 /// the requested model/reasoning, so a matching app and CLI are required.
-pub const PROTOCOL_VERSION: u32 = 17;
+///
+/// v18 (GH #358): the `prop` verb sets, clears and lists the key/value
+/// properties agents put on their tabs, and `status` carries them (per
+/// tab, and the task's collected view).
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// The argv `new` pins to a task's agent: the generic `--arg` values, then
 /// `--model <m>` LAST, so an explicit model wins when the agent parses
@@ -118,6 +122,41 @@ pub fn tab_title_problem(title: &str) -> Option<&'static str> {
         return Some(
             "a title cannot be a number: --tab <n> selects by position, so that tab could never be reached by its title",
         );
+    }
+    None
+}
+
+/// Property limits (GH #358). Values come from agents, so they are
+/// validated, not escaped; the sidebar row is narrow.
+pub const PROP_KEY_MAX: usize = 32;
+pub const PROP_VALUE_MAX: usize = 40;
+pub const PROP_KEYS_PER_TAB: usize = 8;
+
+/// Why `key` cannot be a property key: `[a-z0-9][a-z0-9_-]*`, at most
+/// `PROP_KEY_MAX` characters.
+pub fn prop_key_problem(key: &str) -> Option<String> {
+    let first_ok = key.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    let rest_ok = key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    if !first_ok || !rest_ok {
+        return Some(format!(
+            "property key \"{key}\" must be lowercase letters, digits, - and _, starting with a letter or digit"
+        ));
+    }
+    if key.chars().count() > PROP_KEY_MAX {
+        return Some(format!("a property key is longer than {PROP_KEY_MAX} characters"));
+    }
+    None
+}
+
+/// Why `value` cannot be a property value: one line, no control
+/// characters, at most `PROP_VALUE_MAX` characters once trimmed. "" (or
+/// only spaces) is valid: it clears the key.
+pub fn prop_value_problem(value: &str) -> Option<String> {
+    if value.chars().any(char::is_control) {
+        return Some("a property value must be one line, with no control characters".into());
+    }
+    if value.trim().chars().count() > PROP_VALUE_MAX {
+        return Some(format!("a property value is longer than {PROP_VALUE_MAX} characters"));
     }
     None
 }
@@ -454,6 +493,26 @@ pub enum Command {
         /// The new title. "" clears the rename, and the tab goes back to
         /// its automatic, agent-driven title.
         title: String,
+        /// The CLI's working directory, for worktree-first resolution.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// v18 (GH #358): a tab's key/value properties. With `key` and `value`,
+    /// set it on the tab `tab` resolves to ("" clears it); otherwise list
+    /// the task's properties (`key` filters). Replies `ReplyData::Prop`.
+    Prop {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        /// Tab selector (id, 1-based strip index, or title/cli). Required to
+        /// set; the CLI fills it from `$TERMIC_TAB_ID`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tab: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
         /// The CLI's working directory, for worktree-first resolution.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
@@ -804,6 +863,7 @@ pub enum ReplyData {
     Prompts(PromptsData),
     Tab(TabData),
     TabClose(TabCloseData),
+    Prop(PropData),
     Quit(QuitData),
     Archive(ArchiveData),
     Rename(RenameData),
@@ -819,6 +879,43 @@ pub enum ReplyData {
     #[serde(rename = "result")]
     LastResult(ResultData),
     Attach(AttachData),
+}
+
+/// One property as a tab carries it (GH #358).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PropEntry {
+    pub key: String,
+    pub value: String,
+}
+
+/// One key of a task's collected view: the distinct values its tabs hold,
+/// in tab strip order. Keys come in the order each was first set anywhere
+/// in the task.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CollectedProp {
+    pub key: String,
+    pub values: Vec<String>,
+}
+
+/// A strip tab and the properties it holds.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TabProps {
+    pub tab_id: String,
+    pub cli: String,
+    pub title: String,
+    pub props: Vec<PropEntry>,
+}
+
+/// `prop`'s reply: the task's properties after the write (if any). Only
+/// tabs holding at least one property are listed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PropData {
+    pub task_id: String,
+    /// The tab a set/clear landed on; absent for a plain list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<String>,
+    pub tabs: Vec<TabProps>,
+    pub collected: Vec<CollectedProp>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1193,6 +1290,11 @@ pub struct TaskSummary {
     /// ignores it or reads none), so no protocol bump.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawned_by: Option<String>,
+    /// v18 (GH #358): the task's collected tab properties (see
+    /// `CollectedProp`). Empty when no tab holds any, or when the UI has
+    /// not reported the task's tabs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub props: Vec<CollectedProp>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1259,6 +1361,9 @@ pub struct TabStatus {
     pub live: bool,
     /// Prompts queued behind the current turn (send's queue-on-busy).
     pub queued: u32,
+    /// v18 (GH #358): the tab's own properties.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub props: Vec<PropEntry>,
 }
 
 /// How `send` got the prompt to the agent. Additive: new modes may
@@ -1911,6 +2016,20 @@ mod tests {
                 yes: false,
                 cwd: Some("/tasks/web/x".into()),
             },
+            // v18 (GH #358): set, clear and list properties.
+            Command::Prop {
+                task: Some("fix-auth".into()),
+                project: None,
+                tab: Some("tab-1".into()),
+                key: Some("ticket".into()),
+                value: Some("ABC-1".into()),
+                cwd: None,
+            },
+            Command::Prop {
+                task: None, project: None, tab: Some("2".into()),
+                key: Some("status".into()), value: Some(String::new()), cwd: None,
+            },
+            Command::Prop { task: None, project: None, tab: None, key: None, value: None, cwd: Some("/t".into()) },
             Command::Agents,
             Command::Prompts { selector: None },
             Command::Prompts { selector: Some("builtin:review".into()) },
@@ -2031,6 +2150,7 @@ mod tests {
     #[test]
     fn roundtrip_every_reply() {
         let summary = TaskSummary {
+            props: Default::default(),
             id: "w1".into(),
             name: "fix-auth".into(),
             project: "web".into(),
@@ -2072,6 +2192,7 @@ mod tests {
                             is_default: true,
                             live: true,
                             queued: 1,
+                            props: vec![PropEntry { key: "ticket".into(), value: "ABC-1".into() }],
                         },
                         TabStatus {
                             agent_args: Vec::new(),
@@ -2084,6 +2205,7 @@ mod tests {
                             is_default: false,
                             live: true,
                             queued: 0,
+                            props: Vec::new(),
                         },
                     ]),
                 },
@@ -2096,6 +2218,17 @@ mod tests {
                     dirty_files: None,
                     tabs: None,
                 },
+            }),
+            ReplyData::Prop(PropData {
+                task_id: "w1".into(),
+                tab_id: Some("t1".into()),
+                tabs: vec![TabProps {
+                    tab_id: "t1".into(),
+                    cli: "claude".into(),
+                    title: "claude".into(),
+                    props: vec![PropEntry { key: "ticket".into(), value: "ABC-1".into() }],
+                }],
+                collected: vec![CollectedProp { key: "ticket".into(), values: vec!["ABC-1".into()] }],
             }),
             ReplyData::Open(OpenData { task: Some(summary.clone()), raised: true }),
             ReplyData::Open(OpenData { task: None, raised: true }),
@@ -2505,6 +2638,23 @@ mod tests {
         assert!(tab_title_problem("   ").unwrap().contains("blank"));
         assert!(tab_title_problem("2").unwrap().contains("number"));
         assert!(tab_title_problem(" 12 ").unwrap().contains("number"));
+    }
+
+    #[test]
+    fn prop_keys_and_values_are_validated_not_escaped() {
+        for ok in ["status", "ticket", "a", "sp-points", "x_1", "2fa"] {
+            assert_eq!(prop_key_problem(ok), None, "{ok}");
+        }
+        for bad in ["", "Status", "-x", "_x", "a b", "a.b", "ă"] {
+            assert!(prop_key_problem(bad).is_some(), "{bad:?}");
+        }
+        assert!(prop_key_problem(&"k".repeat(PROP_KEY_MAX + 1)).unwrap().contains("longer"));
+        assert_eq!(prop_value_problem("ABC-1"), None);
+        assert_eq!(prop_value_problem(""), None, "\"\" clears");
+        assert_eq!(prop_value_problem(&format!("  {}  ", "v".repeat(PROP_VALUE_MAX))), None, "trimmed");
+        assert!(prop_value_problem(&"v".repeat(PROP_VALUE_MAX + 1)).unwrap().contains("longer"));
+        assert!(prop_value_problem("a\nb").unwrap().contains("one line"));
+        assert!(prop_value_problem("a\u{1b}[31m").is_some());
     }
 
     #[test]

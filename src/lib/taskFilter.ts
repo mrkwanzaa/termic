@@ -44,13 +44,25 @@ export interface TaskFilterFacts {
    *  left out: agents rewrite it every second ("thinking...", spinners), and
    *  matching on it would make rows flap in and out of the list. */
   readonly titles: readonly string[];
+  /** Every value of the terminal tabs' properties (GH #358), so typing a
+   *  ticket an agent set finds the task working on it. */
+  readonly propValues: readonly string[];
 }
 
 export function taskFilterFacts(tabs: Tab[]): TaskFilterFacts {
+  const term = tabs.filter((t): t is TerminalTab => t.type === "terminal");
   return {
     notification: taskHasNotification(tabs),
-    titles: tabs.filter((t): t is TerminalTab => t.type === "terminal").map(t => t.title),
+    titles: term.map(t => t.title),
+    propValues: term.flatMap(t => (t.props ?? []).map(p => p.value)),
   };
+}
+
+/** Property values for the text match: the loaded tabs' when there are
+ *  facts, else the persisted tabs' (they carry their properties). */
+function propValues(task: Task, facts: TaskFilterFacts | undefined): readonly string[] {
+  if (facts) return facts.propValues;
+  return (task.persisted_tabs ?? []).flatMap(pt => (pt.props ?? []).map(p => p.value));
 }
 
 /** A task whose tabs are not loaded yet falls back to its persisted tabs,
@@ -65,7 +77,8 @@ export function taskMatchesText(task: Task, facts: TaskFilterFacts | undefined, 
   const needle = text.trim().toLowerCase();
   if (!needle) return true;
   if (task.name.toLowerCase().includes(needle)) return true;
-  return tabTitles(task, facts, agents).some(t => t.toLowerCase().includes(needle));
+  if (tabTitles(task, facts, agents).some(t => t.toLowerCase().includes(needle))) return true;
+  return propValues(task, facts).some(v => v.toLowerCase().includes(needle));
 }
 
 /** Tasks that pass `filter` (both parts AND). The active task always stays:

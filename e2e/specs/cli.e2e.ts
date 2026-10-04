@@ -239,6 +239,131 @@ describe("termic tab: ids are addressable end to end (GH #138 part 2)", () => {
 // while the agent retitles itself (fake-agent drives its OSC title the
 // moment it starts), and `tab --tab X --title Y` renames an open tab, or
 // with "" gives it back its automatic title.
+// GH #358: tab properties. Agents label their OWN tab (`termic prop`), the
+// task's sidebar row shows every tab's values collected after the name, and
+// each tab's row shows its own. Over the real socket and the real CLI binary,
+// with `$TERMIC_TAB_ID` doing what it does inside an agent PTY.
+describe("termic prop: tab properties on the sidebar row (GH #358)", () => {
+  const TASK = "cli-props";
+  let taskId: string;
+  let main: string;
+  let worker: string;
+
+  after(async () => {
+    await browser.execute(() => window.__termic!.useUI.setState({ taskFilters: {} }));
+    if (taskId) await archiveTask(taskId);
+  });
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask(TASK);
+    await waitForClisDetected();
+    const w = await rpc({ cmd: "tab", task: TASK, kind: { tab: "agent", id: "fakeagent" }, title: "worker" });
+    expect(w.ok).toBe(true);
+    worker = w.data.tab_id;
+    main = await browser.execute(
+      (tid) => (window.__termic!.useApp.getState().tabs[tid] ?? []).find((t: any) => t.is_default)!.id as string,
+      taskId,
+    );
+    // Expanded, so the per-tab rows are on screen too.
+    await browser.execute((tid) => window.__termic!.useApp.getState().setTaskCollapsed(tid, false), taskId);
+  });
+
+  const rowText = (sel: string) =>
+    browser.execute(
+      (tid, s) => document.querySelector(`[data-sidebar-task-row="${tid}"] ${s}`)?.textContent ?? null,
+      taskId,
+      sel,
+    );
+  const tabRowProps = () =>
+    browser.execute(
+      (tid) => [...document.querySelectorAll(`[data-sidebar-task-row="${tid}"] [data-testid="tab-props"]`)]
+        .map(e => e.textContent),
+      taskId,
+    );
+  const waitRow = async (want: string | null) => {
+    let last: string | null = null;
+    await browser.waitUntil(async () => (last = await rowText('[data-testid="task-props"]')) === want, {
+      timeout: 8_000,
+      timeoutMsg: `task row props: wanted ${JSON.stringify(want)}, saw ${JSON.stringify(last)}`,
+    });
+  };
+  const prop = (tab: string | null, key: string | null, value: string | null) =>
+    rpc({ cmd: "prop", task: TASK, ...(tab ? { tab } : {}), ...(key ? { key } : {}), ...(value !== null ? { value } : {}) });
+
+  it("collects one key's values from two tabs, in tab order", async () => {
+    expect((await prop(worker, "ticket", "ABC-2")).ok).toBe(true);
+    expect((await prop(main, "ticket", "ABC-1")).ok).toBe(true);
+    await waitRow("ABC-1, ABC-2");
+    // Each tab's own row shows only what IT set.
+    expect((await tabRowProps()).sort()).toEqual(["ABC-1", "ABC-2"]);
+  });
+
+  it("orders keys by first set, and an update keeps its key in place", async () => {
+    expect((await prop(worker, "status", "review")).ok).toBe(true);
+    await waitRow("ABC-1, ABC-2 · review");
+    expect((await prop(worker, "ticket", "ABC-3")).ok).toBe(true);
+    await waitRow("ABC-1, ABC-3 · review");
+  });
+
+  it("writes to the caller's own tab through the real CLI and $TERMIC_TAB_ID", async () => {
+    const stdout = runCli(["--no-launch", "prop", "status", "done"], {
+      TERMIC_DATA_DIR: dataDir, TERMIC_TASK_ID: taskId, TERMIC_TAB_ID: main,
+    });
+    expect(stdout).toContain(`Updated tab ${main}`);
+    const mainProps = await browser.execute(
+      (tid, id) => ((window.__termic!.useApp.getState().tabs[tid] ?? []).find((t: any) => t.id === id) as any)?.props,
+      taskId, main,
+    );
+    expect(mainProps.map((p: any) => [p.key, p.value])).toEqual([["ticket", "ABC-1"], ["status", "done"]]);
+    await waitRow("ABC-1, ABC-3 · done, review");
+    // And the JSON list is what a script reads back.
+    const list = JSON.parse(runCli(["--no-launch", "--json", "prop", "--task", taskId], { TERMIC_DATA_DIR: dataDir }));
+    expect(list.collected).toEqual([
+      { key: "ticket", values: ["ABC-1", "ABC-3"] },
+      { key: "status", values: ["done", "review"] },
+    ]);
+  });
+
+  it("status --json carries the collected view and each tab's own", async () => {
+    await browser.waitUntil(async () => {
+      const st = await rpc({ cmd: "status", task: TASK });
+      return JSON.stringify(st.data?.task?.props ?? []).includes("ABC-3");
+    }, { timeout: 10_000, timeoutMsg: "status never carried the properties" });
+    const st = await rpc({ cmd: "status", task: TASK });
+    const w = st.data.task.tabs.find((t: any) => t.id === worker);
+    expect(w.props).toEqual([{ key: "ticket", value: "ABC-3" }, { key: "status", value: "review" }]);
+  });
+
+  it("refuses what it cannot write, and \"\" clears", async () => {
+    const noTab = await prop(null, "ticket", "x");
+    expect(noTab.ok).toBe(false);
+    expect(noTab.error.code).toBe("bad_request");
+    const badKey = await prop(main, "Bad Key", "x");
+    expect(badKey.ok).toBe(false);
+    expect(badKey.error.code).toBe("bad_request");
+    expect((await prop(main, "status", "")).ok).toBe(true);
+    await waitRow("ABC-1, ABC-3 · review");
+  });
+
+  it("the sidebar filter finds the task by a property value", async () => {
+    const pid = await browser.execute(
+      (tid) => window.__termic!.useApp.getState().tasks.find((t: any) => t.id === tid)!.project_id as string,
+      taskId,
+    );
+    // The active task is always listed, so step off it first.
+    await browser.execute(() => window.__termic!.useApp.getState().setActiveTask(null));
+    const present = () =>
+      browser.execute((tid) => !!document.querySelector(`[data-sidebar-task-id="${tid}"]`), taskId);
+    await browser.execute((p) => window.__termic!.useUI.getState().setTaskFilterText(p, "abc-3"), pid);
+    await browser.waitUntil(present, { timeout: 5_000, timeoutMsg: "a property value did not match" });
+    await browser.execute((p) => window.__termic!.useUI.getState().setTaskFilterText(p, "zzz-no-such"), pid);
+    await browser.waitUntil(async () => !(await present()), { timeout: 5_000, timeoutMsg: "the filter kept a non-match" });
+    await browser.execute((p) => window.__termic!.useUI.getState().setTaskFilterText(p, ""), pid);
+  });
+});
+
 describe("termic tab --title: a title you set is a selector (GH #331)", () => {
   const TASK = "cli-titles";
   let taskId: string;

@@ -17,6 +17,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useApp } from "@/store/app";
 import { isTerminalCli, workDoneCapable } from "@/lib/agents";
 import type { TerminalTab } from "@/lib/types";
+import { collectTaskProps, type CollectedProp } from "@/lib/tabProps";
 
 export interface TaskAgentState {
   /** "working" | "waiting" | "done" | "idle" | "inactive". */
@@ -38,6 +39,9 @@ export interface TaskAgentState {
    *  task nobody has opened this session: the counts above then describe
    *  nothing, and the server reports unknown rather than "no tabs". */
   hydrated: boolean;
+  /** The task's collected tab properties (GH #358), the view the sidebar
+   *  row shows: `list` and `status` report it from here. */
+  props: CollectedProp[];
 }
 
 /** One strip tab, as pushed to the Rust cache. Field names are the wire
@@ -62,6 +66,8 @@ export interface TabAgentState {
   live: boolean;
   /** The tab send/wait/attach/logs target when `--tab` is absent. */
   is_default: boolean;
+  /** The tab's own properties (GH #358), in the order they were set. */
+  props: { key: string; value: string }[];
 }
 
 /** The wire shape for one strip tab. Exported for tests. */
@@ -86,6 +92,7 @@ export function computeTabState(t: TerminalTab, agents: AppState["agents"]): Tab
     capable,
     live: !!t.ptyId,
     is_default: !!t.is_default,
+    props: (t.props ?? []).map(p => ({ key: p.key, value: p.value })),
   };
 }
 
@@ -128,6 +135,7 @@ export function computeAgentStates(s: AppState = useApp.getState()): Record<stri
         capable: false,
         tab_states: [],
         hydrated: loaded !== undefined,
+        props: [],
       };
       continue;
     }
@@ -135,7 +143,10 @@ export function computeAgentStates(s: AppState = useApp.getState()): Record<stri
     const queued = term.reduce((n, t) => n + (t.queue?.length ?? 0), 0);
     const capable = term.some(t => workDoneCapable(t.cli, s.agents));
     const tab_states = term.filter(t => !t.paneId).map(t => computeTabState(t, s.agents));
-    states[task.id] = { state, tabs: term.length, queued, capable, tab_states, hydrated: true };
+    states[task.id] = {
+      state, tabs: term.length, queued, capable, tab_states, hydrated: true,
+      props: collectTaskProps(term),
+    };
   }
   return states;
 }
