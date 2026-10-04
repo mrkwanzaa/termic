@@ -74,7 +74,7 @@ describe("computeAgentStates aggregation", () => {
   it("reports 'inactive' with 0 tabs when a task has no live terminal tabs", () => {
     const s = statesFor({ dormant: [] });
     expect(s.dormant).toEqual({
-      state: "inactive", tabs: 0, queued: 0, capable: false, tab_states: [], hydrated: true,
+      state: "inactive", tabs: 0, queued: 0, capable: false, tab_states: [], hydrated: true, props: [],
     });
   });
 

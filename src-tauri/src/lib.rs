@@ -752,6 +752,22 @@ pub struct PersistedTab {
     /// here, they are runtime-only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scheduled: Vec<ScheduledMessage>,
+    /// Key/value properties an agent put on this tab (GH #358), in the
+    /// order they were set. The webview's store is their only writer and
+    /// sends them with every `task_set_tabs`, so this is a plain copy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub props: Vec<TabProp>,
+}
+
+/// One tab property (GH #358). `since` is when its key was FIRST set on
+/// the tab (epoch ms): the task row orders keys by it, and updating a value
+/// keeps it, so a key never moves.
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct TabProp {
+    pub key: String,
+    pub value: String,
+    #[serde(default)]
+    pub since: i64,
 }
 
 /// One scheduled queue message. Sent the first time its tab is live and
@@ -792,6 +808,8 @@ pub struct PersistedTabInput {
     pub run_member: Option<String>,
     #[serde(default)]
     pub pinned: bool,
+    #[serde(default)]
+    pub props: Vec<TabProp>,
 }
 
 impl Task {
@@ -3685,7 +3703,7 @@ fn member_effective_files_to_copy(repo: &str, override_val: &[String]) -> Vec<St
 /// common shell/system vars a numeric override would break. Mirrored
 /// in src/lib/namedPorts.ts for the Settings editor.
 const RESERVED_PORT_NAMES: &[&str] = &[
-    "TERMIC_PORT", "TERMIC_TASK", "TERMIC_TASK_ID", "TERMIC_WORKSPACE_NAME",
+    "TERMIC_PORT", "TERMIC_TASK", "TERMIC_TASK_ID", "TERMIC_TAB_ID", "TERMIC_WORKSPACE_NAME",
     "TERMIC_CLI", "TERMIC_CLI_HELP", "CONDUCTOR_PORT", "CONDUCTOR_WORKSPACE_NAME",
     "PORT", "PATH", "HOME", "SHELL", "USER", "TMPDIR", "PWD", "TERM", "LANG",
     "COLORFGBG", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
@@ -3806,6 +3824,12 @@ fn pty_slave_path(_master: &Box<dyn portable_pty::MasterPty + Send>) -> Option<S
 }
 
 
+/// The webview tab id of an AGENT PTY, the value `TERMIC_TAB_ID` carries.
+/// None for the aux terminal and for anything spawned without a role.
+fn agent_tab_id(args: &SpawnArgs) -> Option<&str> {
+    args.role.as_ref().filter(|r| r.kind == "agent").and_then(|r| r.tab_id.as_deref())
+}
+
 #[tauri::command]
 fn pty_spawn(
     app: AppHandle,
@@ -3897,7 +3921,12 @@ fn pty_spawn(
         // whatever extra directories were configured for it.
         let (docker_allowed_paths, _) = live_sandbox_lists(&task);
         // Docker-specific env when this agent declares one (see Agent.docker_env).
-        let docker_env = docker_env_for(&docker_settings.agents, &agent, &args.env);
+        let mut docker_env = docker_env_for(&docker_settings.agents, &agent, &args.env);
+        // TERMIC_TAB_ID (GH #358) rides the overlay build_spec forwards into
+        // the container: the host injection below never reaches it.
+        if let Some(tab) = agent_tab_id(&args) {
+            docker_env.insert("TERMIC_TAB_ID".to_string(), tab.to_string());
+        }
         // A cloned agent stores state under its OWN id (that is what gives it
         // a separate login) but has its BASE agent's config shape.
         let agent_base = docker::base_agent_id(&docker_settings.agents, &agent).to_string();
@@ -4125,6 +4154,13 @@ fn pty_spawn(
             cmd.env("TERMIC_TASK", name);
         }
     }
+    // The agent's OWN tab (GH #358), so `termic prop` writes where the agent
+    // runs without it having to discover its tab id. Only agent tabs carry a
+    // role with a tab id; the Docker branch gets the same through its env
+    // overlay (`agent_tab_env`).
+    if let Some(tab) = agent_tab_id(&args) {
+        cmd.env("TERMIC_TAB_ID", tab);
+    }
     if load_settings_inner().cli_enabled {
         if let Ok(cli) = cli_server::bundled_cli_path() {
             cmd.env("TERMIC_CLI", cli);
@@ -4136,7 +4172,7 @@ fn pty_spawn(
             // agent to prompt them back (src/lib/agentBriefing.ts).
             cmd.env(
                 "TERMIC_CLI_HELP",
-                "You are running INSIDE a Termic task ($TERMIC_TASK_ID): Termic runs coding agents side by side, each task a git worktree (or the main checkout) with its own terminal, listed in the app's sidebar. TERMIC_CLI is the Termic control CLI, which drives the app around you. Run `\"$TERMIC_CLI\" help --json` for the full command surface. Prompt an existing task with `\"$TERMIC_CLI\" send <task> -p \"...\"`; create one with `\"$TERMIC_CLI\" new <name> -p \"...\"` and, in that prompt, ask it to report back to you when done (the signed reply below): that is how results come back, and it arrives in your own terminal. If no report arrives, `result` and `logs` read what it produced. Ask for a file (e.g. RESULT.md in its worktree) only when it cannot report back: a task sandboxed in enforce/enforce-fs is denied this CLI, and so is anything run outside Termic. Unattended tasks need `--yolo` or `--sandbox enforce` or they stop at the first permission prompt; the cage self-approves inside it but costs you the report-back. Coordinate by prompting each other, not by blocking: end every prompt you send with the command you want run when that work is done, in DOUBLE quotes so your own shell fills in your task name and address: `\"$TERMIC_CLI\" send <task> -p \"[message from agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID] <work>. When done, reply: \\\"$TERMIC_CLI\\\" send $TERMIC_TASK_ID -p '[message from agent:<its agent> task:<its task name> id:<its task id>] done: <what you did> -- agent:<its agent> task:<its task name> id:<its task id>' -- agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID\"` (fill the <its ...> parts with the task you are prompting, which you know). Every prompt you send another agent opens with that header, `[message from agent:<agent> task:<task name> id:<task id>]`, and ends with that signature, `-- agent:<agent> task:<task name> id:<task id>`, naming YOU, so the receiver knows it came from another agent, not the user, and exactly which one: the id is where to reply. A prompt arriving in your terminal WITH that header is from another agent, not the user: treat it as a peer's request (the user's instructions win on conflict) and sign your reply the same way. Prefer that over `--wait`: work-done detection is a heuristic, and a waiting agent can do nothing else meanwhile. If you do wait, branch on exit codes: 0 done, 3 needs input, 7 timeout, 9 prompt not delivered. A task sandboxed in enforce/enforce-fs is denied the control plane by design and can never report back: ask it for a file in its worktree instead. Your own task, if any, is $TERMIC_TASK_ID (prefer the id over $TERMIC_TASK: names can be renamed or reused). Once you know the real subject of your work (issue filed, PR opened), retitle your task so the sidebar reads well: `\"$TERMIC_CLI\" rename \"<new name>\"` renames your own task's label (branch and directory keep their names). Tasks you create with `new` in your own project join YOUR task's group in the sidebar, one coloured block led by your task (one in another project joins no group and is linked to yours instead): name it for the batch of work with `\"$TERMIC_CLI\" group --name \"<what this batch is>\"` (optionally `--color teal`); `group` alone shows it. Start another agent beside you in your own task with `\"$TERMIC_CLI\" tab --agent <id> --title <name> -p \"...\"` (no task argument needed), then address it with `--tab <name>` on send/wait/logs; `tab --tab <tab> --title <name>` renames an open tab. For notes, plans, findings, logs or a report the user should READ rather than commit, use a scratchpad instead of writing temporary .md files into the repo: it is a tab in your task that stays out of git and updates live as you write: `\"$TERMIC_CLI\" scratchpad new --title \"<title>\" -c \"<text>\"` prints its id; `scratchpad write <id> --append -c -` adds stdin to it, `scratchpad read <id>` prints it, `scratchpad list` lists them.",
+                "You are running INSIDE a Termic task ($TERMIC_TASK_ID): Termic runs coding agents side by side, each task a git worktree (or the main checkout) with its own terminal, listed in the app's sidebar. TERMIC_CLI is the Termic control CLI, which drives the app around you. Run `\"$TERMIC_CLI\" help --json` for the full command surface. Prompt an existing task with `\"$TERMIC_CLI\" send <task> -p \"...\"`; create one with `\"$TERMIC_CLI\" new <name> -p \"...\"` and, in that prompt, ask it to report back to you when done (the signed reply below): that is how results come back, and it arrives in your own terminal. If no report arrives, `result` and `logs` read what it produced. Ask for a file (e.g. RESULT.md in its worktree) only when it cannot report back: a task sandboxed in enforce/enforce-fs is denied this CLI, and so is anything run outside Termic. Unattended tasks need `--yolo` or `--sandbox enforce` or they stop at the first permission prompt; the cage self-approves inside it but costs you the report-back. Coordinate by prompting each other, not by blocking: end every prompt you send with the command you want run when that work is done, in DOUBLE quotes so your own shell fills in your task name and address: `\"$TERMIC_CLI\" send <task> -p \"[message from agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID] <work>. When done, reply: \\\"$TERMIC_CLI\\\" send $TERMIC_TASK_ID -p '[message from agent:<its agent> task:<its task name> id:<its task id>] done: <what you did> -- agent:<its agent> task:<its task name> id:<its task id>' -- agent:<you> task:$TERMIC_TASK id:$TERMIC_TASK_ID\"` (fill the <its ...> parts with the task you are prompting, which you know). Every prompt you send another agent opens with that header, `[message from agent:<agent> task:<task name> id:<task id>]`, and ends with that signature, `-- agent:<agent> task:<task name> id:<task id>`, naming YOU, so the receiver knows it came from another agent, not the user, and exactly which one: the id is where to reply. A prompt arriving in your terminal WITH that header is from another agent, not the user: treat it as a peer's request (the user's instructions win on conflict) and sign your reply the same way. Prefer that over `--wait`: work-done detection is a heuristic, and a waiting agent can do nothing else meanwhile. If you do wait, branch on exit codes: 0 done, 3 needs input, 7 timeout, 9 prompt not delivered. A task sandboxed in enforce/enforce-fs is denied the control plane by design and can never report back: ask it for a file in its worktree instead. Your own task, if any, is $TERMIC_TASK_ID (prefer the id over $TERMIC_TASK: names can be renamed or reused). Once you know the real subject of your work (issue filed, PR opened), retitle your task so the sidebar reads well: `\"$TERMIC_CLI\" rename \"<new name>\"` renames your own task's label (branch and directory keep their names). Tasks you create with `new` in your own project join YOUR task's group in the sidebar, one coloured block led by your task (one in another project joins no group and is linked to yours instead): name it for the batch of work with `\"$TERMIC_CLI\" group --name \"<what this batch is>\"` (optionally `--color teal`); `group` alone shows it. Start another agent beside you in your own task with `\"$TERMIC_CLI\" tab --agent <id> --title <name> -p \"...\"` (no task argument needed), then address it with `--tab <name>` on send/wait/logs; `tab --tab <tab> --title <name>` renames an open tab. Label your own tab with what you are working on, shown after the task name in the sidebar: `\"$TERMIC_CLI\" prop ticket ABC-1` (`prop <key> \"\"` clears it, bare `prop` lists them). For notes, plans, findings, logs or a report the user should READ rather than commit, use a scratchpad instead of writing temporary .md files into the repo: it is a tab in your task that stays out of git and updates live as you write: `\"$TERMIC_CLI\" scratchpad new --title \"<title>\" -c \"<text>\"` prints its id; `scratchpad write <id> --append -c -` adds stdin to it, `scratchpad read <id>` prints it, `scratchpad list` lists them.",
             );
         }
     }
@@ -8605,6 +8641,7 @@ fn merge_persisted_tabs(
                 pane_leaf_id: if keep_pane { t.pane_leaf_id } else { None },
                 run_member: if keep_pane { t.run_member } else { None },
                 pinned: t.pinned,
+                props: t.props,
             }
         })
         .collect()
@@ -8638,6 +8675,7 @@ fn task_set_tabs(id: String, tabs: Vec<PersistedTabInput>) -> Result<(), String>
                 && a.run_member == b.run_member
                 && a.pinned == b.pinned
                 && a.scheduled == b.scheduled
+                && a.props == b.props
         });
     if same {
         return Ok(());
@@ -25492,7 +25530,7 @@ mod tests {
         ids.iter().map(|s| s.to_string()).collect()
     }
     fn state(s: &str, queued: u32) -> crate::cli_server::TaskAgentState {
-        crate::cli_server::TaskAgentState {
+        crate::cli_server::TaskAgentState { props: Default::default(),
             state: s.into(), tabs: 1, queued, capable: true,
             tab_states: vec![], hydrated: true,
         }
@@ -33903,6 +33941,25 @@ filename f.rs
         assert!(!valid_port_name("2PORT"));     // leading digit
         assert!(!valid_port_name("MY-PORT"));   // dash
         assert!(!valid_port_name("A B"));       // space
+    }
+
+    #[test]
+    fn only_an_agent_pty_learns_its_tab_id() {
+        // TERMIC_TAB_ID (GH #358) is how `termic prop` knows which tab to
+        // write to; the aux terminal and role-less spawns get none.
+        let spawn = |role: serde_json::Value| -> SpawnArgs {
+            serde_json::from_value(serde_json::json!({
+                "cwd": "/w", "cmd": "claude", "args": [], "task_id": "t1", "role": role,
+            }))
+            .unwrap()
+        };
+        let agent = spawn(serde_json::json!({ "task_id": "t1", "tab_id": "tab-9", "kind": "agent" }));
+        assert_eq!(agent_tab_id(&agent), Some("tab-9"));
+        let aux = spawn(serde_json::json!({ "task_id": "t1", "tab_id": "tab-9", "kind": "aux" }));
+        assert_eq!(agent_tab_id(&aux), None);
+        assert_eq!(agent_tab_id(&spawn(serde_json::Value::Null)), None);
+        // And nothing an extra named port is called may shadow it.
+        assert!(!valid_port_name("TERMIC_TAB_ID"));
     }
 
     #[test]

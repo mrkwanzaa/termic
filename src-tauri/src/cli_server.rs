@@ -848,6 +848,16 @@ pub(crate) fn dispatch_authenticated(
             title,
             cwd.as_deref(),
         ),
+        Command::Prop { task, project, tab, key, value, cwd } => handle_prop(
+            &req.id,
+            host,
+            task.as_deref(),
+            project.as_deref(),
+            tab.as_deref(),
+            key.as_deref(),
+            value.as_deref(),
+            cwd.as_deref(),
+        ),
         Command::TabClose { task, project, tab, yes, cwd } => handle_tab_close(
             &req.id,
             host,
@@ -937,6 +947,10 @@ fn handle_list(id: &str, host: &dyn CliHost, project: Option<&str>, quiet: bool)
             summarize(t, &projects, &tasks, states.as_ref(), diff)
         })
         .collect();
+    let snap = host.agent_cache().snapshot();
+    for row in &mut rows {
+        row.props = cached_collected_props(&snap, &row.id);
+    }
     rows.sort_by(|a, b| (&a.project, &a.name).cmp(&(&b.project, &b.name)));
     Reply::ok(id, ReplyData::List(proto::ListData { tasks: rows }))
 }
@@ -955,7 +969,8 @@ fn handle_status(
     };
     let states = host.work_states(std::slice::from_ref(&t.id));
     let diff = host.diff_stat(t);
-    let summary = summarize(t, &projects, &tasks, states.as_ref(), diff.clone());
+    let mut summary = summarize(t, &projects, &tasks, states.as_ref(), diff.clone());
+    summary.props = cached_collected_props(&host.agent_cache().snapshot(), &t.id);
     let sandbox = sandbox_mode_str(t);
     let sessions = (t.persisted_tabs.len() + t.right_split_tabs.len()) as u32;
     let dirty_files = diff.map(|d| d.files_changed + d.untracked);
@@ -2963,6 +2978,105 @@ fn parse_tab_close_error(e: &str) -> (ErrorCode, String) {
 /// session it is driving from.
 /// Sentinel prefix for the webview's typed tab-title failures (GH #331),
 /// the `cli_tab_close:` scheme: `cli_tab_title:<code>: <message>`.
+/// Sentinel prefix for the webview's typed tab-property failures (GH #358),
+/// the `cli_tab_close:` scheme: `cli_tab_prop:<code>: <message>`.
+const TAB_PROP_ERR: &str = "cli_tab_prop:";
+
+fn parse_tab_prop_error(e: &str) -> (ErrorCode, String) {
+    let Some(rest) = e.strip_prefix(TAB_PROP_ERR) else {
+        return (ErrorCode::Internal, format!("could not reach the tab's properties ({e})"));
+    };
+    let (code, msg) = rest.split_once(':').unwrap_or(("", rest));
+    let code = match code {
+        "invalid" | "too_many" => ErrorCode::BadRequest,
+        // The resolver's cache trailed a tab that closed underneath us.
+        "unknown_tab" => ErrorCode::NotFound,
+        "task_stopped" => ErrorCode::Unsupported,
+        _ => ErrorCode::Internal,
+    };
+    (code, msg.trim().to_string())
+}
+
+/// `termic prop` (GH #358): set, clear or list the key/value properties
+/// agents put on their tabs. Every read and write goes through the
+/// webview's store, the one writer of `persisted_tabs`: a Rust-side write
+/// would be overwritten by the next `syncDurableTabs`, and the store
+/// applying one write at a time is what makes a single key atomic.
+#[allow(clippy::too_many_arguments)]
+fn handle_prop(
+    id: &str,
+    host: &dyn CliHost,
+    task: Option<&str>,
+    project: Option<&str>,
+    tab: Option<&str>,
+    key: Option<&str>,
+    value: Option<&str>,
+    cwd: Option<&str>,
+) -> Reply {
+    if let Some(why) = key.and_then(proto::prop_key_problem) {
+        return Reply::err(id, ErrorCode::BadRequest, why);
+    }
+    if let Some(why) = value.and_then(proto::prop_value_problem) {
+        return Reply::err(id, ErrorCode::BadRequest, why);
+    }
+    let setting = value.is_some();
+    if setting && key.is_none() {
+        return Reply::err(id, ErrorCode::BadRequest, "a value needs a key to set");
+    }
+    let (projects, tasks) = host.projects_tasks();
+    let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
+        Ok(t) => t.clone(),
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    // A write needs ONE tab; guessing the default would put an agent's
+    // value on a tab it is not running in.
+    let target = if setting {
+        let Some(sel) = tab else {
+            return Reply::err(
+                id,
+                ErrorCode::BadRequest,
+                "which tab? pass --tab, or run this from an agent tab inside Termic ($TERMIC_TAB_ID)",
+            );
+        };
+        match resolve_tab_selector_with(host, &t, sel, TabReach::AnyStripTab) {
+            Ok(rt) => Some(rt.id),
+            Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+        }
+    } else {
+        None
+    };
+    let mut params = serde_json::json!({ "taskId": t.id });
+    if let (Some(tab_id), Some(k), Some(v)) = (&target, key, value) {
+        params["set"] = serde_json::json!({ "tabId": tab_id, "key": k, "value": v.trim() });
+    }
+    let value = match host.rpc("tab_props", params, OPEN_TIMEOUT) {
+        Ok(v) => v,
+        Err(e) => {
+            let (code, msg) = parse_tab_prop_error(&e);
+            return Reply::err(id, code, msg);
+        }
+    };
+    let mut tabs: Vec<proto::TabProps> = value
+        .get("tabs")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    let mut collected: Vec<proto::CollectedProp> = value
+        .get("collected")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    // `termic prop <key>` with no value reads that one key.
+    if let (Some(k), false) = (key, setting) {
+        collected.retain(|c| c.key == k);
+        for t in &mut tabs {
+            t.props.retain(|p| p.key == k);
+        }
+        tabs.retain(|t| !t.props.is_empty());
+    }
+    Reply::ok(id, ReplyData::Prop(proto::PropData { task_id: t.id, tab_id: target, tabs, collected }))
+}
+
 const TAB_TITLE_ERR: &str = "cli_tab_title:";
 
 fn parse_tab_title_error(e: &str) -> (ErrorCode, String) {
@@ -3441,6 +3555,9 @@ fn summarize(
     // a specific, wrong diagnosis pointing at a UI that answered fine.
     let info = states.and_then(|m| m.get(&task.id));
     proto::TaskSummary {
+        // Filled from the UI's snapshot by the callers that have one
+        // (`with_cached_props`); a summary on its own knows no tab state.
+        props: Vec::new(),
         id: task.id.clone(),
         name: task.name.clone(),
         project,
@@ -4050,6 +4167,10 @@ pub struct TaskAgentState {
     /// old meaning instead of every task turning unknown.
     #[serde(default = "default_true_state")]
     pub hydrated: bool,
+    /// The task's collected tab properties (GH #358), computed by the
+    /// webview (lib/tabProps.ts) so the collect rule has ONE implementation.
+    #[serde(default)]
+    pub props: Vec<proto::CollectedProp>,
 }
 
 fn default_true_state() -> bool {
@@ -4090,6 +4211,9 @@ pub struct TabAgentState {
     /// The tab verbs resolve to when `--tab` is absent.
     #[serde(default)]
     pub is_default: bool,
+    /// The tab's own properties (GH #358), in the order they were set.
+    #[serde(default)]
+    pub props: Vec<proto::PropEntry>,
 }
 
 struct AgentCacheInner {
@@ -4228,9 +4352,25 @@ pub(crate) fn cached_tab_states(
                 is_default: t.is_default,
                 live: t.live,
                 queued: t.queued,
+                props: t.props.clone(),
             })
             .collect(),
     )
+}
+
+/// The task's collected properties from a cache snapshot (GH #358). Same
+/// freshness rule as `cached_tab_states`, but a stale or unknown strip
+/// reads as "none" rather than unknown: properties are additive display,
+/// not a claim `status` has to qualify.
+pub(crate) fn cached_collected_props(snap: &AgentSnapshot, task_id: &str) -> Vec<proto::CollectedProp> {
+    if snap.age.is_none_or(|a| a > CACHE_STALE_AFTER) {
+        return Vec::new();
+    }
+    snap.states
+        .get(task_id)
+        .filter(|e| e.hydrated)
+        .map(|e| e.props.clone())
+        .unwrap_or_default()
 }
 
 // ───────────────────── tab selectors (GH #138 part 2) ────────────────
@@ -5744,9 +5884,9 @@ mod tests {
     fn quit_clamps_working_tasks_to_tasks_with_live_agents() {
         let host = StubHost { live_agents: (1, 1), ..Default::default() };
         host.push_states(&[
-            ("w1", TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true }),
+            ("w1", TaskAgentState { props: Default::default(), state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true }),
             // Still cached as working, but its agent PTY is already gone.
-            ("w3", TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true }),
+            ("w3", TaskAgentState { props: Default::default(), state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true }),
         ]);
         let reply = handle(&req(Command::Quit { commit: false }, Some("tok")), &host);
         let Some(ReplyData::Quit(q)) = reply.data else { panic!("expected quit") };
@@ -5761,8 +5901,8 @@ mod tests {
     fn quit_preview_reports_without_tearing_down() {
         let host = StubHost { live_agents: (2, 3), ..Default::default() };
         host.push_states(&[
-            ("w1", TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true }),
-            ("w3", TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true }),
+            ("w1", TaskAgentState { props: Default::default(), state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true }),
+            ("w3", TaskAgentState { props: Default::default(), state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true }),
         ]);
         let reply = handle(&req(Command::Quit { commit: false }, Some("tok")), &host);
         assert!(reply.ok, "{reply:?}");
@@ -5849,7 +5989,7 @@ mod tests {
         let host = StubHost { live_agents: (1, 1), ..Default::default() };
         host.push_states(&[(
             "w1",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         // CACHE_STALE_AFTER is 800ms under cfg(test); let it actually go stale
         // rather than reaching into the cache's internals.
@@ -5949,7 +6089,7 @@ mod tests {
         let mut states = HashMap::new();
         states.insert(
             "w1".to_string(),
-            TaskAgentState { state: "working".into(), tabs: 2, queued: 1, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "working".into(), tabs: 2, queued: 1, capable: true, tab_states: vec![], hydrated: true },
         );
         cache.update(states);
         let snap = cache.snapshot();
@@ -6691,12 +6831,12 @@ mod tests {
             host.reports.resolve(&prompt_id, Ok(()));
             host.push_states(&[(
                 "nw1",
-                TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+                TaskAgentState { props: Default::default(), state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
             )]);
             std::thread::sleep(Duration::from_millis(50));
             host.push_states(&[(
                 "nw1",
-                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+                TaskAgentState { props: Default::default(), state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
             )]);
             let (reply, sink) = handle_thread.join().unwrap();
             let Some(ReplyData::New(n)) = reply.data else { panic!("expected new, got {reply:?}") };
@@ -6750,7 +6890,7 @@ mod tests {
         host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
         host.push_states(&[(
             "nw1",
-            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let mut cmd = new_cmd("shiny", Some("web"));
         if let Command::New { prompt, wait, .. } = &mut cmd {
@@ -6774,7 +6914,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(60));
                 host.push_states(&[(
                     "nw1",
-                    TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+                    TaskAgentState { props: Default::default(), state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
                 )]);
             }
             let reply = t.join().unwrap();
@@ -6794,7 +6934,7 @@ mod tests {
         host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
         host.push_states(&[(
             "nw1",
-            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let mut cmd = new_cmd("shiny", Some("web"));
         if let Command::New { prompt, wait, timeout_ms, .. } = &mut cmd {
@@ -6833,7 +6973,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         std::thread::scope(|scope| {
             let t = scope.spawn(|| handle(&req(wait_cmd("solo", None), Some("tok")), &host));
@@ -6842,7 +6982,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(60));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+                TaskAgentState { props: Default::default(), state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
             )]);
             let reply = t.join().unwrap();
             let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
@@ -7116,7 +7256,7 @@ mod tests {
         host.script_rpc("new_task", Ok(serde_json::json!({ "taskId": "nw1" })));
         host.push_states(&[(
             "nw1",
-            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let mut cmd = new_cmd("shiny", Some("web"));
         if let Command::New { prompt, wait, .. } = &mut cmd {
@@ -7141,7 +7281,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
         let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
@@ -7150,7 +7290,7 @@ mod tests {
         // An agent parked on a question maps to needs-input (exit 3).
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "waiting".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "waiting".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
         let Some(ReplyData::Wait(w)) = reply.data else { panic!() };
@@ -7162,14 +7302,14 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "inactive".into(), tabs: 0, queued: 0, capable: false, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "inactive".into(), tabs: 0, queued: 0, capable: false, tab_states: vec![], hydrated: true },
         )]);
         let err = handle(&req(wait_cmd("solo", None), Some("tok")), &host).error.unwrap();
         assert_eq!(err.code, ErrorCode::Unsupported);
         assert!(err.message.contains("no agent is open"), "{}", err.message);
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: false, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "idle".into(), tabs: 1, queued: 0, capable: false, tab_states: vec![], hydrated: true },
         )]);
         let err = handle(&req(wait_cmd("solo", None), Some("tok")), &host).error.unwrap();
         assert_eq!(err.code, ErrorCode::Unsupported);
@@ -7183,7 +7323,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "done".into(), tabs: 1, queued: 1, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "done".into(), tabs: 1, queued: 1, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let reply = handle(&req(wait_cmd("solo", Some(120)), Some("tok")), &host);
         let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
@@ -7195,7 +7335,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let started = Instant::now();
         let reply = handle(&req(wait_cmd("solo", Some(100)), Some("tok")), &host);
@@ -7209,14 +7349,14 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         std::thread::scope(|scope| {
             let t = scope.spawn(|| handle(&req(wait_cmd("solo", None), Some("tok")), &host));
             std::thread::sleep(Duration::from_millis(60));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+                TaskAgentState { props: Default::default(), state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
             )]);
             let reply = t.join().unwrap();
             let Some(ReplyData::Wait(w)) = reply.data else { panic!("expected wait, got {reply:?}") };
@@ -7233,7 +7373,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let started = Instant::now();
         let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
@@ -7252,7 +7392,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         std::thread::sleep(Duration::from_millis(900)); // age past the 800ms test cutoff
         let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
@@ -7268,7 +7408,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w1",
-            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let reply = handle(&req(wait_cmd("solo", None), Some("tok")), &host);
         let err = reply.error.expect("error");
@@ -7342,7 +7482,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let mut sink = VecSink { fail: true, ..Default::default() };
         let started = Instant::now();
@@ -7451,7 +7591,7 @@ mod tests {
         let mut states = HashMap::new();
         states.insert(
             "w1".to_string(),
-            TaskAgentState {
+            TaskAgentState { props: Default::default(),
                 state: "inactive".into(),
                 tabs: 0,
                 queued: 0,
@@ -7482,7 +7622,7 @@ mod tests {
         let fresh = AgentSnapshot {
             states: HashMap::from([(
                 "w1".to_string(),
-                TaskAgentState { state: "working".into(), tabs: 2, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+                TaskAgentState { props: Default::default(), state: "working".into(), tabs: 2, queued: 0, capable: true, tab_states: vec![], hydrated: true },
             )]),
             age: Some(Duration::from_millis(1)),
         };
@@ -7567,7 +7707,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let (sock, _guard) = spawn_server(host);
         let mut stream = proto::local::connect(&sock).unwrap();
@@ -7617,7 +7757,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let status = handle(
             &req(
@@ -8049,7 +8189,7 @@ mod tests {
         live: bool,
         is_default: bool,
     ) -> TabAgentState {
-        TabAgentState {
+        TabAgentState { props: Default::default(),
             id: id.into(),
             kind: kind.into(),
             cli: cli.into(),
@@ -8064,7 +8204,7 @@ mod tests {
 
     /// Push a per-tab snapshot for one task (aggregate derived).
     fn push_tabs(host: &StubHost, task: &str, aggregate: &str, tabs: Vec<TabAgentState>) {
-        let entry = TaskAgentState {
+        let entry = TaskAgentState { props: Default::default(),
             state: aggregate.into(),
             tabs: tabs.len() as u32,
             queued: tabs.iter().map(|t| t.queued).sum(),
@@ -8092,6 +8232,117 @@ mod tests {
 
     fn w3(host: &StubHost) -> Task {
         host.tasks.iter().find(|t| t.id == "w3").unwrap().clone()
+    }
+
+    // ── tab properties (GH #358) ─────────────────────────────────────
+
+    fn prop_req(tab: Option<&str>, key: Option<&str>, value: Option<&str>) -> Request {
+        req(
+            Command::Prop {
+                task: Some("w3".into()),
+                project: None,
+                tab: tab.map(str::to_string),
+                key: key.map(str::to_string),
+                value: value.map(str::to_string),
+                cwd: None,
+            },
+            Some("tok"),
+        )
+    }
+
+    fn props_host() -> StubHost {
+        let host = StubHost::default();
+        seed_strip(&host);
+        host.script_rpc(
+            "tab_props",
+            Ok(serde_json::json!({
+                "tabs": [
+                    { "tab_id": "tab-a", "cli": "claude", "title": "claude",
+                      "props": [{ "key": "status", "value": "ToDo" }, { "key": "ticket", "value": "ABC-1" }] },
+                    { "tab_id": "tab-b", "cli": "codex", "title": "fixing tests",
+                      "props": [{ "key": "ticket", "value": "ABC-2" }] },
+                ],
+                "collected": [
+                    { "key": "status", "values": ["ToDo"] },
+                    { "key": "ticket", "values": ["ABC-1", "ABC-2"] },
+                ],
+            })),
+        );
+        host
+    }
+
+    #[test]
+    fn prop_set_lands_on_the_resolved_tab_through_the_webview() {
+        // Every selector shape, shell tab included (renaming is not driving,
+        // and neither is labelling): the `tab close` reach.
+        for (sel, want) in [("2", "tab-b"), ("tab-b", "tab-b"), ("fixing tests", "tab-b"), ("3", "tab-c")] {
+            let host = props_host();
+            let reply = handle(&prop_req(Some(sel), Some("ticket"), Some(" ABC-2 ")), &host);
+            assert!(reply.ok, "{sel:?}: {:?}", reply.error);
+            let p = rpc_params(&host, "tab_props");
+            assert_eq!(p["taskId"], "w3");
+            assert_eq!(p["set"]["tabId"], want, "{sel:?}");
+            assert_eq!(p["set"]["key"], "ticket");
+            assert_eq!(p["set"]["value"], "ABC-2", "trimmed");
+            let Some(ReplyData::Prop(d)) = reply.data else { panic!("expected prop") };
+            assert_eq!(d.tab_id.as_deref(), Some(want));
+            assert_eq!(d.collected[1].values, vec!["ABC-1", "ABC-2"]);
+        }
+    }
+
+    #[test]
+    fn prop_list_takes_no_tab_and_a_key_filters_it() {
+        let host = props_host();
+        let reply = handle(&prop_req(None, None, None), &host);
+        assert!(reply.ok, "{:?}", reply.error);
+        assert!(rpc_params(&host, "tab_props").get("set").is_none(), "a list writes nothing");
+        let Some(ReplyData::Prop(d)) = reply.data else { panic!("expected prop") };
+        assert_eq!(d.tab_id, None);
+        assert_eq!(d.tabs.len(), 2);
+
+        let host = props_host();
+        let Some(ReplyData::Prop(d)) = handle(&prop_req(None, Some("status"), None), &host).data else {
+            panic!("expected prop")
+        };
+        assert_eq!(d.collected.iter().map(|c| c.key.as_str()).collect::<Vec<_>>(), vec!["status"]);
+        // Only tab-a holds `status`, so tab-b drops out of the filtered view.
+        assert_eq!(d.tabs.iter().map(|t| t.tab_id.as_str()).collect::<Vec<_>>(), vec!["tab-a"]);
+        assert!(d.tabs[0].props.iter().all(|p| p.key == "status"));
+    }
+
+    #[test]
+    fn prop_refuses_what_it_cannot_write_before_any_rpc() {
+        for (tab, key, value, why) in [
+            // No tab: never a guess at the default one.
+            (None, Some("ticket"), Some("x"), "which tab"),
+            (Some("1"), Some("Bad Key"), Some("x"), "lowercase"),
+            (Some("1"), Some("ticket"), Some("a\nb"), "one line"),
+            (Some("1"), None, Some("x"), "needs a key"),
+        ] {
+            let host = props_host();
+            let err = handle(&prop_req(tab, key, value), &host).error.expect("refused");
+            assert_eq!(err.code, ErrorCode::BadRequest, "{why}");
+            assert!(err.message.contains(why), "{why}: {}", err.message);
+            assert!(host.rpc_calls.lock().unwrap().is_empty(), "{why}: reached the webview");
+        }
+    }
+
+    #[test]
+    fn prop_maps_the_webviews_typed_failures() {
+        for (webview, code) in [
+            ("cli_tab_prop:too_many: a tab holds at most 8", ErrorCode::BadRequest),
+            ("cli_tab_prop:invalid: bad", ErrorCode::BadRequest),
+            ("cli_tab_prop:unknown_tab: gone", ErrorCode::NotFound),
+            ("cli_tab_prop:task_stopped: not open", ErrorCode::Unsupported),
+            ("webview gone", ErrorCode::Internal),
+        ] {
+            let host = StubHost::default();
+            seed_strip(&host);
+            host.script_rpc("tab_props", Err(webview.into()));
+            let err = handle(&prop_req(Some("1"), Some("k"), Some("v")), &host).error.expect("error");
+            assert_eq!(err.code, code, "{webview}");
+            assert!(!err.message.starts_with("cli_tab_prop"), "sentinel leaked: {}", err.message);
+        }
     }
 
     // ── tab titles (GH #331) ─────────────────────────────────────────
@@ -8503,7 +8754,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert("close_tab".into(), Ok(serde_json::json!({ "killedPty": true })));
-        let persisted = |id: &str, cli: &str, run: Option<&str>| crate::PersistedTab {
+        let persisted = |id: &str, cli: &str, run: Option<&str>| crate::PersistedTab { props: Default::default(),
             agent_args: Vec::new(),
             id: id.into(),
             cli: cli.into(),
@@ -8542,7 +8793,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert("close_tab".into(), Ok(serde_json::json!({})));
-        let persisted = |id: &str, is_default: bool| crate::PersistedTab {
+        let persisted = |id: &str, is_default: bool| crate::PersistedTab { props: Default::default(),
             agent_args: Vec::new(),
             id: id.into(),
             cli: "claude".into(),
@@ -8623,7 +8874,7 @@ mod tests {
         // the snapshot was fresh by AGE while missing the new tab entirely.
         let host = StubHost::default();
         let mut t = w3(&host);
-        t.persisted_tabs.push(crate::PersistedTab {
+        t.persisted_tabs.push(crate::PersistedTab { props: Default::default(),
             agent_args: Vec::new(),
             id: "brand-new".into(),
             cli: "shell".into(),
@@ -8686,7 +8937,7 @@ mod tests {
         let host = StubHost::default();
         let mut t = w3(&host);
         t.persisted_tabs = vec![
-            crate::PersistedTab {
+            crate::PersistedTab { props: Default::default(),
                 agent_args: Vec::new(),
                 id: "tab-a".into(),
                 cli: "claude".into(),
@@ -8700,7 +8951,7 @@ mod tests {
                 pinned: false,
                 scheduled: Vec::new(),
             },
-            crate::PersistedTab {
+            crate::PersistedTab { props: Default::default(),
                 agent_args: Vec::new(),
                 id: "tab-x".into(),
                 cli: "custom".into(),
@@ -8714,7 +8965,7 @@ mod tests {
                 pinned: false,
                 scheduled: Vec::new(),
             },
-            crate::PersistedTab {
+            crate::PersistedTab { props: Default::default(),
                 agent_args: Vec::new(),
                 id: "tab-sh".into(),
                 cli: "shell".into(),
@@ -9664,12 +9915,12 @@ mod tests {
             host.reports.resolve(&prompt_id, Ok(()));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+                TaskAgentState { props: Default::default(), state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
             )]);
             std::thread::sleep(Duration::from_millis(50));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+                TaskAgentState { props: Default::default(), state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
             )]);
             let reply = t.join().unwrap();
             let Some(ReplyData::Send(s)) = reply.data else { panic!("expected send, got {reply:?}") };
@@ -9689,7 +9940,7 @@ mod tests {
         );
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 1, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "working".into(), tabs: 1, queued: 1, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let request = req(send_cmd("solo", true), Some("tok"));
         std::thread::scope(|scope| {
@@ -9708,12 +9959,12 @@ mod tests {
             host.reports.resolve(&prompt_id, Ok(()));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+                TaskAgentState { props: Default::default(), state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
             )]);
             std::thread::sleep(Duration::from_millis(50));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+                TaskAgentState { props: Default::default(), state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
             )]);
             let reply = t.join().unwrap();
             let Some(ReplyData::Send(s)) = reply.data else { panic!("expected send, got {reply:?}") };
@@ -9736,7 +9987,7 @@ mod tests {
         // Stale state from an earlier turn, pushed before the send.
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "done".into(), tabs: 2, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "done".into(), tabs: 2, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let request = req(send_cmd("solo", true), Some("tok"));
         std::thread::scope(|scope| {
@@ -9757,12 +10008,12 @@ mod tests {
             // The real turn: working, then done.
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "working".into(), tabs: 2, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+                TaskAgentState { props: Default::default(), state: "working".into(), tabs: 2, queued: 0, capable: true, tab_states: vec![], hydrated: true },
             )]);
             std::thread::sleep(Duration::from_millis(30));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "done".into(), tabs: 2, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+                TaskAgentState { props: Default::default(), state: "done".into(), tabs: 2, queued: 0, capable: true, tab_states: vec![], hydrated: true },
             )]);
             let reply = t.join().unwrap();
             let Some(ReplyData::Send(s)) = reply.data else { panic!("expected send, got {reply:?}") };
@@ -9783,7 +10034,7 @@ mod tests {
         );
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "waiting".into(), tabs: 1, queued: 1, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "waiting".into(), tabs: 1, queued: 1, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let reply = handle(&req(send_cmd("solo", true), Some("tok")), &host);
         let Some(ReplyData::Send(s)) = reply.data else { panic!("expected send, got {reply:?}") };
@@ -9800,7 +10051,7 @@ mod tests {
         let host = StubHost::default();
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let request = req(wait_cmd("solo", None), Some("tok"));
         std::thread::scope(|scope| {
@@ -9808,7 +10059,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "inactive".into(), tabs: 0, queued: 0, capable: false, tab_states: vec![], hydrated: true },
+                TaskAgentState { props: Default::default(), state: "inactive".into(), tabs: 0, queued: 0, capable: false, tab_states: vec![], hydrated: true },
             )]);
             let reply = t.join().unwrap();
             let err = reply.error.expect("error, not a false done");
@@ -9830,7 +10081,7 @@ mod tests {
         );
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "waiting".into(), tabs: 1, queued: 1, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "waiting".into(), tabs: 1, queued: 1, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let request = req(send_cmd("solo", true), Some("tok"));
         std::thread::scope(|scope| {
@@ -9847,19 +10098,19 @@ mod tests {
             // empties on a non-working agent (the gone-detector arms)...
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+                TaskAgentState { props: Default::default(), state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
             )]);
             // ...and the report lands a beat later, inside the grace.
             std::thread::sleep(Duration::from_millis(60));
             host.reports.resolve(&prompt_id, Ok(()));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+                TaskAgentState { props: Default::default(), state: "working".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
             )]);
             std::thread::sleep(Duration::from_millis(30));
             host.push_states(&[(
                 "w3",
-                TaskAgentState { state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+                TaskAgentState { props: Default::default(), state: "done".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
             )]);
             let reply = t.join().unwrap();
             let Some(ReplyData::Send(s)) = reply.data else { panic!("expected send, got {reply:?}") };
@@ -9922,7 +10173,7 @@ mod tests {
         );
         host.push_states(&[(
             "w3",
-            TaskAgentState { state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
+            TaskAgentState { props: Default::default(), state: "idle".into(), tabs: 1, queued: 0, capable: true, tab_states: vec![], hydrated: true },
         )]);
         let reply = handle(&req(send_cmd("solo", true), Some("tok")), &host);
         let Some(ReplyData::Send(s)) = reply.data else { panic!("expected send, got {reply:?}") };

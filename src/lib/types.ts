@@ -454,6 +454,18 @@ export interface PersistedTab {
    *  skips an empty list). Owned by `taskSetTabScheduled`; `taskSetTabs`
    *  never writes it. */
   scheduled?: ScheduledMessage[];
+  /** Key/value properties an agent put on this tab (GH #358). Absent when
+   *  there are none (Rust skips an empty list). */
+  props?: TabProp[];
+}
+
+/** One tab property (GH #358). `since` is when its key was FIRST set on
+ *  the tab (epoch ms): the task row orders keys by it, and updating a value
+ *  keeps it, so a key never moves. Mirror of `TabProp` in lib.rs. */
+export interface TabProp {
+  key: string;
+  value: string;
+  since: number;
 }
 
 /** A queue message with a "send after" date, as the task file stores it.
@@ -1371,6 +1383,9 @@ export interface TerminalTab extends BaseTab {
   cli: string;
   /** Explicit launch arguments for this tab only, after registry defaults. */
   agentArgs?: string[];
+  /** Key/value properties an agent set on this tab via `termic prop`
+   *  (GH #358), in the order they were set. Durable for durable tabs. */
+  props?: TabProp[];
   /** Launch command for `cli === "custom"` tabs — run through a login
    *  shell (`zsh -lc`). Seeded from the task's `custom_command`
    *  when the default tab is created. Unset for agent / shell tabs. */

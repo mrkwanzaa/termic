@@ -66,6 +66,9 @@ import { slugify } from "@/lib/utils";
 import { checkoutTaskName, remoteNames } from "@/lib/existingBranch";
 import { padHandler } from "@/lib/scratchCli";
 import type { SandboxMode, Task, TerminalTab } from "@/lib/types";
+import {
+  collectTaskProps, propKeyProblem, propValueProblem, PROP_KEYS_PER_TAB, type CollectedProp,
+} from "@/lib/tabProps";
 
 interface RpcRequest {
   id: string;
@@ -1241,6 +1244,82 @@ export async function renameTabHandler(params: unknown): Promise<{ title: string
   return { title: after?.title ?? title };
 }
 
+/** Typed tab-property failures (GH #358), same sentinel scheme as
+ *  `closeTabErr` (decoded by cli_server.rs `parse_tab_prop_error`). */
+function tabPropErr(code: string, msg: string): Error {
+  return new Error(`cli_tab_prop:${code}: ${msg}`);
+}
+
+interface TabPropsReply {
+  tabs: { tab_id: string; cli: string; title: string; props: { key: string; value: string }[] }[];
+  collected: CollectedProp[];
+}
+
+/** `termic prop` (GH #358): read a task's tab properties, after setting one
+ *  when `set` is given. The store is the only writer of tab properties (it
+ *  persists them with the tab), and it applies one write at a time, which
+ *  is what makes setting one key atomic while two agents write at once.
+ *
+ *  A read works on a task nobody has opened this session, from its durable
+ *  tabs; a write does not, for the `close_tab` reason: the strip of an
+ *  unmounted task is empty, and syncing it would rewrite `persisted_tabs`
+ *  from nothing. */
+export async function tabPropsHandler(params: unknown): Promise<TabPropsReply> {
+  const p = params as { taskId?: unknown; set?: { tabId?: unknown; key?: unknown; value?: unknown } };
+  if (typeof p?.taskId !== "string" || !p.taskId) throw new Error("tab_props requires a taskId");
+  const app = useApp.getState();
+  if (!app.tasks.some(t => t.id === p.taskId)) await app.loadAll();
+  const s = useApp.getState();
+  const task = s.tasks.find(t => t.id === p.taskId);
+  if (!task) throw new Error("no such task");
+
+  if (p.set) {
+    const { tabId, key, value } = p.set;
+    if (typeof tabId !== "string" || typeof key !== "string" || typeof value !== "string") {
+      throw new Error("tab_props set requires a tabId, a key and a value");
+    }
+    const why = propKeyProblem(key) ?? propValueProblem(value);
+    if (why) throw tabPropErr("invalid", why);
+    if (!s.mountedTasks.has(p.taskId)) {
+      throw tabPropErr(
+        "task_stopped",
+        `task ${task.name} is not open in Termic, so its tabs cannot take properties (open it with \`termic open\`)`,
+      );
+    }
+    const r = s.setTabProp(p.taskId, tabId, key, value);
+    if (r === "unknown_tab") {
+      throw tabPropErr("unknown_tab", "that tab no longer exists; see `termic status` for the open tabs");
+    }
+    if (r === "too_many") {
+      throw tabPropErr(
+        "too_many",
+        `a tab holds at most ${PROP_KEYS_PER_TAB} properties; clear one first (\`termic prop <key> ""\`)`,
+      );
+    }
+  }
+
+  const live = useApp.getState().tabs[p.taskId];
+  const terms: TerminalTab[] = live
+    ? live.filter((t): t is TerminalTab => t.type === "terminal")
+    // Not loaded this session: the durable tabs carry their properties.
+    : (task.persisted_tabs ?? []).map(pt => ({
+      id: pt.id, type: "terminal", cli: pt.cli,
+      title: pt.custom_title && pt.title ? pt.title : agentDisplayName(pt.cli),
+      props: pt.props,
+    } as TerminalTab));
+  return {
+    tabs: terms
+      .filter(t => t.props?.length)
+      .map(t => ({
+        tab_id: t.id,
+        cli: t.cli,
+        title: t.title || t.cli,
+        props: t.props!.map(x => ({ key: x.key, value: x.value })),
+      })),
+    collected: collectTaskProps(terms),
+  };
+}
+
 /** Typed domain failures for `tab close`, same sentinel scheme as
  *  `sendErr` (decoded by cli_server.rs `parse_tab_close_error`). */
 function closeTabErr(code: string, msg: string): Error {
@@ -1323,6 +1402,7 @@ const handlers: Record<string, Handler> = {
   new_tab: newTabHandler,
   close_tab: closeTabHandler,
   rename_tab: renameTabHandler,
+  tab_props: tabPropsHandler,
   list_agents: listAgentsHandler,
   list_prompts: listPromptsHandler,
   send_prompt: sendPromptHandler,

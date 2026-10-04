@@ -1050,6 +1050,58 @@ lost."
         project: Option<String>,
     },
 
+    /// Set, clear or list properties on your tab, shown on the task's sidebar row.
+    #[command(
+        after_help = "Tab properties are small key/value labels an agent puts on its OWN tab, \
+for example the ticket it is working on or where it has got to: \
+`termic prop ticket ABC-1`, `termic prop status review`. The task's sidebar \
+row shows every tab's values after the task name, and each tab's own row \
+shows its values. They never touch the task's name.
+
+Each tab has its own properties, so two agents in one task never overwrite \
+each other. When several tabs set the same key, the task row shows the \
+distinct values joined with \", \" in tab order: one tab on ticket ABC-1 and \
+another on ABC-2 read `ABC-1, ABC-2`. Keys appear in the order they were \
+first set; updating a value does not move its key.
+
+`termic prop <key> <value>` sets a property on your own tab ($TERMIC_TAB_ID, \
+set in every agent tab Termic starts); --tab targets another tab by id, \
+1-based strip index or title. `termic prop <key> \"\"` clears it. \
+`termic prop` lists the task's properties per tab and as the task row \
+shows them; `termic prop <key>` lists one key. Without --task, the task is \
+yours ($TERMIC_TASK_ID), then the current directory.
+
+Keys are lowercase letters, digits, - and _ (at most 32 characters). Values \
+are one line, at most 40 characters. A tab holds at most 8 keys. Closing a \
+tab drops its properties.
+
+With --output-format json, one object: {\"task_id\", \"tab_id\" (the tab \
+written, absent for a list), \"tabs\": [{\"tab_id\", \"cli\", \"title\", \
+\"props\": [{\"key\", \"value\"}]}], \"collected\": [{\"key\", \"values\"}]}. \
+`list --json` and `status --json` carry the collected view as `props`.
+
+Exit codes: 0 ok, 1 error (unknown task or tab, no tab to write to, a key \
+or value outside the limits, too many keys), 4 app not running, 5 CLI \
+disabled, 6 refused, 8 connection lost."
+    )]
+    Prop {
+        /// The property key. Omitted: list every property of the task.
+        key: Option<String>,
+        /// The value to set ("" clears the key). Omitted: show that key.
+        value: Option<String>,
+        /// The tab to write to: id, 1-based strip index or title. Default:
+        /// your own tab ($TERMIC_TAB_ID).
+        #[arg(long, value_name = "TAB")]
+        tab: Option<String>,
+        /// Task name, task id, or qualified project/name. Default: your own
+        /// task ($TERMIC_TASK_ID), then the current directory.
+        #[arg(long, value_name = "TASK")]
+        task: Option<String>,
+        /// Project name, to disambiguate. Requires --task.
+        #[arg(long, requires = "task")]
+        project: Option<String>,
+    },
+
     /// Show, rename or recolour your task's sidebar group.
     #[command(
         after_help = "Tasks you create with `new` from inside a task join YOUR task's group: \
@@ -1474,6 +1526,15 @@ fn pre_connect_guard(cmd: &Cmd) -> Result<(), CliError> {
     if let Cmd::Tab { wait: true, prompt: None, library: None, .. } = cmd {
         return Err(CliError::new(exit_code::ERROR, "--wait needs a prompt to wait on"));
     }
+    // Property limits fail here too, before a typo can auto-launch the app.
+    if let Cmd::Prop { key, value, .. } = cmd {
+        if let Some(why) = key.as_deref().and_then(proto::prop_key_problem) {
+            return Err(CliError::new(exit_code::ERROR, why));
+        }
+        if let Some(why) = value.as_deref().and_then(proto::prop_value_problem) {
+            return Err(CliError::new(exit_code::ERROR, why));
+        }
+    }
     // A title a selector could never reach fails here, before a usage
     // mistake can auto-launch the app. Uniqueness needs the live strip and
     // is the webview's call.
@@ -1559,6 +1620,8 @@ outside.",
     let closing_tab = matches!(
         cli.cmd,
         Cmd::Tab { close: Some(TabCmd::Close { .. }), .. } | Cmd::Tab { tab: Some(_), .. }
+    // `prop` too: properties live on open tabs, and a fresh app has none.
+            | Cmd::Prop { .. }
     );
     let mut conn = match client::connect_or_launch(&paths, cli.no_launch || quitting || closing_tab)
     {
@@ -1850,6 +1913,31 @@ outside.",
                     task: target,
                     project: project.clone(),
                     name: name.clone(),
+                    cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
+                },
+                &token,
+            )?;
+            render(&cli.cmd, format, data).map(Output::ok)
+        }
+        Cmd::Prop { key, value, tab, task, project } => {
+            // Same target rule as rename: explicit task, else the caller's
+            // own ($TERMIC_TASK_ID), else the cwd the server resolves. A
+            // write lands on the caller's own tab unless --tab says
+            // otherwise; a read takes no tab at all.
+            let env = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
+            let target_tab = if value.is_some() {
+                tab.clone().or_else(|| env("TERMIC_TAB_ID"))
+            } else {
+                tab.clone()
+            };
+            let data = client::request(
+                &mut conn,
+                proto::Command::Prop {
+                    task: task.clone().or_else(|| env("TERMIC_TASK_ID")),
+                    project: project.clone(),
+                    tab: target_tab,
+                    key: key.clone(),
+                    value: value.clone(),
                     cwd: std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
                 },
                 &token,
@@ -2887,6 +2975,11 @@ pub fn render(cmd: &Cmd, format: OutputFormat, data: proto::ReplyData) -> Result
             OutputFormat::Text => output::group_text(&g),
         }),
         (Cmd::Group { .. }, _) => Err(unexpected("group")),
+        (Cmd::Prop { value, .. }, proto::ReplyData::Prop(p)) => Ok(match format {
+            OutputFormat::Json | OutputFormat::StreamJson => output::json(&p),
+            OutputFormat::Text => output::prop_text(&p, value.is_some()),
+        }),
+        (Cmd::Prop { .. }, _) => Err(unexpected("prop")),
         _ => Err(unexpected("command")),
     }
 }
@@ -3002,6 +3095,33 @@ mod tests {
         assert!(Cli::try_parse_from(["termic", "project", "list"]).is_ok());
         assert!(Cli::try_parse_from(["termic", "project", "remove", "web", "--yes"]).is_ok());
         assert!(Cli::try_parse_from(["termic", "project"]).is_err(), "a subcommand is required");
+    }
+
+    #[test]
+    fn prop_parses_set_clear_and_list_and_guards_its_limits() {
+        let cli = Cli::try_parse_from(["termic", "prop", "ticket", "ABC-1"]).unwrap();
+        let Cmd::Prop { key, value, tab, task, .. } = &cli.cmd else { panic!("not prop") };
+        assert_eq!((key.as_deref(), value.as_deref()), (Some("ticket"), Some("ABC-1")));
+        assert_eq!((tab, task), (&None, &None), "own tab and task come from the env, not the parser");
+        let cli = Cli::try_parse_from(["termic", "prop", "ticket", ""]).unwrap();
+        assert!(matches!(&cli.cmd, Cmd::Prop { value: Some(v), .. } if v.is_empty()), "\"\" is the clear");
+        let cli = Cli::try_parse_from(["termic", "prop"]).unwrap();
+        assert!(matches!(&cli.cmd, Cmd::Prop { key: None, value: None, .. }));
+        let cli = Cli::try_parse_from(["termic", "prop", "--task", "fix-auth", "--tab", "2", "status", "ToDo"]).unwrap();
+        assert!(matches!(&cli.cmd, Cmd::Prop { tab: Some(t), task: Some(k), .. } if t == "2" && k == "fix-auth"));
+        // --project disambiguates a named task only.
+        assert!(Cli::try_parse_from(["termic", "prop", "--project", "web"]).is_err());
+
+        for (argv, why) in [
+            (vec!["termic", "prop", "Ticket", "x"], "lowercase"),
+            (vec!["termic", "prop", "ticket", &"v".repeat(41)], "longer"),
+        ] {
+            let cli = Cli::try_parse_from(argv.clone()).unwrap();
+            let err = pre_connect_guard(&cli.cmd).unwrap_err();
+            assert!(err.message.contains(why), "{argv:?}: {}", err.message);
+        }
+        let cli = Cli::try_parse_from(["termic", "prop", "ticket", ""]).unwrap();
+        assert!(pre_connect_guard(&cli.cmd).is_ok());
     }
 
     #[test]

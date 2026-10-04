@@ -243,6 +243,14 @@ task you run in (the headers helper sends your `$TERMIC_TASK_ID`).
   and custom-terminal tabs, so anything `tab` opens, it can close.
   Closing the task's DEFAULT tab needs `--yes`, because it is what an
   unqualified `send`/`wait`/`attach` resolves to.
+- `"$TERMIC_CLI" prop <key> <value>` - label YOUR tab with what you are
+  working on (`prop ticket ABC-1`, `prop status review`). The task's
+  sidebar row shows every tab's values after the task name, so the user
+  sees at a glance which ticket each agent is on; it never touches the
+  task's name. It writes to your own tab (`$TERMIC_TAB_ID`), so agents
+  in one task never overwrite each other. `prop <key> ""` clears it,
+  bare `prop` lists them. Keys are lowercase (`[a-z0-9_-]`, at most 32),
+  values one line of at most 40 characters, 8 keys per tab.
 - `"$TERMIC_CLI" result <task>` - the agent's last message from its
   session transcript (claude only; other agents error and you fall back
   to the file convention).

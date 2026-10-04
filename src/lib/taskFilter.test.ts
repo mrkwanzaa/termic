@@ -72,6 +72,16 @@ describe("taskMatchesText", () => {
     expect(taskMatchesText(task("1", "x"), taskFilterFacts(tabs), [], "review")).toBe(true);
   });
 
+  it("matches a tab property value, loaded or persisted (GH #358)", () => {
+    const tabs = [term({ props: [{ key: "ticket", value: "ABC-12", since: 1 }] })];
+    expect(taskMatchesText(task("1", "x"), taskFilterFacts(tabs), [], "abc-12")).toBe(true);
+    expect(taskMatchesText(task("1", "x"), taskFilterFacts(tabs), [], "ticket")).toBe(false);
+    const unloaded = task("2", "y", {
+      persisted_tabs: [{ id: "a", cli: "claude", props: [{ key: "ticket", value: "ABC-99", since: 1 }] }],
+    });
+    expect(taskMatchesText(unloaded, undefined, [], "abc-99")).toBe(true);
+  });
+
   it("ignores the agent's live OSC title", () => {
     const tabs = [term({ title: "Claude", liveTitle: "Refactoring parser" })];
     expect(taskMatchesText(task("1", "x"), taskFilterFacts(tabs), [], "parser")).toBe(false);
