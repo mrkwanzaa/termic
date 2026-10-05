@@ -20,7 +20,9 @@ export function SandboxPicker({
   value, onChange, seatbeltUnavailable = false, dockerOffered, dockerUnavailableReason,
   onEnableDocker, compact = false,
 }: {
-  value: SandboxSelection;
+  /** null: nothing picked yet, no card highlighted (the schedule dialog,
+   *  when the default it would seed is a cage it cannot offer). */
+  value: SandboxSelection | null;
   onChange: (s: SandboxSelection) => void;
   /** Disable every Seatbelt card except OFF (sandbox is macOS-only). */
   seatbeltUnavailable?: boolean;

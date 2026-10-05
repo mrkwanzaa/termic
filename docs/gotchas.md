@@ -1076,3 +1076,33 @@ The narrow exception stays valid: when the defect IS the paint (a themed
 `border-color` that never repaints in WKWebView, ## A radio dot moves and the
 highlight does not), the computed value is the only evidence there is. Read it
 after the transition has had time to finish, never straight after the click.
+
+## One agent event is several store writes, and a per-write subscriber sees the first
+
+`goAttention` in TerminalPane marks a blocked agent in two writes, in this
+order: `setWorkState("done")`, then `markAttention("attention")`. Anything that
+subscribes to the store and DECIDES on each write sees a tab that is done and
+not yet asking, for exactly one write. The schedule watcher did: it closed a
+run as finished (`no_report`, agent stopped) a moment before the run asked its
+question, which then reached nobody. Measured, not reasoned: the `#attn` case
+in `schedules.e2e.ts` failed that way with per-write evaluation and passes with
+the decision moved to a microtask (`markDirty` in `lib/schedules/watcher.ts`).
+
+Two more transitions read wrong on a single write: a title-driven agent goes
+working, then idle (title glyph), then done only after the 5s settle, so
+"idle after working" is not an end; and a done the user watched is written as
+idle, never done (`done-while-watching`), so it carries no done stamp at all.
+
+The rule: record observations on every write if you need the path (the
+watcher notes "saw working" synchronously), but make the decision after the
+burst settles, and never treat idle as an ending on its own.
+
+## A sidebar row click restores the previous tab after it activates the task
+
+`TaskRow`'s `onClick` in `Sidebar.tsx` calls `setActive(task)` and then, in
+the same handler, `setActiveTabId(task, <the tab it last had in front>)`.
+Anything that reacts to the activation synchronously (a store subscription on
+`activeTaskId`) and brings a tab to the front is overwritten one line later.
+The schedule watcher opened a run's report tab that way: the tab existed, the
+agent tab was in front. Deferring the open to the next task fixed it, and the
+watcher test that replays the click's two calls pins it.

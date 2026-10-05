@@ -12,7 +12,7 @@ import { usePrefs } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
-import { LayoutGrid, History, Columns3, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play } from "lucide-react";
+import { LayoutGrid, History, Columns3, CalendarClock, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -36,7 +36,7 @@ import { confirmAndArchive } from "@/lib/archiveTask";
 import { startSpotlight, stopSpotlight } from "@/lib/spotlight";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import type { Tab, Task, TaskGroup, TerminalTab } from "@/lib/types";
-import { agentDisplayName } from "@/lib/agents";
+import { agentDisplayName, workDoneCapable } from "@/lib/agents";
 import { effectiveSandboxMode, isSandboxEnforced, isTaskCaged } from "@/lib/types";
 import { SandboxIcon, sandboxModeText, DockerSandboxIcon } from "@/components/SandboxIcon";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
@@ -1145,6 +1145,10 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         <NavItem icon={<Columns3 className={iconSize(compact)} />} label={t("navBoard")}
           active={currentView === "board" && !activeTask} compact={compact}
           onClick={() => setView("board")}
+        />
+        <NavItem icon={<CalendarClock className={iconSize(compact)} />} label={t("navScheduled")}
+          active={currentView === "scheduled" && !activeTask} compact={compact}
+          onClick={() => setView("scheduled")} testId="nav-scheduled"
         />
       </nav>
 
@@ -3287,6 +3291,38 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 <Waypoints className="h-4 w-4" />
                 <span>{t("copyBriefing")}</span>
               </DropdownItem>
+              {/* Schedule (GH #300): this task becomes a schedule's parent, or
+                  edits the one it already is. Only for an agent that can say
+                  it finished, or a run could never end. Disabled on a Docker
+                  task rather than hidden, with the reason on it: its runs must
+                  never quietly fall back to the host. */}
+              {workDoneCapable(w.cli) && (w.schedule ? (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  data-testid={`task-schedule-${w.id}`}
+                  onSelect={() => requestAnimationFrame(() => useUI.getState().openScheduleDialog({ parentTaskId: w.id, edit: true }))}
+                >
+                  <CalendarClock className="h-4 w-4" />
+                  <span>{t("editSchedule")}</span>
+                </DropdownItem>
+              ) : (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  data-testid={`task-schedule-${w.id}`}
+                  disabled={!!w.docker_sandbox_enabled}
+                  onSelect={() => requestAnimationFrame(() => useUI.getState().openScheduleDialog({ parentTaskId: w.id }))}
+                >
+                  <CalendarClock className="h-4 w-4" />
+                  <span className="flex flex-col">
+                    <span>{t("scheduleTask")}</span>
+                    {w.docker_sandbox_enabled && (
+                      <span className="text-[11px] text-[var(--color-fg-faint)]" data-testid={`task-schedule-docker-${w.id}`}>
+                        {t("scheduleDocker")}
+                      </span>
+                    )}
+                  </span>
+                </DropdownItem>
+              ))}
               {/* Move to group: the project row's menu, for tasks. The group
                   list is READ while the menu is open rather than subscribed:
                   a subscription here would re-render every row on every task
@@ -3554,8 +3590,8 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-function NavItem({ icon, label, active, compact, onClick }: {
-  icon: React.ReactNode; label: string; active?: boolean; compact: boolean; onClick: () => void;
+function NavItem({ icon, label, active, compact, onClick, testId }: {
+  icon: React.ReactNode; label: string; active?: boolean; compact: boolean; onClick: () => void; testId?: string;
 }) {
   // In compact mode we use a fixed-size square button (h-9 w-9) centered in
   // the column (mx-auto) so every left-rail icon sits at the exact same x —
@@ -3566,6 +3602,7 @@ function NavItem({ icon, label, active, compact, onClick }: {
   const btn = (
     <button
       onClick={onClick}
+      data-testid={testId}
       className={cn(
         "flex items-center rounded-md text-[13px] font-medium",
         compact

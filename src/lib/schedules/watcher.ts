@@ -38,6 +38,7 @@ import {
 import { markReportsGone, patchEntry, runsToArchive, updateRun } from "@/lib/schedules/history";
 import { reportCutoff } from "@/lib/schedules/slots";
 import { stemOfReport } from "@/lib/schedules/runSpec";
+import { openWebUrlForProject } from "@/lib/previewBrowser";
 import type { ReportStatus, ScheduleRun, Task } from "@/lib/types";
 
 type AppState = ReturnType<typeof useApp.getState>;
@@ -303,6 +304,41 @@ function maybeOpenReport(taskId: string): void {
     const tab = (useApp.getState().tabs[taskId] ?? []).find(t => t.type === "edit" && (t as { path?: string }).path === path);
     if (tab) app.patchTab(taskId, tab.id, { mdView: "preview" });
   }, 0));
+}
+
+/** Open a run's report because the user asked (the Scheduled view's link),
+ *  whatever has been opened before. Markdown opens in the run's task view
+ *  while the run exists, else in the parent's (an old run past keep_runs is
+ *  archived, its report is not). HTML opens in the browser, never in the
+ *  webview. */
+export function openReport(parentId: string, entry: ScheduleRun): void {
+  const st = useApp.getState();
+  const parent = st.tasks.find(t => t.id === parentId);
+  const project = parent ? st.projects.find(p => p.id === parent.project_id) : undefined;
+  if (!parent || !project || !entry.report || entry.report_gone) return;
+  const path = entry.report;
+  if (path.endsWith(".html")) {
+    void openWebUrlForProject(fileUrl(`${project.root_path}/${path}`), st.previewBrowser, project).catch(() => {});
+    return;
+  }
+  const run = entry.run_task_id ? st.tasks.find(t => t.id === entry.run_task_id && !t.archived) : undefined;
+  const target = run?.id ?? parent.id;
+  if (run) reportOpened.add(run.id);
+  st.setActiveTask(target);
+  whenAgentTab(target, () => window.setTimeout(() => {
+    const app = useApp.getState();
+    app.openPreviewTab(target, { type: "edit", path, title: path.slice(path.lastIndexOf("/") + 1) });
+    const tab = (useApp.getState().tabs[target] ?? []).find(t => t.type === "edit" && (t as { path?: string }).path === path);
+    if (tab) app.patchTab(target, tab.id, { mdView: "preview" });
+  }, 0));
+}
+
+/** An absolute path as a file URL, each segment escaped (a `#` in a folder
+ *  name would otherwise start a fragment). */
+function fileUrl(abs: string): string {
+  const p = abs.replace(/\\/g, "/");
+  const segs = p.split("/").map((seg, i) => (i === 0 && /^[A-Za-z]:$/.test(seg) ? seg : encodeURIComponent(seg)));
+  return `file://${p.startsWith("/") ? "" : "/"}${segs.join("/")}`;
 }
 
 function whenAgentTab(taskId: string, fn: () => void): void {

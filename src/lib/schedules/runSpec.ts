@@ -31,8 +31,9 @@ export interface RunSpec {
  * the CLI or MCP does not inherit them from the task that spawned it. So a
  * run inherits only because this function says so.
  *
- * UNDER REVIEW. docs/ideas/scheduled-tasks.md decided on inheriting, and the
- * maintainer reserved a say on YOLO and the sandbox. The alternative on the
+ * UNDER REVIEW. The design (GH #300) decided on inheriting, and the
+ * maintainer reserved a say on YOLO and the sandbox (docs/data-model.md,
+ * "Recurring schedules"). The alternative on the
  * table is "YOLO off and the project's sandbox unless the schedule opts in",
  * which should stay a change to this function plus one schedule field.
  * Keep every other caller reading the spec, never the parent.

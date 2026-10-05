@@ -1572,6 +1572,97 @@ Must be checked by hand whenever the readiness path changes: a resumed claude
 session that shows an update or trust dialog at startup. No suite catches a
 prompt typed into a splash screen.
 
+## Scheduled tasks (GH #300)
+
+Recurring agent runs: a daily dashboard check, a morning triage. The one-shot
+half of #300 is the queue's "Send after" above; this is the recurring half.
+
+**A schedule is a parent task.** `Task.schedule` lives on the parent's record
+(see data-model.md), so it rides the task file: profile-scoped, paused while
+the parent is archived, back on restore. The parent leads the sidebar group
+its runs join, collapsed when the schedule founds it, and is created
+UNMOUNTED: its agent starts when someone opens it, so a schedule costs
+nothing between runs. Its own agent tab is where the user talks about the runs.
+
+**Each run is a new task**: the project's main checkout, never a worktree
+(no branch, no disk, no setup script, and a plain folder has no worktree
+mode), named for its slot (`grafana-check 2026-09-28 09:00`, de-duplicated
+with `(2)`), created with what `runSpecFromParent` derives and mounted but
+never activated. Its prompt gets one appended instruction naming the exact
+report file to write (`lib/schedules/runSpec.ts reportInstruction`). The
+prompt goes in through `lib/agentDelivery.ts`, the same delivery `termic new`
+uses, so the readiness rules are one implementation.
+
+**The clock** (`lib/schedules/runner.ts`) is one JS interval on the
+`initPrStatusPoller` model, next to the queue-message ticker: started by
+`initSchedules` after `loadAll`, one pass at once and then every minute. A
+pass with nothing due reads the task list and writes NOTHING (a count test
+in `runner.test.ts` injects the regression). The decision is
+`decidePass` (`lib/schedules/slots.ts`), pure and driven by an explicit `now`:
+
+- **Grace window, 15 minutes.** A slot first seen within it fires; later, it
+  is missed. No timer runs while the Mac sleeps, so a Mac that wakes at 09:03
+  still gets its 09:00 run.
+- **Missed stays missed**, recorded as one streak entry ("Missed 3 runs"),
+  never rung. "Run once at launch if a run was missed" fires one run however
+  many slots passed.
+- **Overlap is skipped**: a slot due while the previous run is still in
+  flight (working, or waiting on input) is recorded as skipped. The overlap
+  lock is an in-memory map of in-flight runs, so after a relaunch nothing is
+  in flight.
+- **`last_slot` only moves forward**, and a slot is recorded BEFORE its run
+  is created, so a crash costs one run instead of running it twice. A second,
+  per-session guard (`actedSlot`) covers a stale `last_slot` after a lost
+  load-modify-save. Creating, re-enabling or re-timing a schedule starts
+  `last_slot` at the latest slot already passed.
+- **Refused at fire time, not only in the dialog**: a parent switched to
+  Docker, an agent with no done signal, a deleted prompt-library entry. Each
+  records `failed` and creates nothing. A Docker parent's runs never fall back
+  to the host.
+
+**When a run ends** (`lib/schedules/watcher.ts`): one subscription that
+costs a `Map.size` check per store write while no run is in flight. It
+records what a run has been through on every write but DECIDES in a
+microtask, because one agent event can be several writes: `goAttention`
+sets `done` and only then marks the attention (gotchas.md). Done: `fired` if
+the report file exists, else `no_report`, and the run is stopped unless it is
+on screen. Attention: `needs_input`, the run stays live and keeps the
+overlap lock. A PTY exit without a done: `failed`. Idle after working counts
+only while the run is on screen (a done the user acknowledged by watching);
+off screen it proves nothing. After each run, runs past `keep_runs` are
+archived with `skip_scripts` and report retention is applied.
+
+**One notification per run**, through the same OS path and Settings switch
+as every other: "Report ready", "Finished without a report", "Needs your
+input", or why it failed, titled with the schedule's name.
+`useAttentionNotifier` mutes the generic banners of a run's tabs while it is
+in flight, so a run never rings twice. The unread mark still appears.
+
+**Opening a finished run** puts its Markdown report in front of the agent tab,
+rendered (`mdView: "preview"`), once per run per session, and only after the
+agent tab exists (a tab opened first would stop `ensureDefaultTab` restoring
+the agent). An HTML report opens in the browser from the Scheduled view's
+link, never in the webview, which sits outside the sandbox.
+
+**Surfaces.** A **Scheduled** entry in the primary nav (fourth, after
+Kanban) opens `views/Scheduled.tsx`: each schedule's agent, name, project,
+cadence, next run, last outcome (a fired run reads as its report's title,
+linked), an enabled switch, Run now, edit, delete, and its history. Delete
+asks, with "Also delete its reports" unticked, and leaves the parent and its
+runs as ordinary tasks. `ScheduleDialog.tsx` creates one with a new parent
+(project, name, agent and model, prompt or library entry, cadence, the
+Seatbelt sandbox and YOLO seeded the way New Task seeds them, catch-up,
+runs to keep, report retention) or from a task's "Schedule..." menu item,
+where the agent settings are the task's and are not asked for. A Docker
+default seeds no sandbox at all and Create waits for a choice. "Schedule..."
+is disabled on a Docker task with the reason written on the item, and is
+offered only for agents with work-done detection. The dialog and the view
+both state the ceiling in one line: runs happen only while Termic is running
+(a window, or the menu bar), and with profiles only while that profile's
+window is open, because closing a non-root profile window destroys its
+webview. With desktop notifications off, the dialog says so and links to
+the switch.
+
 ## Settled detection / notifications
 
 TerminalPane samples `term.buffer.active` every 3s, FNV-1a hashes the visible viewport, marks tab "settled" after 2 identical consecutive samples. Resets on user input. `markAttention(wsId, tabId, reason)` never marks the active tab in the active task. `useAttentionNotifier` suppresses OS notifications for every tab in the focused task. Desktop notifications off by default. Clicking a banner only brings the window forward: it never changes the active task or tab (the old focus-edge router jumped on any refocus within 15s of a notification, including a plain cmd-Tab). The unread dot is what points at the tab; the user does the switching.

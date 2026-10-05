@@ -17,6 +17,9 @@ export interface ScheduleInput {
 }
 
 export const DEFAULT_KEEP_RUNS = 7;
+/** Rust's `MAX_KEEP_RUNS`: runs past N are found through the history, so N
+ *  has to fit well inside it. */
+export const MAX_KEEP_RUNS = 20;
 export const DEFAULT_REPORT_DAYS = 30;
 /** The retention choices the dialog offers; null is forever. */
 export const REPORT_DAY_CHOICES: readonly (number | null)[] = [7, 30, 90, null];
