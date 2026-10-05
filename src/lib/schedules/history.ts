@@ -46,7 +46,18 @@ export function updateRun(
   runTaskId: string,
   patch: Partial<ScheduleRun>,
 ): ScheduleRun[] | null {
-  const i = history.findIndex(e => e.run_task_id === runTaskId);
+  return patchEntry(history, e => e.run_task_id === runTaskId, patch);
+}
+
+/** Patch the NEWEST entry matching `match`; null when none matches or the
+ *  patch changes nothing. */
+export function patchEntry(
+  history: readonly ScheduleRun[],
+  match: (e: ScheduleRun) => boolean,
+  patch: Partial<ScheduleRun>,
+): ScheduleRun[] | null {
+  let i = -1;
+  for (let j = history.length - 1; j >= 0; j--) if (match(history[j])) { i = j; break; }
   if (i < 0) return null;
   const cur = history[i];
   const merged: ScheduleRun = { ...cur, ...patch };

@@ -11,6 +11,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/store/app";
 import { usePr, initCommentWatcher, initPrStatusPoller } from "@/store/pr";
 import { initScheduledTicker } from "@/lib/scheduledTicker";
+import { initScheduleRunner } from "@/lib/schedules/runner";
 import { sudoTouchIdSetOffer, taskSpotlightStatus } from "@/lib/ipc";
 import { reapOrphanedServers } from "@/lib/lsp/pageSession";
 import { installPointerEventsGuard } from "@/lib/pointerEventsGuard";
@@ -94,6 +95,10 @@ export function App() {
     // one into a chat that is already open and idle. Writes nothing when
     // nothing is due.
     void loaded.then(() => initScheduledTicker());
+    // Recurring schedules (GH #300): the same once-a-minute shape, a
+    // different job. That ticker kicks queued messages in open chats; this one
+    // creates runs.
+    void loaded.then(() => initScheduleRunner());
     // Linux AppImage only: offer to add a launcher entry, once ever. A no-op
     // on every other platform and on a build that is not an AppImage, and it
     // asks only once whatever the answer, so it cannot become a thing that

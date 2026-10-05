@@ -1,9 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
-
-// Pin Seatbelt on, so the sandbox half of the inheritance is exercised on
-// every OS the suite runs on (off macOS a stored mode reads as off).
-vi.mock("@/lib/platform", async (orig) => ({ ...(await orig<object>()), SEATBELT_AVAILABLE: true }));
-
+// Seatbelt is pinned on for every unit test (src/test/setup.ts), so the
+// sandbox half of the inheritance is exercised on every OS the suite runs on.
+import { describe, it, expect } from "vitest";
 import {
   composePrompt, reportInstruction, reportPath, reportStem, runName, runPrompt, runRefusal,
   runSpecFromParent, scheduleSlug, stemOfReport, uniqueName,
