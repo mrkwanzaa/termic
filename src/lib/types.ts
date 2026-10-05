@@ -322,6 +322,9 @@ export interface Task {
    *  every other task. Its runs carry `spawned_by` + this task's group, and
    *  `schedule.history` holds their ids. */
   schedule?: TaskSchedule;
+  /** Per-agent account override (GH #278): agent id -> account name. Absent
+   *  means "follow the agent's default". Written by `taskSetAccount`. */
+  accounts?: Record<string, string>;
   /** True when this task points at the project's main repo checkout
    *  (no git worktree). The UI shows a distinct icon and archive only
    *  removes the entry — the repo on disk is untouched. */
