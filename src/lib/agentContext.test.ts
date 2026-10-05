@@ -80,19 +80,25 @@ describe("footer sources", () => {
   const both = { usage: true, context: true };
 
   it("sends every agent whose context comes from the hooks install to the install", () => {
-    for (const a of ["claude", "codex", "agy", "copilot", "devin", "grok", "opencode", "pi"]) {
+    for (const a of ["claude", "codex", "agy", "copilot", "devin", "grok", "opencode", "pi", "omp"]) {
       expect(footerNeedsHooks(footerSources(a), both), a).toBe(true);
     }
   });
 
   it("does not ask for hooks when only a pulled readout is left on", () => {
-    // codex, copilot and devin pull their usage; hiding context leaves
+    // codex, copilot, devin and omp pull their usage; hiding context leaves
     // nothing that hooks would bring.
-    for (const a of ["codex", "copilot", "devin"]) {
+    for (const a of ["codex", "copilot", "devin", "omp"]) {
       expect(footerNeedsHooks(footerSources(a), { usage: true, context: false }), a).toBe(false);
     }
     // claude's usage IS the status line, so it still needs them.
     expect(footerNeedsHooks(footerSources("claude"), { usage: true, context: false })).toBe(true);
+  });
+
+  it("pulls omp's usage and hooks its context", () => {
+    // `omp usage --json` is a measured cold transport (18.6.0), the plugin's
+    // getContextUsage the context source — the same split as codex's.
+    expect(footerSources("omp")).toEqual({ usage: "pull", context: "hooks" });
   });
 
   it("has no source for muse or an unknown agent", () => {

@@ -161,7 +161,7 @@ someone wonder why the number did not move.
 | Surface | Job | Covers |
 |---|---|---|
 | Row at the top of the agent's card | discover and manage | all eight agents |
-| Usage popover, "Running low? Add a second set..." | discovery **at the moment of need** | claude, codex, devin |
+| Usage popover, "Running low? Add a second set..." | discovery **at the moment of need** | claude, codex, devin, agy, omp |
 | Footer pill, appears at 2+ | see which account, switch it | all eight |
 
 The usage popover is the best vector and cannot be the only one: it renders
@@ -215,7 +215,10 @@ built-in was absent from the list AND from the table, and the guard stayed
 silent. Verified by adding a fake agent and watching the suite pass, then fail.
 
 Six shapes, each because an agent measured that way: `ConfigDir` (claude,
-codex), `SelfHostingDir` (grok: the login follows the var but its binary lives
+codex, omp: `PI_CONFIG_DIR` moves the whole `~/.omp` root and the credential
+is a SQLite row in its `agent.db`, no keyring involved — the one caveat is
+that omp's `PI_CODING_AGENT_DIR` outranks it when a user sets both, in which
+case their override wins over a clone's relocation), `SelfHostingDir` (grok: the login follows the var but its binary lives
 in that tree, so Docker can never mount it), `ParentDir` (gemini appends
 `.gemini`), `XdgRoot` (opencode, devin: broader than the agent, which the UI
 says out loud), `HomeOnly` (pi), `TokenVar` (no agent currently, kept because it is the
@@ -288,7 +291,8 @@ a wrong switch moves a work session onto a personal subscription.
 | nothing at all for an unnamed login | termic would be moving someone off the account they have always used, having never asked |
 
 **Automatic is opt-in, per agent, and only where a number exists.** The toggle
-is offered only when `agent_dirs::reports_usage` is true (claude, codex, devin), and
+is offered only when `agent_dirs::reports_usage` is true (claude, codex, agy,
+devin, omp), and
 `account_set_auto_switch` REFUSES to store it anywhere else rather than keeping
 a flag that can never fire. The view reports it as off for an agent that cannot
 act on it whatever is stored, because a checked box for something that will

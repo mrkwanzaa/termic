@@ -170,6 +170,7 @@ export function AgentChip({ taskId, agentId, cwd, docker, accounts, visible, cla
     : base === "codex" ? ipc.agentUsageCodex
     : base === "devin" ? ipc.agentUsageDevin
     : base === "copilot" ? ipc.agentUsageCopilot
+    : base === "omp" ? ipc.agentUsageOmp
     : null;
 
   // Why the feed cannot run, when it cannot. claude ONLY: it is the only

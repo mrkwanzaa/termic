@@ -493,7 +493,7 @@ export default {
     addTerminal: "Add terminal",
     addTerminalTip: "Add a custom terminal: a command line (docker exec, ssh, ...) offered under New terminal in the + tab menu",
     resetAllTitle: "Reset built-in agents to defaults?",
-    resetAllMessage: "Resets the built-in agents (claude, codex, Antigravity, gemini) to their ship-default commands. Custom agents, per-agent env blocks and your credential sets are kept.",
+    resetAllMessage: "Resets the built-in agents (claude, codex, Antigravity, copilot, grok, pi, omp, opencode, muse, devin, cursor) to their ship-default commands. Custom agents, per-agent env blocks and your credential sets are kept.",
     removeAgentTitle: "Remove agent?",
     removeTerminalTitle: "Remove terminal?",
     removeBody: "<1>{{name}}</1> will be removed. Tasks that reference it will fall back to spawning the literal command <3>{{command}}</3>.",

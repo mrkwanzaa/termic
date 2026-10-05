@@ -188,6 +188,23 @@ const BUILTIN_FALLBACK: Record<string, Pick<Agent, "command" | "args" | "post_la
       name_args: ["--name", "{WORKSPACE_SLUG}"],
     },
   },
+  // oh-my-pi (omp), pi's rewritten fork. Mirrors lib.rs's seeded default;
+  // measured on a live 18.6.0. Capture shape (nothing accepts an id at
+  // launch): the id arrives from termic's plugin, `-r <id>` resumes it, and
+  // `-r` with no value opens omp's own picker. Approvals default to yolo in
+  // omp itself, so `yolo_args` is empty the same way pi's is.
+  omp: {
+    command: "omp", args: [],
+    capabilities: {
+      yolo_args: [],
+      runtime_yolo_command: "",
+      resume_args: ["--continue"],
+      session_id_args: [],
+      resume_id_args: ["--resume", "{UUID}"],
+      resume_picker_args: ["--resume"],
+      name_args: [],
+    },
+  },
   opencode: {
     command: "opencode", args: [],
     capabilities: {
@@ -472,6 +489,21 @@ export const BUILTIN_TITLE_SIGNALS: Record<string, Required<SignalPatterns>> = {
     attention: [],
     pending: [],
   },
+  omp: {
+    // Captured off a live 18.6.0 pty. The π mark is pi's, but omp REPAINTS
+    // the title per spinner frame, which pi never did: OSC 0 is
+    // "π ⠼ <dir>" while the model runs and "π > <dir>" at the composer.
+    // The brand mark anchors both patterns; busy is a catch-all over any
+    // non-`>` glyph after it, because a spinner alphabet is not a stable
+    // contract (claude's reasoning, same trade: a missed busy is the worse
+    // failure). No attention pattern on purpose: omp's approvals default to
+    // yolo, so no blocked title has ever been captured — the plugin owns
+    // attention (tool_approval_requested) for a user who raises the setting.
+    attention: [],
+    busy: ["^π\\s*[\\u2800-\\u28FF]", "^π\\s+[^\\s>]"],
+    idle: ["^π\\s*>"],
+    pending: [],
+  },
   // ── Agents whose titles carry NO state ──────────────────────────────
   // Listed explicitly, with empty patterns, so the next person does not spend
   // an afternoon writing regexes for a title that never changes. All three were
@@ -673,6 +705,12 @@ export const BUILTIN_NOTIFY_IGNORE: Record<string, string[]> = {
   // its Stop hook (measured in the work-state log). Anchored on the tail, since
   // the head is the workspace name.
   muse: ["\\u2014 done \\(\\d+s\\)$"],
+  // omp announces every finished turn over OSC 9 (its completion.notify
+  // defaults on; termic's spoofed iTerm2 env picks the OSC 9 channel):
+  // `omp: Complete`, measured once per clean turn on a live 18.6.0. Same
+  // shape as grok's — a done, not a request. NOT ignored: `omp: Stopped with
+  // error`, its other body, means the turn died, and that one SHOULD ring.
+  omp: ["^omp: Complete$"],
 };
 
 /** Built-in ALLOW-LIST of notification bodies, per agent. When an agent has
@@ -1216,6 +1254,15 @@ export const UNATTENDED_SPAWN_ARGS: Record<string, string[]> = {
   // (the same dir prompts again without it), so it cannot permanently trust
   // a directory behind the user's back. Measured on a live 3000.10.21.
   devin: ["--respect-workspace-trust", "false"],
+  // Not an update prompt (omp's startup update check is notify-only, measured
+  // 18.6.0) and not unattended-only in spirit, but this is the table that
+  // composes per-spawn fixes: omp REFUSES to start in $HOME and silently
+  // moves to a temp dir instead (measured: a session spawned in $HOME
+  // recorded cwd /tmp). A termic task whose directory IS the home directory
+  // would work somewhere else entirely with nothing on screen saying so.
+  // `--allow-home` is run-scoped: it only permits this spawn, so an attended
+  // bare `omp` in $HOME still gets omp's own guard.
+  omp: ["--allow-home"],
 };
 
 export function spawnArgsForCli(

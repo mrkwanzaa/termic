@@ -492,7 +492,7 @@ export default {
     addTerminal: "添加终端",
     addTerminalTip: "添加自定义终端：一条命令行（docker exec、ssh 等），出现在「+」标签菜单的「新建终端」下",
     resetAllTitle: "把内置智能体重置为默认值？",
-    resetAllMessage: "把内置智能体（claude、codex、Antigravity、gemini）重置为出厂命令。自定义智能体、每个智能体的 env 块和你的凭据集都会保留。",
+    resetAllMessage: "把内置智能体（claude、codex、Antigravity、copilot、grok、pi、omp、opencode、muse、devin、cursor）重置为出厂命令。自定义智能体、每个智能体的 env 块和你的凭据集都会保留。",
     removeAgentTitle: "移除智能体？",
     removeTerminalTitle: "移除终端？",
     removeBody: "<1>{{name}}</1> 将被移除。引用它的任务会退回到直接启动字面命令 <3>{{command}}</3>。",

@@ -675,6 +675,146 @@ pub async fn agent_usage_copilot(
     parse_copilot_cache(&text)
 }
 
+// ───────────────────────────────── omp ──────────────────────────────────
+//
+// **omp is asked**, the codex way: `omp usage --json` answers COLD with
+// structured per-provider limits (measured on 18.6.0: `reports[].limits[]`,
+// each carrying `window.id` / `window.durationMs` / `window.resetsAt` (ms) and
+// `amount.usedFraction`). It spawns the CLI rather than reading `~/.omp`
+// because the numbers are a live fetch the CLI already implements, and the
+// account store is its internal SQLite, which is exactly the "agent's own
+// business, will move" read the runbook ranks last.
+//
+// One spawn per poll; the chip only polls for a task that is running omp.
+
+/// Parse `omp usage --json` output into a reading, pure, so the window
+/// selection rules can be pinned against the measured shape.
+///
+/// Window selection: the SHORTEST reported window is the session one (zai's is
+/// `5h`), and a weekly is a window of 7-14 days — omp providers also file
+/// monthly windows (zai `1mo`), which codex's "anything ≥ 7 days" rule would
+/// wrongly take. Reports run per provider; the first report that yields a
+/// window wins, since the CLI lists accounts newest-fetched first and termic
+/// shows one reading, not a fleet summary.
+pub fn parse_omp_usage(v: &serde_json::Value) -> Result<AgentUsage, String> {
+    let reports = v.get("reports").and_then(|r| r.as_array())
+        .ok_or("omp usage has no reports")?;
+    let mut session: Option<UsageWindow> = None;
+    let mut weekly: Option<UsageWindow> = None;
+    for report in reports {
+        let limits = report.get("limits").and_then(|l| l.as_array()).into_iter().flatten();
+        let mut shortest: Option<(u64, UsageWindow)> = None;
+        let mut week: Option<UsageWindow> = None;
+        for limit in limits {
+            let window = limit.get("window").and_then(|w| w.as_object());
+            let Some(window) = window else { continue };
+            let Some(duration) = window.get("durationMs").and_then(as_f64) else { continue };
+            let Some(fraction) = limit.get("amount").and_then(|a| a.get("usedFraction")).and_then(as_f64)
+            else { continue };
+            let resets_at = window.get("resetsAt").and_then(as_f64).map(|ms| (ms / 1000.0) as i64);
+            let w = UsageWindow { used_percent: (fraction * 100.0).clamp(0.0, 100.0), resets_at };
+            // 7 days inclusive, under two weeks so a monthly window cannot
+            // pose as the weekly one.
+            const WEEK_MS: f64 = 7.0 * 24.0 * 60.0 * 60.0 * 1000.0;
+            if duration >= WEEK_MS && duration < 2.0 * WEEK_MS {
+                week = Some(w);
+            } else if duration < WEEK_MS && shortest.as_ref().map_or(true, |(d, _)| duration < *d as f64) {
+                shortest = Some((duration as u64, w));
+            }
+        }
+        if session.is_none() {
+            session = shortest.map(|(_, w)| w);
+        }
+        if weekly.is_none() {
+            weekly = week;
+        }
+        if session.is_some() {
+            break;
+        }
+    }
+    Ok(AgentUsage { session, weekly, plan_type: None, account_id: None, consumed: None })
+}
+
+/// Where omp's own config root is for THIS entry, so `PI_CONFIG_DIR` can point
+/// the CLI at the account that answers. Same resolution codex_home makes:
+/// a named account's own store, a Docker task's mounted dir, else the
+/// entry's instance dir. The var is omp's own (`agent_dirs::login_store`).
+fn omp_home(agent_id: &str, docker: bool, account: Option<&str>) -> Result<PathBuf, String> {
+    if let Some(a) = account {
+        let agents = crate::load_settings_inner().agents;
+        let adopted = agents.iter().find(|x| x.id == agent_id)
+            .and_then(|x| x.adopted_account.as_deref());
+        if adopted != Some(a) {
+            let realm = if docker { crate::LoginRealm::Docker } else { crate::LoginRealm::Host };
+            if let Some(dir) = crate::login_store_dir(agent_id, Some(a), realm) {
+                return Ok(dir);
+            }
+        }
+    }
+    // A Docker task's omp logs in inside the container, whose config root is
+    // the termic-owned directory bind-mounted at that path. Asking the host's
+    // `~/.omp` instead would report a DIFFERENT ACCOUNT's quota under the
+    // task's name (codex's reason, word for word, because it is the same trap).
+    if docker {
+        return Ok(crate::docker::agent_config_host_dir(agent_id));
+    }
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let agents = crate::load_settings_inner().agents;
+    crate::agent_dirs::instance_config_dir(&agents, agent_id, &home)
+        .ok_or_else(|| format!("{agent_id} has no known state dir"))
+}
+
+/// The omp binary to ask, resolved from the REGISTRY entry (codex_binary's
+/// reasoning: a user who renamed the command gets their binary asked).
+fn omp_binary(agent_id: &str) -> String {
+    let agents = crate::load_settings_inner().agents;
+    crate::agent_dirs::resolve_agent(&agents, agent_id)
+        .map(|a| a.command)
+        .filter(|c| !c.trim().is_empty())
+        .unwrap_or_else(|| "omp".to_string())
+}
+
+fn fetch_omp(agent_id: &str, docker: bool, account: Option<&str>) -> Result<AgentUsage, String> {
+    let home = omp_home(agent_id, docker, account)?;
+    let bin = omp_binary(agent_id);
+    // Cold CLI start plus a live fetch; generous for the same reason codex's
+    // RPC_TIMEOUT is, but this is a plain run-to-exit spawn: .output() reads to
+    // EOF and the CLI enforces its own timeouts on the fetch.
+    let out = crate::proc_ctl::command(&bin)
+        .arg("usage")
+        .arg("--json")
+        .env("PI_CONFIG_DIR", &home)
+        .env("PATH", crate::shell_env::resolved_path())
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("could not start `{bin} usage`: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let err = err.lines().next().unwrap_or("omp usage failed");
+        return Err(err.to_string());
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("omp usage output: {e}"))?;
+    parse_omp_usage(&v)
+}
+
+/// Ask omp for this agent entry's usage.
+///
+/// `spawn_blocking` for the same reason codex's is: a synchronous wait on a
+/// process that fetches over the network must not sit on the async runtime,
+/// and a synchronous Tauri command doing that would freeze the whole window
+/// (see CLAUDE.md).
+#[tauri::command]
+pub async fn agent_usage_omp(
+    agent_id: String,
+    docker: bool,
+    account: Option<String>,
+) -> Result<AgentUsage, String> {
+    tauri::async_runtime::spawn_blocking(move || fetch_omp(&agent_id, docker, account.as_deref()))
+        .await
+        .map_err(|e| format!("usage task failed: {e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -755,6 +895,51 @@ mod tests {
         assert_eq!(w.resets_at, Some(1790812800));
         assert_eq!(u.weekly, None);
         assert_eq!(u.plan_type.as_deref(), Some("individual"));
+    }
+
+    /// `omp usage --json`'s shape on 18.6.0, retyped with placeholders: one
+    /// provider report carrying a 5h, a weekly and a monthly window, plus a
+    /// second provider with no quota data. The monthly window must NOT pose
+    /// as the weekly one (codex's ≥7d rule would take it), and the second
+    /// report's emptiness must not overwrite the first report's numbers.
+    #[test]
+    fn omp_takes_the_shortest_window_as_session_and_7_to_14_days_as_weekly() {
+        let v = serde_json::json!({
+            "generatedAt": 1791126967012u64,
+            "reports": [
+                { "provider": "acme", "fetchedAt": 1791126744197u64, "limits": [
+                    { "id": "acme:tokens:5h", "window": { "id": "5h", "durationMs": 18000000,
+                        "resetsAt": 1791134017878u64 },
+                      "amount": { "usedFraction": 0.75, "unit": "tokens" }, "status": "ok" },
+                    { "id": "acme:tokens:1w", "window": { "id": "1w", "durationMs": 604800000,
+                        "resetsAt": 1791694533984u64 },
+                      "amount": { "usedFraction": 0.23, "unit": "tokens" }, "status": "ok" },
+                    { "id": "acme:features:zread:1mo", "window": { "id": "1mo",
+                        "durationMs": 2592000000i64, "resetsAt": 1791997421998u64 },
+                      "amount": { "used": 55, "limit": 1000, "usedFraction": 0.05,
+                        "unit": "requests" }, "status": "ok" }
+                ] },
+                { "provider": "other", "fetchedAt": 1791126744197u64, "limits": [] }
+            ]
+        });
+        let u = parse_omp_usage(&v).unwrap();
+        let s = u.session.expect("a 5h window");
+        assert!((s.used_percent - 75.0).abs() < 1e-9, "{s:?}");
+        assert_eq!(s.resets_at, Some(1791134017));
+        let w = u.weekly.expect("the 1w window");
+        assert!((w.used_percent - 23.0).abs() < 1e-9, "{w:?}");
+        assert_eq!(w.resets_at, Some(1791694533));
+    }
+
+    /// No limits at all → no windows, not an error: a signed-in account with
+    /// no usage data is "nothing to show", the same answer the chip renders
+    /// for a provider that never reported.
+    #[test]
+    fn omp_with_no_limits_says_nothing() {
+        let v = serde_json::json!({ "generatedAt": 1u64, "reports": [ { "provider": "acme", "limits": [] } ] });
+        let u = parse_omp_usage(&v).unwrap();
+        assert_eq!(u.session, None);
+        assert_eq!(u.weekly, None);
     }
 
     #[test]

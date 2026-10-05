@@ -739,6 +739,65 @@ describe("devin resume", () => {
   });
 });
 
+// oh-my-pi (omp). Every fact below was measured on a live 18.6.0: omp's own
+// `tools.approvalMode` defaults to yolo (a write inside and outside the
+// workspace executed unasked, TUI and -p), `-r <uuid>` resumed with history,
+// `-r <bogus>` failed fast with "Session not found" (exit 1), `-r` with no
+// value opened the picker, and a spawn in $HOME silently moved to a temp dir
+// (the session recorded cwd /tmp).
+describe("omp resume", () => {
+  beforeEach(() => { mockAgents.length = 0; });
+  const args = (o: Parameters<typeof spawnArgsForCli>[1]) => spawnArgsForCli("omp", o);
+
+  it("resumes by cwd with --continue", () => {
+    expect(args({ yolo: false, resume: true })).toEqual(["--continue"]);
+  });
+
+  it("passes NO yolo flag, because omp's own approvals already default to yolo", () => {
+    // The pi reasoning, now measured on omp: `--approval-mode yolo` would be
+    // a no-op on a stock install, and an empty yolo_args is the honest
+    // answer rather than a skipped measurement.
+    expect(args({ yolo: true, resume: true })).toEqual(["--continue"]);
+  });
+
+  it("is the capture shape: no id can be minted, one can be resumed", () => {
+    expect(cliSupportsIdSession("omp")).toBe(false);
+    expect(cliSupportsResumeById("omp")).toBe(true);
+    expect(cliSupportsCaptureResume("omp")).toBe(true);
+    // The id reaches omp only through resume_id_args, never a plain spawn.
+    expect(args({ yolo: false, resume: true, sessionUuid: "s-1", resumeKnown: true }))
+      .toEqual(["--continue"]);
+  });
+
+  it("resumes a stored uuid through --resume", () => {
+    expect(resumeIdArgsForCli("omp", "01a10783-4ba0-7000-a311-9f53ffa13147"))
+      .toEqual(["--resume", "01a10783-4ba0-7000-a311-9f53ffa13147"]);
+  });
+
+  it("opens omp's own picker on a failed stored id", () => {
+    // All three picker facts measured: `-r` with no value opens it, Esc
+    // leaves it at exit 0 ("No session selected" — a fast exit-0 is not a
+    // failed resume, so the picker does not loop), and picking reports the
+    // id through the plugin's session_start.
+    expect(resumePickerArgsForCli("omp")).toEqual(["--resume"]);
+  });
+
+  it("adds --allow-home ONLY on an unattended spawn", () => {
+    // omp bounces out of $HOME to a temp dir; a termic task rooted at the
+    // home directory would run somewhere else with nothing saying so.
+    // Run-scoped, so an attended bare `omp` in $HOME keeps omp's own guard.
+    expect(args({ yolo: false, resume: false, unattended: true })).toEqual(["--allow-home"]);
+    expect(args({ yolo: false, resume: false, unattended: false })).toEqual([]);
+  });
+
+  it("has no post-launch capture, on purpose", () => {
+    // The plugin reports the id on session_start (at startup), and omp has
+    // no scriptable session lister to backstop with — `-r` alone is an
+    // interactive picker.
+    expect(postLaunchCaptureForCli("omp")).toBeUndefined();
+  });
+});
+
 // ── defaultCliFirst ───────────────────────────────────────────────────
 
 describe("defaultCliFirst", () => {

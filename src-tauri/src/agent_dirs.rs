@@ -305,6 +305,23 @@ pub fn login_store(base_id: &str) -> Option<LoginStore> {
         // Measured: no dedicated variable exists; a HOME override does isolate
         // it (`ready` became `credentials_not_configured`).
         "pi" => Some(HomeOnly { child: ".pi" }),
+        // Measured on a live 18.6.0: pointing PI_CONFIG_DIR at an empty dir
+        // and running `omp usage` printed "No credentials found", while the
+        // unmodified environment listed two signed-in accounts. The credential
+        // is a plain SQLite row in the agent dir's `agent.db`, not a keyring
+        // item, so a relocated root genuinely carries it — the copilot trap
+        // does not apply.
+        //
+        // PI_CODING_AGENT_DIR (the agent dir INSIDE the root, default
+        // `~/.omp/agent`) also moves the login and OUTRANKS PI_CONFIG_DIR when
+        // both are set (measured: real root + empty agent dir = signed out).
+        // PI_CONFIG_DIR is the one to relocate anyway: it moves the whole
+        // `~/.omp` tree, which is exactly what Docker mounts, so the var and
+        // the mount stay the same path the way claude's are. A user who set
+        // PI_CODING_AGENT_DIR themselves would defeat a clone's isolation;
+        // that is their override winning, and it is spelled out here so the
+        // failure mode is findable.
+        "omp" => Some(ConfigDir { env: "PI_CONFIG_DIR" }),
         _ => None,
     }
 }
@@ -416,7 +433,10 @@ pub fn shared_config_entries(base_id: &str) -> &'static [&'static str] {
 /// table, so a second claude entry reports usage for the same reason the
 /// original does.
 pub fn reports_usage(base_id: &str) -> bool {
-    matches!(base_id, "claude" | "codex" | "devin" | "agy")
+    // omp: `omp usage --json` (measured 18.6.0) prints structured per-provider
+    // limits with window ids and usedFraction — a real cold transport, and it
+    // has a login store (PI_CONFIG_DIR), so the switch has somewhere to go.
+    matches!(base_id, "claude" | "codex" | "devin" | "agy" | "omp")
 }
 
 /// Extra variables an agent needs before its login REALLY follows the store.
@@ -545,6 +565,14 @@ pub fn state_dirs(agent_id: &str) -> &'static [&'static str] {
         // telemetry in `.cache/devin`. `.local/share/devin` holding the
         // binary is exactly grok's collision, so Docker keeps declining it.
         "devin" => &[".config/devin", ".local/share/devin", ".devin", ".cache/devin"],
+        // omp keeps EVERYTHING under `.omp`: the agent dir (agent.db
+        // credentials, sessions, extensions — where termic's plugin installs,
+        // `agent/extensions/termic.ts`), plus cache/logs/run siblings. The
+        // binary installs to `~/.local/bin/omp`, OUTSIDE this tree, so a
+        // Docker mount over `.omp` does not shadow it (grok's problem does
+        // not apply). Measured 18.6.0; `PI_INSTALL_DIR` could move it but
+        // nothing in termic sets that.
+        "omp" => &[".omp"],
         _ => &[],
     }
 }
@@ -699,7 +727,14 @@ mod instance_dir_tests {
         let reporting: Vec<String> = built_ins().into_iter().filter(|id| reports_usage(id)).collect();
         assert_eq!(
             reporting,
-            vec!["claude".to_string(), "codex".to_string(), "agy".to_string(), "devin".to_string()]
+            vec![
+                "claude".to_string(),
+                "codex".to_string(),
+                "agy".to_string(),
+                "devin".to_string(),
+                // omp: `omp usage --json`, measured 18.6.0 (see reports_usage).
+                "omp".to_string(),
+            ]
         );
     }
 
@@ -723,6 +758,10 @@ mod instance_dir_tests {
         }
         assert_eq!(config_relocation_env("claude"), Some("CLAUDE_CONFIG_DIR"));
         assert_eq!(config_relocation_env("codex"), Some("CODEX_HOME"));
+        // omp's var is the whole `~/.omp` root, which is what Docker mounts —
+        // the claude shape, not grok's (its binary is in ~/.local/bin, outside
+        // the tree).
+        assert_eq!(config_relocation_env("omp"), Some("PI_CONFIG_DIR"));
         // The three that would be WRONG as a plain variable name.
         assert_eq!(config_relocation_env("agy"), None, "GEMINI_CLI_HOME is a parent, not a config dir");
         assert_eq!(config_relocation_env("grok"), None,
