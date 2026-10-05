@@ -20,7 +20,9 @@
 // uses. What happens when a run ends lives in lib/schedules/watcher.ts.
 
 import { useApp } from "@/store/app";
+import { useUI } from "@/store/ui";
 import { usePromptLibrary } from "@/store/prompts";
+import { i18n } from "@/lib/i18n";
 import * as ipc from "@/lib/ipc";
 import { withCreateLock } from "@/lib/createLock";
 import { markUnattendedSpawn } from "@/lib/unattendedSpawns";
@@ -138,6 +140,7 @@ export function scheduleTickNow(now: number = Date.now()): Promise<number> {
 }
 
 async function pass(now: number): Promise<number> {
+  hooks.tick?.(now);
   const parents = useApp.getState().tasks.filter(t => t.schedule && !t.archived);
   let count = 0;
   for (const parent of parents) {
@@ -324,6 +327,8 @@ export interface RunHooks {
   delivered?: (runId: string, parentId: string) => void;
   /** The prompt never landed; the entry already says failed. */
   failed?: (runId: string, parentId: string, error: string) => void;
+  /** Every pass of the minute ticker, with its `now`. */
+  tick?: (now: number) => void;
 }
 let hooks: RunHooks = {};
 export function setRunHooks(h: RunHooks): void {
@@ -393,14 +398,36 @@ export async function createSchedule(a: CreateScheduleArgs, now: number = Date.n
   return parentId;
 }
 
-/** Edit a schedule. See `editedSchedule` for when `last_slot` restarts. */
-export function updateSchedule(
+/** Edit a schedule. See `editedSchedule` for when `last_slot` restarts.
+ *
+ *  A rename also renames the parent task while the parent still carries the
+ *  schedule's old name (the parent a new schedule creates is named after it),
+ *  so the sidebar group, which follows its lead's name, agrees with the
+ *  Scheduled view. A parent named something else ("Schedule..." on an
+ *  existing task) keeps its own name. Task names are unique per project, so a
+ *  rename Rust refuses leaves the parent as it was and says why. */
+export async function updateSchedule(
   parentId: string,
   patch: Partial<ScheduleInput> & { enabled?: boolean },
   now: number = Date.now(),
 ): Promise<TaskSchedule | null> {
   actedSlot.delete(parentId);
-  return mutateSchedule(parentId, s => editedSchedule(s, patch, now));
+  const before = useApp.getState().tasks.find(t => t.id === parentId);
+  const oldName = before?.schedule?.name;
+  const next = await mutateSchedule(parentId, s => editedSchedule(s, patch, now));
+  if (next && before && oldName !== undefined && next.name !== oldName
+      && before.name.trim().toLowerCase() === oldName.trim().toLowerCase()) {
+    try {
+      await ipc.taskRename(parentId, next.name);
+      await useApp.getState().loadAll();
+    } catch (e) {
+      useUI.getState().pushToast(
+        i18n.t("backend:schedules.parentRenameFailed", { error: String((e as Error)?.message ?? e) }),
+        "error",
+      );
+    }
+  }
+  return next;
 }
 
 /** Remove a schedule (the parent and its runs stay, as ordinary tasks), and

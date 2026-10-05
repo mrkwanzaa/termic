@@ -1627,9 +1627,13 @@ microtask, because one agent event can be several writes: `goAttention`
 sets `done` and only then marks the attention (gotchas.md). Done: `fired` if
 the report file exists, else `no_report`, and the run is stopped unless it is
 on screen. Attention: `needs_input`, the run stays live and keeps the
-overlap lock. A PTY exit without a done: `failed`. Idle after working counts
-only while the run is on screen (a done the user acknowledged by watching);
-off screen it proves nothing. After each run, runs past `keep_runs` are
+overlap lock. A PTY exit without a done: `failed`. Idle after working ends
+the run at once only while it is on screen (a done the user acknowledged by
+watching). Off screen it proves nothing at first, since a title-driven agent
+goes idle 5s before its done, so the run stays in flight; idle that long after
+working (`IDLE_SETTLE_MS`, 2 minutes, checked on the runner's minute tick)
+settles it by the report without stopping it. That is what frees a run the
+20-minute ceiling gave up on. After each run, runs past `keep_runs` are
 archived with `skip_scripts` and report retention is applied.
 
 **One notification per run**, through the same OS path and Settings switch
@@ -1638,18 +1642,22 @@ input", or why it failed, titled with the schedule's name.
 `useAttentionNotifier` mutes the generic banners of a run's tabs while it is
 in flight, so a run never rings twice. The unread mark still appears.
 
-**Opening a finished run** puts its Markdown report in front of the agent tab,
-rendered (`mdView: "preview"`), once per run per session, and only after the
-agent tab exists (a tab opened first would stop `ensureDefaultTab` restoring
-the agent). An HTML report opens in the browser from the Scheduled view's
-link, never in the webview, which sits outside the sandbox.
+**Opening a finished run** puts its report in front of the user, once per run
+per session: a Markdown report as a rendered tab (`mdView: "preview"`) in
+front of the agent tab, and only after the agent tab exists (a tab opened
+first would stop `ensureDefaultTab` restoring the agent); an HTML report in
+the browser configured for previews, never in the webview, which sits outside
+the sandbox. The Scheduled view's link opens either one on request.
 
 **Surfaces.** A **Scheduled** entry in the primary nav (fourth, after
 Kanban) opens `views/Scheduled.tsx`: each schedule's agent, name, project,
 cadence, next run, last outcome (a fired run reads as its report's title,
 linked), an enabled switch, Run now, edit, delete, and its history. Delete
 asks, with "Also delete its reports" unticked, and leaves the parent and its
-runs as ordinary tasks. `ScheduleDialog.tsx` creates one with a new parent
+runs as ordinary tasks. Renaming a schedule renames its parent too while the
+parent still carries the schedule's old name, so the sidebar group (which
+shows its lead's name) agrees; a parent with a name of its own keeps it.
+`ScheduleDialog.tsx` creates one with a new parent
 (project, name, agent and model, prompt or library entry, cadence, the
 Seatbelt sandbox and YOLO seeded the way New Task seeds them, catch-up,
 runs to keep, report retention) or from a task's "Schedule..." menu item,

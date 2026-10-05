@@ -32,6 +32,7 @@ export default {
     notifyNeedsInput: "等待你的输入",
     notifyExited: "智能体在完成前退出了",
     notifyFailed: "运行没有启动：{{error}}",
+    parentRenameFailed: "定时任务已重命名，但它的任务没有：{{error}}",
   },
 
   attentionNotify: {

@@ -39,6 +39,7 @@ vi.mock("@/lib/agentDelivery", async (orig) => ({
   deliverPromptWhenReady: vi.fn().mockResolvedValue({ ok: true, tabId: "agent" }),
 }));
 vi.mock("@/lib/archiveTask", () => ({ startArchive: vi.fn(async () => {}) }));
+vi.mock("@/lib/previewBrowser", () => ({ openWebUrlForProject: vi.fn(async () => {}) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(null) }));
 
@@ -48,8 +49,9 @@ import { startArchive } from "@/lib/archiveTask";
 import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { useUI } from "@/store/ui";
-import { __resetScheduleRunnerForTests, isRunInFlight, runScheduleNow } from "@/lib/schedules/runner";
-import { __scheduleWatcherForTests as W } from "@/lib/schedules/watcher";
+import { __resetScheduleRunnerForTests, isRunInFlight, runScheduleNow, scheduleTickNow } from "@/lib/schedules/runner";
+import { IDLE_SETTLE_MS, __scheduleWatcherForTests as W } from "@/lib/schedules/watcher";
+import { openWebUrlForProject } from "@/lib/previewBrowser";
 import type { ScheduleRun, Task, TaskSchedule, TerminalTab } from "@/lib/types";
 
 const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(r => setTimeout(r, 0)); };
@@ -221,6 +223,41 @@ describe("a run that ends any other way", () => {
     expect(useApp.getState().mountedTasks.has(runId)).toBe(true);
   });
 
+  it("idle off screen for IDLE_SETTLE_MS settles on the minute tick, without stopping the run", async () => {
+    // Disabled: these passes are only here for the tick, never to fire a slot.
+    seed(schedule({ enabled: false }));
+    vi.mocked(ipc.scheduleReportStatus).mockResolvedValue(REPORT);
+    const runId = await startRun();
+    agent(runId, { workState: "working" });
+    agent(runId, { workState: "idle" }); // the ceiling cleared the spinner
+    await flush();
+    // A tick inside the window does nothing.
+    await scheduleTickNow(Date.now() + IDLE_SETTLE_MS - 5_000);
+    await flush();
+    expect(entry(runId)?.outcome).toBe("running");
+    await scheduleTickNow(Date.now() + IDLE_SETTLE_MS + 1_000);
+    await flush();
+    expect(entry(runId)?.outcome).toBe("fired");
+    expect(isRunInFlight(runId)).toBe(false);
+    expect(useApp.getState().mountedTasks.has(runId)).toBe(true);
+  });
+
+  it("working again restarts the idle clock", async () => {
+    // Disabled: these passes are only here for the tick, never to fire a slot.
+    seed(schedule({ enabled: false }));
+    const runId = await startRun();
+    agent(runId, { workState: "working" });
+    agent(runId, { workState: "idle" });
+    await flush();
+    await new Promise(r => setTimeout(r, 5));
+    agent(runId, { workState: "working" });
+    await flush();
+    await scheduleTickNow(Date.now() + IDLE_SETTLE_MS + 1_000);
+    await flush();
+    expect(entry(runId)?.outcome).toBe("running");
+    expect(isRunInFlight(runId)).toBe(true);
+  });
+
   it("idle after working OFF screen proves nothing: the run waits for its done", async () => {
     const runId = await startRun();
     agent(runId, { workState: "working" });
@@ -345,12 +382,19 @@ describe("opening a finished run", () => {
     expect(useApp.getState().tabs.r1.some(t => t.type === "edit")).toBe(false);
   });
 
-  it("never opens an HTML report in the webview", async () => {
+  it("opens an HTML report in the browser, once, and never in the webview", async () => {
     seed(schedule({ history: [fired(".termic/schedules/grafana-check/2026-10-02_0900.html")] }), [run]);
     useApp.setState({ tabs: { r1: [{ id: "agent", type: "terminal", cli: "claude", is_default: true } as never] } } as never);
     useApp.setState({ activeTaskId: "r1" } as never);
     await flush();
     expect(useApp.getState().tabs.r1.some(t => t.type === "edit")).toBe(false);
+    expect(openWebUrlForProject).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openWebUrlForProject).mock.calls[0][0])
+      .toBe("file:///Users/u/web/.termic/schedules/grafana-check/2026-10-02_0900.html");
+    useApp.setState({ activeTaskId: null } as never);
+    useApp.setState({ activeTaskId: "r1" } as never);
+    await flush();
+    expect(openWebUrlForProject).toHaveBeenCalledTimes(1);
   });
 
   it("survives the row click that restores the previous tab in the same handler", async () => {

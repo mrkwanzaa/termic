@@ -16,9 +16,11 @@
 //   idle after working, with no done, while the run is ON SCREEN (a done
 //                  the user acknowledged by watching it, or their own
 //                  interrupt): resolved by the report file, but NOT stopped.
-//                  Off screen an idle proves nothing (a respawn, or the
-//                  20-minute ceiling, which claims nothing either), so the
-//                  run stays in flight until a done, an exit or the user.
+//                  Off screen an idle proves nothing at first (a
+//                  title-driven agent goes idle 5s before its done), so the
+//                  run stays in flight; idle that long after working
+//                  (IDLE_SETTLE_MS, on the minute tick) settles the same way,
+//                  which is what frees a run the 20-minute ceiling gave up on.
 //   unmounted or archived by the user -> resolved by the report, never rung.
 //
 // One notification per run, through the same OS path and Settings switch as
@@ -50,7 +52,18 @@ interface Track {
   sawPty: boolean;
   needsInput: boolean;
   ending: boolean;
+  /** When the run, off screen, went idle after working without a done.
+   *  Cleared by any later working write. */
+  idleSince?: number;
 }
+
+/** How long a run may sit idle off screen, after working and with no done,
+ *  before it stops counting as in flight. Far past the 5s settle that turns a
+ *  title-driven idle into a done, so a run on its way to a done is never cut
+ *  short; what it catches is the 20-minute ceiling (which clears a spinner
+ *  and claims nothing) and an agent respawned mid-run that never worked
+ *  again. Checked on the runner's minute tick, so no timer of its own. */
+export const IDLE_SETTLE_MS = 2 * 60_000;
 const tracks = new Map<string, Track>();
 /** Runs that already rang. One notification per run, whatever happens next. */
 const rang = new Set<string>();
@@ -80,7 +93,10 @@ function onStore(state: AppState, prev: AppState): void {
       // DECISION waits for the burst to settle (markDirty).
       const tab = agentTabFor(runId);
       if (tab?.ptyId) t.sawPty = true;
-      if (tab?.workState === "working") t.sawWorking = true;
+      if (tab?.workState === "working") {
+        t.sawWorking = true;
+        t.idleSince = undefined;
+      }
       markDirty(runId);
     }
   }
@@ -133,7 +149,21 @@ function evaluate(runId: string, state: AppState): void {
   }
   if (tab.workState === "done") return void end(runId, "done");
   if (tab.unread?.reason === "exit" || (t.sawPty && !tab.ptyId)) return void end(runId, "exited");
-  if (t.sawWorking && isTabOnScreenIn(state, runId)) void end(runId, "idle");
+  if (!t.sawWorking) return;
+  if (isTabOnScreenIn(state, runId)) return void end(runId, "idle");
+  // Off screen an idle proves nothing yet: wait out IDLE_SETTLE_MS (tick).
+  t.idleSince ??= Date.now();
+}
+
+/** The runner's minute tick: settle runs that have sat idle off screen for
+ *  IDLE_SETTLE_MS. Resolved by the report, released from the overlap lock,
+ *  and NOT stopped: nothing claimed the run finished, and an agent the
+ *  ceiling gave up on may still be working. Writes nothing for a run that is
+ *  not due. */
+function tick(now: number): void {
+  for (const [runId, t] of tracks) {
+    if (!t.ending && t.idleSince != null && now - t.idleSince >= IDLE_SETTLE_MS) void end(runId, "idle");
+  }
 }
 
 async function needsInput(runId: string, parentId: string): Promise<void> {
@@ -278,19 +308,23 @@ async function pruneAllAtLaunch(): Promise<void> {
   }
 }
 
-/** Opening a finished run puts its Markdown report in front of the agent tab,
- *  rendered, once per run per session. An HTML report is never opened in
- *  Termic's webview, which sits outside the sandbox (docs/sandbox.md, "Known
- *  gap"); the Scheduled view links it to the browser instead. */
+/** Opening a finished run puts its report in front of the user, once per run
+ *  per session: Markdown as a rendered tab in front of the agent tab, HTML in
+ *  the browser (never in Termic's webview, which sits outside the sandbox:
+ *  docs/sandbox.md, "Known gap"). */
 function maybeOpenReport(taskId: string): void {
   if (reportOpened.has(taskId)) return;
   const st = useApp.getState();
   const run = st.tasks.find(t => t.id === taskId);
   if (!run?.spawned_by) return;
   const e = st.tasks.find(t => t.id === run.spawned_by)?.schedule?.history.find(h => h.run_task_id === taskId);
-  if (!e || e.outcome !== "fired" || !e.report || e.report_gone || !e.report.endsWith(".md")) return;
+  if (!e || e.outcome !== "fired" || !e.report || e.report_gone) return;
   reportOpened.add(taskId);
   const path = e.report;
+  if (path.endsWith(".html")) {
+    openHtmlReport(run.spawned_by, path);
+    return;
+  }
   // Next task, not inside the activation: a sidebar row's click selects the
   // task and THEN restores the tab it last had in front, in the same handler,
   // which would put the agent tab straight back over the report.
@@ -318,7 +352,7 @@ export function openReport(parentId: string, entry: ScheduleRun): void {
   if (!parent || !project || !entry.report || entry.report_gone) return;
   const path = entry.report;
   if (path.endsWith(".html")) {
-    void openWebUrlForProject(fileUrl(`${project.root_path}/${path}`), st.previewBrowser, project).catch(() => {});
+    openHtmlReport(parentId, path);
     return;
   }
   const run = entry.run_task_id ? st.tasks.find(t => t.id === entry.run_task_id && !t.archived) : undefined;
@@ -331,6 +365,17 @@ export function openReport(parentId: string, entry: ScheduleRun): void {
     const tab = (useApp.getState().tabs[target] ?? []).find(t => t.type === "edit" && (t as { path?: string }).path === path);
     if (tab) app.patchTab(target, tab.id, { mdView: "preview" });
   }, 0));
+}
+
+/** An HTML report goes to the browser the user configured for previews,
+ *  never Termic's webview: agent-written HTML there would be agent-written
+ *  script next to the IPC bridge, outside the sandbox. */
+function openHtmlReport(parentId: string, path: string): void {
+  const st = useApp.getState();
+  const parent = st.tasks.find(t => t.id === parentId);
+  const project = parent ? st.projects.find(p => p.id === parent.project_id) : undefined;
+  if (!project) return;
+  void openWebUrlForProject(fileUrl(`${project.root_path}/${path}`), st.previewBrowser, project).catch(() => {});
 }
 
 /** An absolute path as a file URL, each segment escaped (a `#` in a folder
@@ -360,7 +405,7 @@ function whenAgentTab(taskId: string, fn: () => void): void {
 export async function initSchedules(): Promise<void> {
   if (started) return;
   started = true;
-  setRunHooks({ delivered: arm, failed: onDeliveryFailed });
+  setRunHooks({ delivered: arm, failed: onDeliveryFailed, tick });
   unsub = useApp.subscribe(onStore);
   await reconcileAtLaunch().catch(e => console.warn("[schedules] reconcile failed", e));
   initScheduleRunner();
@@ -383,7 +428,7 @@ export const __scheduleWatcherForTests = {
     reportOpened.clear();
   },
   start(): void {
-    setRunHooks({ delivered: arm, failed: onDeliveryFailed });
+    setRunHooks({ delivered: arm, failed: onDeliveryFailed, tick });
     unsub = useApp.subscribe(onStore);
   },
 };

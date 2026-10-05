@@ -41,6 +41,12 @@ vi.mock("@/lib/ipc", () => ({
   taskGroupNew: vi.fn(async (id: string) => { disk.tasks.find(x => x.id === id)!.group = { id }; }),
   taskDelete: vi.fn(async (id: string) => { disk.tasks = disk.tasks.filter(x => x.id !== id); }),
   taskArchive: vi.fn(async (id: string) => { disk.tasks.find(x => x.id === id)!.archived = true; }),
+  taskRename: vi.fn(async (id: string, name: string) => {
+    if (disk.tasks.some(x => x.id !== id && !x.archived && x.name.toLowerCase() === name.toLowerCase())) {
+      throw `a task named "${name}" already exists in this project`;
+    }
+    disk.tasks.find(x => x.id === id)!.name = name;
+  }),
   scheduleDeleteReports: vi.fn(async () => []),
   detectClis: vi.fn().mockResolvedValue([]),
 }));
@@ -55,6 +61,7 @@ import * as ipc from "@/lib/ipc";
 import { deliverPromptWhenReady } from "@/lib/agentDelivery";
 import { useApp } from "@/store/app";
 import { usePromptLibrary } from "@/store/prompts";
+import { useUI } from "@/store/ui";
 import {
   __resetScheduleRunnerForTests, createSchedule, deleteSchedule, isRunInFlight, runScheduleNow,
   scheduleTickNow, updateSchedule,
@@ -341,6 +348,30 @@ describe("creating, editing and deleting", () => {
     expect(stored()).toMatchObject({ enabled: true, last_slot: at(5, 9) });
     await updateSchedule("parent", { name: "renamed" }, at(6, 10));
     expect(stored()).toMatchObject({ name: "renamed", slug: "grafana-check", last_slot: at(5, 9) });
+  });
+
+  it("a rename renames the parent that still carries the schedule's name", async () => {
+    await updateSchedule("parent", { name: "dashboards" }, at(2, 10));
+    expect(ipc.taskRename).toHaveBeenCalledWith("parent", "dashboards");
+    expect(useApp.getState().tasks.find(t => t.id === "parent")!.name).toBe("dashboards");
+    expect(stored()).toMatchObject({ name: "dashboards", slug: "grafana-check" });
+  });
+
+  it("leaves a parent with a name of its own alone", async () => {
+    seed({ name: "ops desk" });
+    await updateSchedule("parent", { name: "dashboards" }, at(2, 10));
+    expect(ipc.taskRename).not.toHaveBeenCalled();
+    expect(stored().name).toBe("dashboards");
+  });
+
+  it("keeps the schedule's new name and says so when the task name is taken", async () => {
+    disk.tasks.push({ ...disk.tasks[0], id: "other", name: "dashboards", schedule: undefined } as Task);
+    useApp.setState({ tasks: clone(disk.tasks) } as never);
+    const toast = vi.spyOn(useUI.getState(), "pushToast");
+    await updateSchedule("parent", { name: "dashboards" }, at(2, 10));
+    expect(stored().name).toBe("dashboards");
+    expect(useApp.getState().tasks.find(t => t.id === "parent")!.name).toBe("grafana check");
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining("already exists"), "error");
   });
 
   it("an unchanged edit writes nothing", async () => {

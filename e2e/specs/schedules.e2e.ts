@@ -398,6 +398,12 @@ describe("the Scheduled view and dialog", () => {
     const s = (await diskTask(parent)).schedule;
     expect(s.slug).toBe(slug);
     expect(s.enabled).toBe(false);
+    // The parent was named after the schedule, so it follows the rename, and
+    // so does its sidebar group, which shows its lead's name.
+    expect((await diskTask(parent)).name).toBe(`${NAME} renamed`);
+    await browser.waitUntil(async () => (await text(`[data-testid="task-group-label-${parent}"]`)) === `${NAME} renamed`, {
+      timeout: 8_000, timeoutMsg: "the sidebar group kept the old name",
+    });
 
     await clickWhenVisible(`[data-testid="schedule-toggle-${parent}"]`);
     await browser.waitUntil(async () => (await attr(rowSel(parent), "data-schedule-enabled")) === "true", {

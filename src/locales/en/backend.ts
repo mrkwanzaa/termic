@@ -36,6 +36,7 @@ export default {
     notifyNeedsInput: "Needs your input",
     notifyExited: "The agent exited before it finished",
     notifyFailed: "The run did not start: {{error}}",
+    parentRenameFailed: "Renamed the schedule, but not its task: {{error}}",
   },
 
   attentionNotify: {
