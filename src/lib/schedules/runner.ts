@@ -371,7 +371,14 @@ export async function createSchedule(a: CreateScheduleArgs, now: number = Date.n
     await ipc.taskSetSchedule(parentId, schedule);
   } catch (e) {
     // Leave nothing half-made behind: the parent existed only for this.
-    if (created) await ipc.taskDelete(parentId).catch(() => {});
+    // Archive first WITHOUT the scripts, then delete: `task_delete` on a live
+    // task archives it with the project's archive script, which would run in
+    // the user's live checkout; on an archived main-checkout task it only
+    // removes the record.
+    if (created) {
+      await ipc.taskArchive(parentId, false, true).catch(() => {});
+      await ipc.taskDelete(parentId).catch(() => {});
+    }
     throw e;
   }
   const parent = all.find(t => t.id === parentId) ?? useApp.getState().tasks.find(t => t.id === parentId);

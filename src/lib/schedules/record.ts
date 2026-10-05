@@ -1,6 +1,6 @@
 // Building and editing a schedule record (GH #300). Pure.
 
-import type { ScheduleCadence, TaskSchedule } from "@/lib/types";
+import type { Project, SandboxSelection, ScheduleCadence, TaskSchedule } from "@/lib/types";
 import { initialLastSlot } from "@/lib/schedules/slots";
 import { scheduleSlug } from "@/lib/schedules/runSpec";
 
@@ -80,6 +80,26 @@ function normalizeCadence(c: ScheduleCadence): ScheduleCadence {
 
 function sameCadence(a: ScheduleCadence, b: ScheduleCadence): boolean {
   return a.kind === b.kind && a.time === b.time && (a.kind !== "weekly" || a.weekday === b.weekday);
+}
+
+/** The sandbox the dialog starts on for a NEW parent: the New Task chain
+ *  without its last-used habit. The project's own answer wins, an explicit
+ *  Off included (`??`, not a truthiness test: a project that opted out of
+ *  caging must not inherit the app-wide Enforce), then the app-wide default.
+ *  Docker comes back as Docker; the dialog turns that into "nothing picked",
+ *  never into a quiet Off. Off macOS a Seatbelt answer reads as Off, as it
+ *  does everywhere (`effectiveSandboxMode`). */
+export function scheduleSandboxSeed(
+  p: Pick<Project, "default_docker" | "default_sandbox_mode" | "default_sandbox"> | null | undefined,
+  globalDefault: SandboxSelection,
+  seatbeltAvailable: boolean,
+): SandboxSelection {
+  if (p?.default_docker) return "docker";
+  const projectMode: SandboxSelection | null =
+    (p?.default_sandbox_mode as SandboxSelection | undefined) ?? (p?.default_sandbox ? "enforce" : null);
+  const pick = projectMode ?? globalDefault;
+  if (pick !== "docker" && pick !== "off" && !seatbeltAvailable) return "off";
+  return pick;
 }
 
 /** Structural equality that ignores key order and `undefined` members, so a

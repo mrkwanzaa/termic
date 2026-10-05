@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { editedSchedule, newSchedule, sameSchedule } from "@/lib/schedules/record";
+import { editedSchedule, newSchedule, sameSchedule, scheduleSandboxSeed } from "@/lib/schedules/record";
 import type { TaskSchedule } from "@/lib/types";
 
 const at = (d: number, h: number) => new Date(2026, 9, d, h).getTime();
@@ -57,5 +57,28 @@ describe("editedSchedule", () => {
     const e = editedSchedule(base, { prompt: "", prompt_id: "builtin:review" }, at(3, 10));
     expect(e.prompt).toBeUndefined();
     expect(e.prompt_id).toBe("builtin:review");
+  });
+});
+
+describe("scheduleSandboxSeed", () => {
+  it("takes the project's answer first, an explicit Off included", () => {
+    expect(scheduleSandboxSeed({ default_sandbox_mode: "off" }, "enforce", true)).toBe("off");
+    expect(scheduleSandboxSeed({ default_sandbox_mode: "enforce-fs" }, "off", true)).toBe("enforce-fs");
+    expect(scheduleSandboxSeed({ default_sandbox: true }, "off", true)).toBe("enforce");
+  });
+
+  it("falls back to the app-wide default only when the project has no opinion", () => {
+    expect(scheduleSandboxSeed({}, "monitor", true)).toBe("monitor");
+    expect(scheduleSandboxSeed(null, "enforce", true)).toBe("enforce");
+  });
+
+  it("hands Docker back as Docker, for the dialog to refuse", () => {
+    expect(scheduleSandboxSeed({ default_docker: true }, "off", true)).toBe("docker");
+    expect(scheduleSandboxSeed({}, "docker", true)).toBe("docker");
+  });
+
+  it("reads a Seatbelt answer as Off where there is no Seatbelt", () => {
+    expect(scheduleSandboxSeed({ default_sandbox_mode: "enforce" }, "off", false)).toBe("off");
+    expect(scheduleSandboxSeed({}, "docker", false)).toBe("docker");
   });
 });

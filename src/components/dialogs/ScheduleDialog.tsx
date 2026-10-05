@@ -27,10 +27,12 @@ import { isTerminalCli, visibleCliIds, workDoneCapable, defaultCliFirst } from "
 import { settingsLoad } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { SEATBELT_AVAILABLE } from "@/lib/platform";
-import { mergeLists, projectSandboxDefault, projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
+import { mergeLists, projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
 import { selectionToFields, type CadenceKind, type SandboxSelection } from "@/lib/types";
 import { createSchedule, updateSchedule } from "@/lib/schedules/runner";
-import { DEFAULT_KEEP_RUNS, DEFAULT_REPORT_DAYS, MAX_KEEP_RUNS, REPORT_DAY_CHOICES, type ScheduleInput } from "@/lib/schedules/record";
+import {
+  DEFAULT_KEEP_RUNS, DEFAULT_REPORT_DAYS, MAX_KEEP_RUNS, REPORT_DAY_CHOICES, scheduleSandboxSeed, type ScheduleInput,
+} from "@/lib/schedules/record";
 import { weekdayName } from "@/lib/schedules/display";
 import { reportFolder, scheduleSlug } from "@/lib/schedules/runSpec";
 
@@ -72,7 +74,7 @@ export function ScheduleDialog() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const liveProjects = useMemo(() => projects, [projects]);
+  const liveProjects = projects;
   const project = liveProjects.find(p => p.id === projectId) ?? null;
 
   // Agents a run can use: shown, installed, and able to say they finished.
@@ -104,7 +106,7 @@ export function ScheduleDialog() {
     setReportDays(s ? s.report_days : DEFAULT_REPORT_DAYS);
     setModel("");
     const p = liveProjects.find(x => x.id === pid) ?? null;
-    const seeded = projectSandboxDefault(p) !== "off" ? projectSandboxDefault(p) : usePrefs.getState().globalDefaultSandboxKind;
+    const seeded = scheduleSandboxSeed(p, usePrefs.getState().globalDefaultSandboxKind, SEATBELT_AVAILABLE);
     setDockerSeeded(seeded === "docker");
     setSelection(seeded === "docker" ? null : seeded);
     setYolo(projectYoloDefault(p, usePrefs.getState().defaultYolo));

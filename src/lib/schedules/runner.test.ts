@@ -40,6 +40,7 @@ vi.mock("@/lib/ipc", () => ({
   }),
   taskGroupNew: vi.fn(async (id: string) => { disk.tasks.find(x => x.id === id)!.group = { id }; }),
   taskDelete: vi.fn(async (id: string) => { disk.tasks = disk.tasks.filter(x => x.id !== id); }),
+  taskArchive: vi.fn(async (id: string) => { disk.tasks.find(x => x.id === id)!.archived = true; }),
   scheduleDeleteReports: vi.fn(async () => []),
   detectClis: vi.fn().mockResolvedValue([]),
 }));
@@ -318,6 +319,11 @@ describe("creating, editing and deleting", () => {
     seed({}, null);
     vi.mocked(ipc.taskSetSchedule).mockRejectedValueOnce("Scheduled runs do not support Docker yet.");
     await expect(createSchedule({ projectId: "p1", agent, input }, at(2, 10))).rejects.toMatch(/Docker/);
+    // Archived without the scripts before the delete, so the project's archive
+    // script never runs in the live checkout for a parent nobody kept.
+    expect(ipc.taskArchive).toHaveBeenCalledWith("run-1", false, true);
+    expect(vi.mocked(ipc.taskArchive).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(ipc.taskDelete).mock.invocationCallOrder[0]);
     expect(ipc.taskDelete).toHaveBeenCalledWith("run-1");
     expect(disk.tasks.map(t => t.id)).toEqual(["parent"]);
   });
