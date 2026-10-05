@@ -304,19 +304,30 @@ function createRun(parent: Task, s: TaskSchedule, slot: number, spec: RunSpec): 
 async function deliver(runId: string, parentId: string, prompt: string): Promise<void> {
   const spawned = await waitForAgentPty(runId);
   const r = await deliverPromptWhenReady(runId, prompt, spawned);
-  if (r.ok) return;
+  if (r.ok) {
+    hooks.delivered?.(runId, parentId);
+    return;
+  }
   inFlight.delete(runId);
   await mutateSchedule(parentId, cur => {
     const h = patchEntry(cur.history, e => e.run_task_id === runId, { outcome: "failed", error: r.error });
     return h ? { ...cur, history: h } : null;
   });
-  onRunFailed?.(runId, parentId);
+  hooks.failed?.(runId, parentId, r.error);
 }
 
-/** Set by the watcher: what to do with a run whose prompt never landed. */
-let onRunFailed: ((runId: string, parentId: string) => void) | null = null;
-export function setOnRunFailed(fn: ((runId: string, parentId: string) => void) | null): void {
-  onRunFailed = fn;
+/** Set by the watcher (lib/schedules/watcher.ts), which owns everything after
+ *  delivery. Hooks rather than an import, so the watcher can import this
+ *  module and not the other way round. */
+export interface RunHooks {
+  /** The prompt landed: start watching for the run's end. */
+  delivered?: (runId: string, parentId: string) => void;
+  /** The prompt never landed; the entry already says failed. */
+  failed?: (runId: string, parentId: string, error: string) => void;
+}
+let hooks: RunHooks = {};
+export function setRunHooks(h: RunHooks): void {
+  hooks = h;
 }
 
 // ─────────────────────── creating and editing ────────────────────────
@@ -416,5 +427,5 @@ export function __resetScheduleRunnerForTests(): void {
   actedSlot.clear();
   chains.clear();
   ticking = null;
-  onRunFailed = null;
+  hooks = {};
 }

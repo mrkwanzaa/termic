@@ -90,6 +90,16 @@ export function initialLastSlot(c: ScheduleCadence, now: number): number | null 
   return latestSlotAtOrBefore(c, now);
 }
 
+/** The local `YYYY-MM-DD` a report must be dated on or after to be kept for
+ *  `days`, the cutoff `schedule_prune_reports` takes. Calendar arithmetic, so
+ *  a DST day is still one day. Retention is local time like every slot. */
+export function reportCutoff(now: number, days: number): string {
+  const d = new Date(now);
+  const c = new Date(d.getFullYear(), d.getMonth(), d.getDate() - days);
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  return `${c.getFullYear()}-${p2(c.getMonth() + 1)}-${p2(c.getDate())}`;
+}
+
 /** What one pass does with one schedule. */
 export type PassAction =
   | { kind: "none" }

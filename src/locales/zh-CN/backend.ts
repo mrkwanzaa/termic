@@ -26,6 +26,14 @@ export default {
     compositionNone: "无",
   },
 
+  schedules: {
+    notifyReportReady: "报告已就绪",
+    notifyNoReport: "已完成，但没有写报告",
+    notifyNeedsInput: "等待你的输入",
+    notifyExited: "智能体在完成前退出了",
+    notifyFailed: "运行没有启动：{{error}}",
+  },
+
   attentionNotify: {
     taskFallback: "任务",
     agentBody: "智能体{{phrase}}",

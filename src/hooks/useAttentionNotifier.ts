@@ -16,6 +16,7 @@ import type { TerminalTab } from "@/lib/types";
 import { taskLabel } from "@/lib/taskLabel";
 import { shouldNotifyUnread, UNREAD_PHRASE, unreadPhrase } from "@/lib/attentionNotify";
 import { i18n } from "@/lib/i18n";
+import { isRunInFlight } from "@/lib/schedules/runner";
 
 const DEBOUNCE_MS = 8000;
 
@@ -35,6 +36,11 @@ export function useAttentionNotifier() {
       const taskIds = Object.keys(state.tabs);
       for (const taskId of taskIds) {
         if (state.tabs[taskId] === prev.tabs[taskId]) continue;
+        // A scheduled run rings once, with what it produced ("report
+        // ready"), from lib/schedules/watcher.ts. Its tabs' generic done,
+        // needs-you and exit banners would be a second ring for one run.
+        // The unread mark on the row still appears.
+        if (isRunInFlight(taskId)) continue;
         const tabs = state.tabs[taskId] || [];
         const prevTabs = prev.tabs[taskId] || [];
         for (const t of tabs) {
