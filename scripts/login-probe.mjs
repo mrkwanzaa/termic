@@ -68,6 +68,14 @@ const AGENTS = [
   // what this probe has NOT yet seen is a signed-in install going signed-out;
   // that is the run that would confirm it end to end.
   { id: "cursor",   env: "CURSOR_CONFIG_DIR", probe: ["status"],                           signedOut: /not logged in/i },
+  // `omp usage --redact` prints "No credentials found" when signed out and the
+  // per-account tables when signed in, which is a read-only observation (it
+  // fetches usage, it never mutates). Measured on 18.6.0: an empty
+  // PI_CONFIG_DIR root printed exactly that while the unmodified environment
+  // listed two signed-in accounts. The credential is a SQLite row in the
+  // agent dir's agent.db, not a keyring item, so "signed out" here is the
+  // whole story.
+  { id: "omp",      env: "PI_CONFIG_DIR",     probe: ["usage", "--redact"],                signedOut: /no credentials found/i },
 ];
 
 const TIMEOUT_MS = 45_000;

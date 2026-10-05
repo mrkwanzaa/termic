@@ -367,6 +367,13 @@ export const agentUsageCopilot = (agentId: string, docker: boolean, account: str
   invoke<AgentUsage & { planType: string | null; accountId: string | null }>(
     "agent_usage_copilot", { agentId, docker, account });
 
+/** omp's usage, from a cold `omp usage --json` spawn (structured per-provider
+ *  limits, measured 18.6.0). `account` picks the `PI_CONFIG_DIR` the CLI is
+ *  pointed at, so a clone is asked about its own login. */
+export const agentUsageOmp = (agentId: string, docker: boolean, account: string | null) =>
+  invoke<AgentUsage & { planType: string | null; accountId: string | null }>(
+    "agent_usage_omp", { agentId, docker, account });
+
 /** One devin session's context window, from its session store. devin has no
  *  live source (no status line, no token counts in any hook), so this is read
  *  when a turn ends. `null` when there is nothing to say yet. */

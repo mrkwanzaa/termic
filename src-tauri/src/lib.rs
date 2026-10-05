@@ -22193,6 +22193,102 @@ fn default_agents() -> Vec<Agent> {
                     .into(),
             }),
         },
+        Agent {
+            // oh-my-pi (omp, github.com/can1357/oh-my-pi). pi fork, rewritten;
+            // measured against a live 18.6.0, not the help text:
+            //   tools.approvalMode    defaults to "yolo" (tools/settings.ts:
+            //                         `default: "yolo"`): a write INSIDE and
+            //                         OUTSIDE the workspace both executed
+            //                         unasked, TUI and -p both. So an empty
+            //                         `yolo_args` is the measured answer, the
+            //                         same reasoning as pi's, not an omission.
+            //                         (`--approval-mode yolo` exists for users
+            //                         who raise the setting; it is a no-op on
+            //                         the default install.)
+            //   -r <id>               resumes THAT session with its history:
+            //                         `-p -r <id> "what word did I ask you to
+            //                         remember"` answered the word. Ids are
+            //                         UUIDv7 (matching the session file name).
+            //   `-r <bogus>`          "Session not found", exit 1, fast — the
+            //                         clean failure failedResume respawns
+            //                         fresh from.
+            //   -r (no value)         opens the picker; Esc leaves it, printing
+            //                         "No session selected" and exiting 0 (a
+            //                         fast exit-0 is NOT a failed resume, so
+            //                         the picker does not loop).
+            //   --continue / -c       most-recent session in this cwd; with
+            //                         none, starts fresh at exit 0.
+            //   NO mint               no flag accepts an id at launch, so the
+            //                         capture shape: the id comes back from
+            //                         termic's own plugin (`session <uuid>`
+            //                         body) on session_start, which fires at
+            //                         STARTUP, before the first prompt.
+            //   --allow-home          starting in $HOME silently moves to a
+            //                         temp dir otherwise (measured: the session
+            //                         recorded cwd /tmp). Composed per-spawn in
+            //                         lib/agents.ts UNATTENDED_SPAWN_ARGS.
+            //   NO --name             no naming flag exists.
+            id: "omp".into(),
+            display_name: "omp".into(),
+            command: "omp".into(),
+            args: vec![],
+            icon_id: "omp".into(),
+            color: "#39acea".into(),
+            builtin: true,
+            disabled: false,
+            capabilities: AgentCapabilities {
+                yolo_args: vec![],
+                runtime_yolo_command: String::new(),
+                runtime_default_command: String::new(),
+                resume_args: vec!["--continue".into()],
+                session_id_args: vec![],
+                resume_id_args: vec!["--resume".into(), "{UUID}".into()],
+                resume_picker_args: vec!["--resume".into()],
+                name_args: vec![],
+                // Captured under tmux-free pty capture on 18.6.0. The window
+                // title is `π <glyph> <cwd-basename>`: a braille spinner frame
+                // while working (`π ⠼ omp-probe`), `π > …` when the composer
+                // is up. The busy rules lead with the brand mark and any
+                // non-`>` glyph, catch-all style, because the spinner alphabet
+                // is not a stable contract (same reasoning as claude's).
+                // attention stays EMPTY on purpose: default approvals are yolo
+                // so there is no captured blocked title, and the plugin owns
+                // attention through `tool_approval_requested` when a user
+                // raises the setting.
+                signals: AgentSignals {
+                    busy: vec!["^π\\s*[\\u2800-\\u28FF]".into(), "^π\\s+[^\\s>]".into()],
+                    idle: vec!["^π\\s*>".into()],
+                    attention: vec![],
+                    pending: vec![],
+                },
+                match_output: false,
+            },
+            env: std::collections::HashMap::new(),
+            docker_env: std::collections::HashMap::new(),
+            sandbox_allowed_paths: vec![
+                // Everything omp keeps: the agent dir (agent.db credentials,
+                // sessions, extensions, cache) lives under ~/.omp. The binary
+                // itself installs to ~/.local/bin/omp, which is deliberately
+                // NOT granted: it is shared with every other agent's shim
+                // (muse's lesson), and omp's startup update check is
+                // notify-only so a caged omp never needs to write there. A
+                // manual `omp update` inside a caged task fails loudly.
+                "$HOME/.omp".into(),
+            ],
+            sandbox_allowed_hosts: vec![],
+            work_done: true,
+            accounts: Vec::new(),
+            default_account: None,
+            adopted_account: None,
+            auto_switch_account: false,
+            extends: None,
+            kind: "agent".into(),
+            // No backstop capture: the plugin reports the id on session_start
+            // (at startup, earlier than opencode's lazy mint), and omp has no
+            // scriptable session lister (`-r` alone opens an interactive
+            // picker), so there is nothing to run post-exit.
+            post_launch_capture: None,
+        },
     ]
 }
 
@@ -24881,6 +24977,7 @@ pub fn run() {
             agent_usage::agent_usage_codex,
             agent_usage::agent_usage_devin,
             agent_usage::agent_usage_copilot,
+            agent_usage::agent_usage_omp,
             agent_usage::agent_context_devin,
             perf_boot_elapsed_ms,
             deep_link_take_pending,
@@ -29519,6 +29616,52 @@ mod tests {
         // why the capture names the format.
         assert!(cap.command.contains("devin list --format csv"), "{}", cap.command);
         assert!(cap.command.contains("cut -d, -f1"), "{}", cap.command);
+    }
+
+    // oh-my-pi (omp) 18.6.0, verified against a live binary rather than
+    // --help. Structural facts this pins, each measured: default approvals
+    // are yolo, resume is `-r <id>` with a picker fallback, and titles carry
+    // the `π <glyph>` state the signals below match.
+    #[test]
+    fn omp_is_capture_shaped_with_yolo_default_approvals() {
+        let agents = seeded_defaults().agents;
+        let omp = agents.iter().find(|a| a.id == "omp").expect("omp seeded");
+        assert_eq!(omp.capabilities.resume_args, vec!["--continue"]);
+        // No MINT: `-r <unknown-id>` fails fast with "Session not found"
+        // (exit 1), so nothing accepts an id at launch. The id arrives from
+        // termic's plugin on session_start, which fires at startup. There is
+        // NO capture backstop command (the picker is interactive-only), so
+        // post_launch_capture stays None deliberately.
+        assert!(omp.capabilities.session_id_args.is_empty());
+        assert_eq!(omp.capabilities.resume_id_args, vec!["--resume", "{UUID}"]);
+        // `-r` with no value opens omp's own picker; leaving it exits 0
+        // ("No session selected"), so the picker spawn cannot loop.
+        assert_eq!(omp.capabilities.resume_picker_args, vec!["--resume"]);
+        // No --name flag exists in omp's CLI.
+        assert!(omp.capabilities.name_args.is_empty());
+        // EMPTY ON PURPOSE, and this is the load-bearing assertion:
+        // `tools.approvalMode` defaults to "yolo" in omp's own settings, and a
+        // live write INSIDE and OUTSIDE the workspace executed unasked in both
+        // the TUI and -p. Passing `--approval-mode yolo` here would be a
+        // no-op; the flag exists only for users who raised the setting.
+        assert!(omp.capabilities.yolo_args.is_empty());
+        // Titles: `π ⠼ <dir>` while working (braille frame after the brand
+        // mark), `π > <dir>` at the composer. Attention stays empty — default
+        // approvals never block, so there is no captured blocked title; the
+        // plugin owns attention through tool_approval_requested.
+        assert!(!omp.capabilities.signals.busy.is_empty());
+        assert!(!omp.capabilities.signals.idle.is_empty());
+        assert!(omp.capabilities.signals.attention.is_empty());
+        assert!(omp.capabilities.signals.pending.is_empty());
+        // One root: agent.db credentials, sessions, extensions and cache all
+        // live under ~/.omp. The binary at ~/.local/bin/omp is deliberately
+        // NOT granted (shared install dir, muse's lesson); omp's startup
+        // update check is notify-only, so a caged omp never writes there.
+        assert!(omp.sandbox_allowed_paths.iter().any(|p| p == "$HOME/.omp"));
+        assert!(omp.sandbox_allowed_paths.len() == 1, "no other grant measured: {:?}", omp.sandbox_allowed_paths);
+        assert_eq!(omp.icon_id, "omp");
+        assert!(omp.post_launch_capture.is_none());
+        assert!(omp.work_done);
     }
 
     #[test]

@@ -41,6 +41,7 @@ target.
 | devin | `SessionStart` | `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | `PermissionRequest`, plus `PreToolUse` on `ask_user_question` | `Stop` | none exists |
 | copilot | none (trust dialog precedes `sessionStart`) | `userPromptSubmitted`, `preToolUse`, `postToolUse` | `permissionRequest` | `agentStop` | none exists |
 | pi | none (`session_start` precedes the input box) | `before_agent_start`, `tool_call` | `ui_prompt_start` (an extension's own prompt; pi has no permission prompts) | `agent_settled` | none exists |
+| omp | none (`session_start` fires at startup, before the composer) | `before_agent_start`, `tool_call` | `tool_approval_requested`, plus `tool_execution_start` on `ask` | `agent_end`, guarded on `willContinue` | none exists |
 | muse | none (`SessionStart` is lazy) | `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | `PermissionRequest` | `Stop` | none exists |
 
 Three install shapes are new with copilot, pi and muse (GH #277 follow-up):
@@ -58,6 +59,45 @@ Three install shapes are new with copilot, pi and muse (GH #277 follow-up):
   running in-process (so the env is simply pi's). Done is `agent_settled`,
   not `agent_end`, because pi can still auto-retry or compact after
   `agent_end`.
+- **omp** (oh-my-pi) is pi's rewritten fork and kept the plugin transport:
+  the same `~/.omp/agent/extensions/termic.ts`, the same
+  `pi.on(event, (payload, ctx))` surface, the same
+  `ctx.getContextUsage()` shape. Measured live on 18.6.0 with a probe
+  extension that logged every payload. What moved against pi:
+  - **No `agent_settled`.** Done is `agent_end`, suppressed while the
+    event's `willContinue` flag is truthy — omp's own docs say a subscriber
+    "must not treat this as a user-visible terminal settle" when a
+    continuation (auto-retry and friends) is already scheduled.
+  - **No `ui_prompt_*`.** Attention is `tool_approval_requested`, which
+    wrapper.ts emits only when a tool genuinely needs a prompt
+    (`approvalCheck.required`), so yolo runs never false-attention — plus
+    `tool_execution_start` with `toolName === "ask"`, the same edge omp's
+    own Warp bridge maps to `question_asked`. On a STOCK install none of
+    this ever fires: `tools.approvalMode` defaults to `"yolo"` (measured: a
+    write inside AND outside the workspace executed unasked, TUI and `-p`
+    both). It is wired anyway so the setting stays honest for a user who
+    raises it.
+  - **Subagents run in-process** with `ctx.agent.kind` of `"main"` or
+    `"sub"`; every handler drops non-main sessions (the muse trap).
+  - **The session id is reported** (`session <uuid>` on `session_start`,
+    `session_switch` and `agent_end`): omp mints its own UUIDv7 at startup,
+    nothing accepts one at launch, and `session_start` fires at startup —
+    earlier than opencode's lazy mint, so there is no capture backstop
+    command either (omp's only lister is an interactive picker).
+  - **An agent's own notifications:** omp sends `OSC 9;omp: Complete` once
+    per clean turn (completion.notify defaults on; termic's iTerm2 spoof
+    picks the OSC 9 channel). Anchored in `BUILTIN_NOTIFY_IGNORE`. Its
+    other body, `omp: Stopped with error`, is deliberately NOT ignored — a
+    died turn should ring.
+  - **Why not omp's Warp protocol:** omp also ships a structured channel,
+    `WARP_CLI_AGENT_PROTOCOL_VERSION=1` in the env → OSC 777
+    `notify;warp://cli-agent;{json}` frames with events `stop`,
+    `stop_failure`, `permission_request`, `question_asked` (attention set
+    per its own tests). Zero-install state detection is tempting, but it
+    would mean a second Rust parser and a second event contract beside the
+    plugin transport that already covers the same states — the bespoke
+    mechanism the runbook forbids when a unified one exists. Rejected;
+    this paragraph is the record so nobody re-investigates.
 - **muse** needs its MANAGED hook file, see below.
 
 **Ready is the only signal that is not a correction.** Everything else here
@@ -929,6 +969,7 @@ tokens/window.
 | codex | `Stop` hook | `transcript_path` is the rollout; its last `token_count` has `last_token_usage.total_tokens` and `model_context_window`. The percent is codex's own, with its 12000-token baseline reserved (`codex-rs/protocol`), so plain tokens/window would disagree with the TUI |
 | opencode | plugin | the last assistant `message.updated` with output: input + output + reasoning + cache read + write, over the model's `limit.context` from `chat.params` (the TUI's formula, read out of 1.18.31) |
 | pi | extension | `ctx.getContextUsage()`, pi's own footer figure |
+| omp | extension | `ctx.getContextUsage()` — the identical `{tokens, contextWindow, percent}` shape pi reports (measured: `{tokens: 5788, contextWindow: 1000000, percent: 0.5788}`) |
 | devin | read at turn end | nothing live: no status line, no token count in any hook. `num_tokens_preceding` of the last assistant node in `cli/sessions.db`, over `max_context_tokens` from `devin models list` (`agent_context_devin`) |
 | muse | none | only `muse serve` (MSP) reports it, never a TUI tab |
 

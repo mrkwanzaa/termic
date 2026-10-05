@@ -717,6 +717,28 @@ pub fn hooks_for(agent: &str) -> &'static [(&'static str, Signal)] {
             ("ui_prompt_end", Signal::Working),
             ("agent_settled", Signal::Done),
         ],
+        // omp, same in-process model as pi's extension (it is a pi fork; the
+        // API moved under the same names). Differences, all measured on
+        // 18.6.0: there is no `agent_settled` (Done is `agent_end`, guarded by
+        // the event's `willContinue` flag so an auto-retry continuation does
+        // not settle the turn); there is no `ui_prompt_*` (attention is the
+        // `tool_approval_requested`/`tool_approval_resolved` pair, which fires
+        // only when a tool genuinely needs a prompt — wrapper.ts gates it on
+        // `approvalCheck.required` — plus `tool_execution_start` with
+        // `toolName === "ask"`, which is how omp's own Warp bridge derives its
+        // `question_asked`). No Ready: `session_start` fires at startup,
+        // before the composer is up, and an early Ready is worse than none.
+        // Default approvals are yolo (`tools.approvalMode` defaults "yolo"),
+        // so on a stock install the attention pair only fires for a user who
+        // raised the setting — wiring it anyway is what makes that setting
+        // honest inside termic.
+        "omp" => &[
+            ("before_agent_start", Signal::Working),
+            ("tool_call", Signal::Working),
+            ("tool_approval_requested", Signal::Attention),
+            ("tool_approval_resolved", Signal::Working),
+            ("agent_end", Signal::Done),
+        ],
         "opencode" => &[
             ("chat.message", Signal::Working),
             ("permission.asked", Signal::Attention),
@@ -877,7 +899,10 @@ enum Schema {
 fn schema_for(agent: &str) -> Schema {
     match agent {
         "copilot" => Schema::CopilotFile,
-        "opencode" | "pi" => Schema::PluginFile,
+        // omp is a pi fork and kept the layout: its loader scans the active
+        // agent dir's `extensions/` for `.ts`/`.js` modules (18.6.0, with
+        // explicit legacy-pi compat machinery), so the same transport works.
+        "opencode" | "pi" | "omp" => Schema::PluginFile,
         "agy" => Schema::AntigravityNamed,
         _ => Schema::ClaudeCompatible,
     }
@@ -1483,8 +1508,151 @@ exit 0
 fn plugin_body(agent: &str) -> String {
     match agent {
         "pi" => pi_extension_body(),
+        "omp" => omp_extension_body(),
         _ => opencode_plugin_body(),
     }
+}
+
+/// omp's extension. Same transport and structure as pi's (same fork, same
+/// `pi.on(event, handler)` surface, same `ContextUsage`), with the event
+/// differences 18.6.0 actually has — each measured live with a probe
+/// extension that logged every payload:
+///
+/// - Done is `agent_end`, NOT guarded by a settle event: omp has no
+///   `agent_settled`. Instead `AgentEndEvent.willContinue` says the session
+///   already scheduled a continuation (auto-retry and friends) and
+///   "subscribers must not treat this as a user-visible terminal settle"
+///   (shared-events.ts) — so `willContinue` truthy suppresses the Done.
+/// - Attention is `tool_approval_requested` (fired only when a tool truly
+///   needs a prompt — `approvalCheck.required` in wrapper.ts — so yolo runs
+///   never false-attention) plus omp's own ask edge, `tool_execution_start`
+///   with `toolName === "ask"`, which is the same event omp's Warp bridge
+///   maps to its `question_asked` attention event. Working comes back on
+///   `tool_approval_resolved`, or on the next tool result after an ask.
+/// - omp runs SUBAGENTS in-session (`ctx.agent.kind` is `"main"` or `"sub"`)
+///   and a subagent's `agent_end` would end the tab's turn early — the muse
+///   trap. Every handler drops non-main sessions.
+/// - The session id is REPORTED (`session <uuid>` body), the codex way: omp
+///   mints its own UUIDv7 at startup and accepts one only on `-r`, so this
+///   report is the resume binding. `session_start` fires at startup (before
+///   the first prompt, measured in `-p` and TUI alike) and again on an
+///   in-process `/resume` switch, where `session_switch` also fires.
+///
+/// Context comes from `ctx.getContextUsage()` — `{tokens, contextWindow,
+/// percent}`, the identical shape pi reports (measured:
+/// `{tokens: 5788, contextWindow: 1000000, percent: 0.5788}`), percent 0-100.
+fn omp_extension_body() -> String {
+    let attention = Signal::Attention.payload();
+    let working = Signal::Working.payload();
+    let done = Signal::Done.payload();
+    let ctx = format!("{NOTIFY_PREFIX}{CONTEXT_BODY_PREFIX}");
+    let session = format!("{NOTIFY_PREFIX}{SESSION_BODY_PREFIX}");
+    format!(
+        r#"// termic agent hook for omp (generated, schema v{SCHEMA_VERSION}). Safe to delete.
+//
+// Reports oh-my-pi's state, context window and session id to termic by writing
+// one OSC sequence to the terminal termic handed it ($TERMIC_PTY). Runs
+// in-process, so every handler is wrapped: a throw here would land in omp.
+import {{ openSync, writeSync, closeSync, constants as fsConstants }} from "node:fs";
+
+const PTY = process.env.TERMIC_PTY;
+// Installed globally, so it also loads under a plain `omp` in any terminal.
+const ACTIVE = Boolean(PTY && process.env.TERMIC_TASK_ID);
+const TARGETS = [PTY, "/proc/1/fd/1", "/dev/tty"];
+
+const send = (payload: string) => {{
+  if (!ACTIVE) return;
+  for (const t of TARGETS) {{
+    if (!t) continue;
+    try {{
+      // NON-BLOCKING: a tty whose reader is gone fills up, and a blocking
+      // write would freeze the agent itself (this runs in its process) and
+      // hold the tty's lock, which hangs anything else that stats /dev.
+      const fd = openSync(t, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOCTTY);
+      try {{ writeSync(fd, `\x1b]${{payload}}\x07`); }} finally {{ closeSync(fd); }}
+      return;
+    }} catch {{ /* try the next */ }}
+  }}
+}};
+
+const ATTENTION = "{attention}";
+const WORKING   = "{working}";
+const DONE      = "{done}";
+const CTX       = "{ctx}";
+const SESSION   = "{session}";
+
+let lastBeat = 0;
+const beat = () => {{
+  const now = Date.now();
+  if (now - lastBeat < {HEARTBEAT_MS}) return;
+  lastBeat = now;
+  send(WORKING);
+}};
+
+let lastCtx = "";
+const reportContext = (ctx: any) => {{
+  const u = ctx?.getContextUsage?.();
+  if (!u || u.tokens == null || !(u.contextWindow > 0)) return;
+  const pct = typeof u.percent === "number" ? u.percent : (u.tokens / u.contextWindow) * 100;
+  const body = `${{Math.round(u.tokens)}} ${{Math.round(u.contextWindow)}} ${{Math.round(pct)}}`;
+  if (body === lastCtx) return;
+  lastCtx = body;
+  send(CTX + body);
+}};
+
+// Subagents run in this session's process under their own id; their edges
+// must never move the tab (a subagent's agent_end would end the turn early).
+const isMain = (ctx: any) => !ctx?.agent || ctx.agent.kind === "main";
+const reportSession = (ctx: any) => {{
+  if (!isMain(ctx)) return;
+  const id = ctx?.sessionManager?.getSessionId?.();
+  if (typeof id === "string" && id) send(SESSION + id);
+}};
+
+export default function (pi: any) {{
+  if (!ACTIVE) return;
+  // Set by the two blocking edges (approval prompt, ask) and cleared by the
+  // next tool result, so an answered ask hands Working back EXACTLY rather
+  // than whenever the next heartbeat happens to be due (opencode is the
+  // precedent: attention cleared, not inferred).
+  let awaiting = false;
+  const on = (event: string, fn: (event: any, ctx: any) => void) =>
+    pi.on(event, async (event: any, ctx: any) => {{
+      try {{ if (isMain(ctx)) fn(event, ctx); }} catch {{ /* never throw into omp */ }}
+    }});
+  on("before_agent_start", () => {{ send(WORKING); lastBeat = Date.now(); }});
+  on("tool_call", () => beat());
+  on("tool_approval_requested", () => {{ awaiting = true; send(ATTENTION); }});
+  on("tool_approval_resolved", () => {{ awaiting = false; send(WORKING); }});
+  // omp's ask tool blocks on the user without an approval event; this is the
+  // edge its own Warp bridge maps to `question_asked`.
+  on("tool_execution_start", (event: any) => {{
+    if (event?.toolName === "ask") {{ awaiting = true; send(ATTENTION); }}
+  }});
+  on("tool_result", () => {{
+    if (awaiting) {{ awaiting = false; send(WORKING); return; }}
+    beat();
+  }});
+  // omp handlers receive (event, ctx) — the payload FIRST, context second —
+  // so every ctx-only handler names the payload and lets it go.
+  on("turn_end", (_event: any, ctx: any) => reportContext(ctx));
+  on("session_compact", (_event: any, ctx: any) => reportContext(ctx));
+  // A resumed session already has a context before its first turn, and the
+  // id is the resume binding: report both the moment a session exists.
+  on("session_start", (_event: any, ctx: any) => {{ reportContext(ctx); reportSession(ctx); }});
+  on("session_switch", (_event: any, ctx: any) => reportSession(ctx));
+  // `willContinue` = the session already scheduled a continuation
+  // (auto-retry, empty-stop retry); omp's own docs say subscribers must not
+  // treat that agent_end as a terminal settle.
+  on("agent_end", (event: any, ctx: any) => {{
+    if (event?.willContinue) return;
+    reportContext(ctx);
+    reportSession(ctx);
+    send(DONE);
+  }});
+}}
+"#
+    )
 }
 
 /// pi's extension. Everything the opencode plugin says about running
@@ -1940,6 +2108,11 @@ fn settings_rel(agent: &str) -> &'static str {
         // transpiles it itself, so there is no build step (measured on 0.85.1,
         // under `-p` as well as the TUI).
         "pi" => "agent/extensions/termic.ts",
+        // omp inherited the layout: its loader scans the active agent dir's
+        // `extensions/` for `.ts`/`.js`, transpiling in-process (18.6.0, `-p`
+        // and TUI both, measured live with a probe extension). The agent dir
+        // is `<config root>/agent`, so this lands at `~/.omp/agent/extensions/`.
+        "omp" => "agent/extensions/termic.ts",
         // grok reads every *.json under hooks/, so it gets a file of its own
         // and removal is a delete rather than a merge-back.
         "grok" => "hooks/termic.json",
@@ -2872,7 +3045,7 @@ pub fn remove(target: &Target) -> Result<(), String> {
 /// row can say "not supported yet" rather than offering a button that fails.
 /// Agents this build can wire. Each needs a measured event AND a transport
 /// that reaches termic; see `event_for` / `uses_terminal_sequence`.
-pub const SUPPORTED: &[&str] = &["claude", "grok", "agy", "opencode", "codex", "devin", "pi", "copilot", "muse"];
+pub const SUPPORTED: &[&str] = &["claude", "grok", "agy", "opencode", "codex", "devin", "pi", "omp", "copilot", "muse"];
 
 /// Which agents' hooks work on this OS. Windows: claude only. Its hooks run
 /// through Git Bash, which the `.sh` scripts need, and reach the app
@@ -5928,6 +6101,146 @@ fn a_v3_config_gains_the_readiness_event_without_losing_the_others() {
             .filter(|e| e.file_name().to_string_lossy().contains("termic-tmp"))
             .collect();
         assert!(strays.is_empty(), "temp file left behind");
+    }
+
+    // ── omp ─────────────────────────────────────────────────────────
+    #[test]
+    fn omp_is_a_plugin_with_pis_layout_and_its_own_edges() {
+        assert_eq!(schema_for("omp"), Schema::PluginFile);
+        // The pi layout: the active agent dir's extensions/, which for omp is
+        // `~/.omp/agent/extensions/` (config root + `agent`).
+        assert_eq!(settings_rel("omp"), "agent/extensions/termic.ts");
+        assert!(SUPPORTED.contains(&"omp"));
+        let h = hooks_for("omp");
+        assert!(h.iter().any(|(e, s)| *e == "tool_approval_requested" && *s == Signal::Attention));
+        // The release edge, like opencode's permission.replied: attention
+        // CLEARED rather than inferred from the next busy signal.
+        assert!(h.iter().any(|(e, s)| *e == "tool_approval_resolved" && *s == Signal::Working));
+        // Done is agent_end here, not pi's agent_settled: omp has no settle
+        // event; the plugin guards on AgentEndEvent.willContinue instead.
+        assert!(h.iter().any(|(e, s)| *e == "agent_end" && *s == Signal::Done));
+    }
+
+    #[test]
+    fn the_omp_plugin_never_signals_with_raw_133_or_carries_prose() {
+        let js = omp_extension_body();
+        assert!(js.matches("try {").count() >= 3, "every handler needs its own try");
+        assert!(js.contains("catch"), "and a catch that swallows");
+        assert!(js.contains("TERMIC_PTY") && js.contains("TERMIC_TASK_ID"));
+        assert!(js.contains(&Signal::Attention.payload()));
+        assert!(js.contains(WORKING_BODY) && js.contains(DONE_BODY));
+        assert!(js.contains(SESSION_BODY_PREFIX), "the resume binding: omp cannot be told an id at launch");
+        // willContinue is the done guard: an auto-retry continuation must not
+        // settle the turn (shared-events.ts: "must not ... terminal settle").
+        assert!(js.contains("willContinue"));
+        // The muse trap: omp runs subagents in-process under their own id.
+        assert!(js.contains("agent.kind"), "subagent sessions must be dropped");
+        // No raw control bytes in a generated source file.
+        assert!(!js.contains('\u{1b}') && !js.contains('\u{7}'));
+    }
+
+    /// Runs the generated omp extension for real under node's type stripping,
+    /// dispatching the event shapes omp 18.6.0 was measured sending, and reads
+    /// what reached the pty. Skipped where there is no node (the extension
+    /// itself runs under omp's Bun runtime, but the module strips either way).
+    #[test]
+    #[cfg(unix)]
+    fn the_omp_extension_reports_edges_context_and_session_to_the_pty() {
+        use std::process::Command;
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let ext = dir.path().join("termic.ts");
+        let pty = dir.path().join("pty");
+        std::fs::write(&ext, omp_extension_body()).unwrap();
+        std::fs::write(&pty, "").unwrap();
+        let driver = dir.path().join("drive.mjs");
+        // Each event: clear the pty, dispatch, read what the event wrote. A
+        // regular file does not append across O_WRONLY opens, so the read
+        // sees the event's LAST send; two-send events assert their tail and
+        // the other body is pinned elsewhere (session_start's context write
+        // is asserted by turn_end's).
+        std::fs::write(&driver, format!(r#"
+            import {{ readFileSync, writeFileSync }} from "node:fs";
+            const mod = await import(process.argv[2]);
+            const handlers = {{}};
+            const pi = {{ on: (event, fn) => {{ (handlers[event] ??= []).push(fn); }} }};
+            await mod.default(pi);
+            const dispatch = async (event, payload, ctx) => {{
+                writeFileSync(process.env.TERMIC_PTY, "");
+                for (const h of handlers[event] ?? []) await h(payload, ctx);
+                return readFileSync(process.env.TERMIC_PTY, "utf8");
+            }};
+            const usage = (tokens, window, percent) => ({{ getContextUsage: () => ({{ tokens, contextWindow: window, percent }}) }});
+            const ctxMain = {{ ...usage(5788, 1000000, 0.5788), agent: {{ kind: "main", id: "Main" }},
+                sessionManager: {{ getSessionId: () => "01a10783-4ba0-7000-a311-9f53ffa13147" }} }};
+            // The turn GROWS the context (probe: 5788 → 6717 on the resume
+            // turn); turn_end reports the new figure. usage() spreads LAST
+            // so its getContextUsage wins the override.
+            const ctxTurn = {{ ...ctxMain, ...usage(6717, 1000000, 0.6717) }};
+            const ctxSub = {{ agent: {{ kind: "sub", id: "0-Explore" }} }};
+            const reads = [];
+            reads.push(["session_start", await dispatch("session_start", {{}}, ctxMain)]);
+            reads.push(["before_agent_start", await dispatch("before_agent_start", {{}}, ctxMain)]);
+            reads.push(["turn_end", await dispatch("turn_end", {{}}, ctxTurn)]);
+            reads.push(["approval_requested", await dispatch("tool_approval_requested", {{ toolName: "write" }}, ctxMain)]);
+            reads.push(["approval_resolved", await dispatch("tool_approval_resolved", {{ toolName: "write", approved: true }}, ctxMain)]);
+            reads.push(["ask", await dispatch("tool_execution_start", {{ toolName: "ask" }}, ctxMain)]);
+            reads.push(["tool_result", await dispatch("tool_result", {{ toolName: "ask" }}, ctxMain)]);
+            reads.push(["agent_end_will_continue", await dispatch("agent_end", {{ willContinue: true, messages: [] }}, ctxMain)]);
+            reads.push(["agent_end", await dispatch("agent_end", {{ willContinue: false, messages: [] }}, ctxTurn)]);
+            reads.push(["sub_working", await dispatch("before_agent_start", {{}}, ctxSub)]);
+            reads.push(["sub_agent_end", await dispatch("agent_end", {{ messages: [] }}, ctxSub)]);
+            reads.push(["ctx_dedup", await dispatch("turn_end", {{}}, ctxTurn)]);
+            console.log(JSON.stringify(reads));
+        "#)).unwrap();
+        let out = Command::new("node")
+            .arg("--experimental-strip-types")
+            .arg(&driver).arg(&ext)
+            .env("TERMIC_PTY", &pty).env("TERMIC_TASK_ID", "t1")
+            .output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let reads: Vec<(String, String)> = serde_json::from_slice(&out.stdout).unwrap();
+        let body = |b: &str| format!("\x1b]{NOTIFY_PREFIX}{b}\x07");
+        let expect: Vec<(&str, String)> = vec![
+            // session_start sends context THEN the id; a regular file holds
+            // the last, so the id is the observable one here.
+            ("session_start", body("session 01a10783-4ba0-7000-a311-9f53ffa13147")),
+            ("before_agent_start", body(WORKING_BODY)),
+            // The turn's new reading: 6717/1000000 → "6717 1000000 1".
+            ("turn_end", body(&format!("{CONTEXT_BODY_PREFIX}6717 1000000 1"))),
+            ("approval_requested", body(ATTENTION_BODY)),
+            ("approval_resolved", body(WORKING_BODY)),
+            ("ask", body(ATTENTION_BODY)),
+            // An answered ask hands Working back EXACTLY (the awaiting flag),
+            // not on the next heartbeat: without this the tab stays needs-you
+            // for up to the 2s heartbeat after the user answers.
+            ("tool_result", body(WORKING_BODY)),
+            // willContinue: the session scheduled a continuation — NOT a
+            // settle, per omp's own event docs.
+            ("agent_end_will_continue", String::new()),
+            // The real settle: the handler reports the session id FIRST and
+            // then done — two writes per event. On a real pty they append
+            // (stream, no file offset); on the regular file this driver uses,
+            // the second open rewinds to 0 and overwrites, leaving the tail
+            // of the session body visible after the done body. Assert that
+            // exact composition: it proves BOTH writes fired, in that order.
+            ("agent_end", {
+                let s = body("session 01a10783-4ba0-7000-a311-9f53ffa13147");
+                let d = body(DONE_BODY);
+                format!("{d}{}", &s[d.len()..])
+            }),
+            // A subagent's edges move nothing — the muse trap.
+            ("sub_working", String::new()),
+            ("sub_agent_end", String::new()),
+            // The same context figure writes nothing the second time.
+            ("ctx_dedup", String::new()),
+        ];
+        for ((label, want), (got_label, got)) in expect.iter().zip(reads.iter()) {
+            assert_eq!(label, got_label, "driver order changed");
+            assert_eq!(want, got, "event {label} wrote the wrong thing");
+        }
     }
 }
 

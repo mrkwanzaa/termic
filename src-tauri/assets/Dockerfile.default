@@ -70,6 +70,12 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
 # that can put the binary inside ~/.pi, which is also its config dir, and
 # mounting a config dir over its own binary is why grok can never persist.
 RUN npm install -g @earendil-works/pi-coding-agent
+# https://github.com/can1357/oh-my-pi - omp.sh/install is safe here, unlike
+# pi's script: the prebuilt binary lands in $HOME/.local/bin (the script's
+# PI_INSTALL_DIR default, measured 18.6.0), OUTSIDE the mounted ~/.omp, so the
+# mount cannot shadow it. The npm package needs a Bun runtime this image does
+# not carry; the binary is self-contained. POSIX sh, not bash (its shebang).
+RUN curl -fsSL https://omp.sh/install | sh
 # https://developer.meta.com/ai/resources/blog/build-with-muse-code/ - curl
 # is the only install path Meta publishes (no npm package). The shim lands in
 # ~/.local/bin (already on PATH above) and re-execs a versioned sibling

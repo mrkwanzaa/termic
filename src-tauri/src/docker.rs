@@ -185,7 +185,12 @@ struct AgentConfig {
 /// only lists dirs `docs/docker-sandbox/findings.md` actually
 /// verified. grok is the one exception still declined outright: binary +
 /// skills + config all live under `~/.grok`, no clean relocation env.
-pub const KNOWN_SAFE_AGENTS: &[&str] = &["claude", "codex", "copilot", "agy", "antigravity", "opencode", "pi", "muse", "cursor"];
+///
+/// omp is in despite the installer's default prefix: `omp.sh/install` puts the
+/// binary in `$HOME/.local/bin` (measured 18.6.0), which is OUTSIDE the
+/// mounted `~/.omp` tree, so the mount cannot shadow it.
+pub const KNOWN_SAFE_AGENTS: &[&str] =
+    &["claude", "codex", "copilot", "agy", "antigravity", "opencode", "pi", "omp", "muse", "cursor"];
 
 /// Whether an agent OUTSIDE `KNOWN_SAFE_AGENTS` can even be offered the
 /// opt-in "persist config in Docker mode" toggle at all. `false` for grok
@@ -213,8 +218,10 @@ pub fn persist_offerable(agent_id: &str) -> bool {
 /// resolves to "claude" SILENTLY, which for a clone means it is handed another
 /// agent's config shape. `a_new_builtin_agent_is_registered_in_every_table_that_needs_it`
 /// (agent_dirs.rs) is what makes that loud.
-pub(crate) const BASE_BUILTINS: &[&str] =
-    &["claude", "codex", "copilot", "agy", "antigravity", "opencode", "pi", "grok", "gemini", "muse", "devin", "cursor"];
+pub(crate) const BASE_BUILTINS: &[&str] = &[
+    "claude", "codex", "copilot", "agy", "antigravity", "opencode", "pi", "omp", "grok", "gemini", "muse", "devin",
+    "cursor",
+];
 
 /// Is this a base id `base_agent_id_str` actually knows, rather than one it
 /// would quietly answer "claude" for?

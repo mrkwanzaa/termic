@@ -149,6 +149,22 @@ export function DevinIcon({ className }: Props) {
   );
 }
 
+// oh-my-pi (`omp`) — pi's rewritten fork, so both brands are the letter π.
+// Drawn as the CLASSIC serif π (full top bar, straight left leg, right leg
+// hooking at the foot) and stroked rather than filled, so it stays distinct
+// from PiIcon's angular filled staircase at tab size. currentColor keeps the
+// brand tint flowing like every other icon here.
+export function OmpIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+      strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
+      <path d="M4.5 7.5h15" />
+      <path d="M8 7.5V19" />
+      <path d="M16 7.5v8.5c0 1.7 1.3 3 3 3" />
+    </svg>
+  );
+}
+
 /** Pick the right icon for a CLI name; falls back to a generic terminal glyph. */
 export function CliIcon({ cli, className }: { cli: string; className?: string }) {
   switch (cli) {
@@ -158,6 +174,7 @@ export function CliIcon({ cli, className }: { cli: string; className?: string })
     case "grok":     return <GrokIcon className={className} />;
     case "opencode": return <OpencodeIcon className={className} />;
     case "pi":       return <PiIcon className={className} />;
+    case "omp":      return <OmpIcon className={className} />;
     case "muse":     return <MuseIcon className={className} />;
     case "cursor":   return <CursorIcon className={className} />;
     case "devin":    return <DevinIcon className={className} />;
@@ -187,6 +204,7 @@ export const CLI_BRAND_COLOR: Record<string, string> = {
   copilot:  "text-[var(--color-cli-copilot)]",
   opencode: "text-[var(--color-cli-opencode)]",
   pi:       "text-[var(--color-cli-pi)]",
+  omp:      "text-[var(--color-cli-omp)]",
   muse:     "text-[var(--color-cli-muse)]",
   cursor:   "text-[var(--color-cli-cursor)]",
   devin:    "text-[var(--color-cli-devin)]",
@@ -212,6 +230,7 @@ export const CLI_LABEL: Record<string, string> = {
   grok:     "Grok",
   opencode: "opencode",
   pi:       "pi",
+  omp:      "omp",
   muse:     "Muse Code",
   cursor:   "Cursor CLI",
   devin:    "Devin",

@@ -126,6 +126,7 @@ const SOURCES: Record<string, FooterSources> = {
   grok:     { usage: null,    context: "hooks" }, // status line (no quota in it)
   opencode: { usage: null,    context: "hooks" }, // plugin
   pi:       { usage: null,    context: "hooks" }, // extension
+  omp:      { usage: "pull",  context: "hooks" }, // `omp usage --json`; extension (getContextUsage)
   // muse: context and quota exist only over `muse serve`, never to a TUI tab.
 };
 

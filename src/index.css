@@ -146,6 +146,9 @@
      muse's; the dark theme takes a lighter step of it and light mode gets
      the brand value back below. */
   --color-cli-devin:   #7aa2f0;
+  /* omp's logo gradient leads with this cyan (rgb 57 172 234, captured off
+     the CLI's own startup banner). Light enough for a dark ground. */
+  --color-cli-omp:     #39acea;
 
   --radius-pill: 999px;
   /* Default mono. Overridden at runtime by the font picker (writes the
@@ -250,6 +253,9 @@
     --color-cli-muse:    #0064e0;
   --color-cli-cursor:  #3c4150;
     --color-cli-devin:   #3969ca;
+    /* omp's cyan is the dark-bg value; on cream it washes out (under 3:1),
+       so light mode takes a darker step of the same hue. */
+    --color-cli-omp:     #0b76b7;
     /* Palette ramp: the dark-bg defaults (esp. yellow/teal) wash out
        on cream, so shift every hue darker. */
     --color-palette-red:    #c2403f;
