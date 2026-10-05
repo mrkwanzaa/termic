@@ -75,6 +75,7 @@ mod procmon;
 mod docker;
 mod agent_dirs;
 mod profiles;
+mod schedules;
 mod sudo_touchid;
 #[cfg(test)]
 mod test_support;
@@ -698,6 +699,16 @@ pub struct Task {
     /// someone switches one.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub accounts: HashMap<String, String>,
+    /// A recurring schedule this task is the PARENT of (GH #300's recurring
+    /// half): its runs copy this task's agent settings and join its group.
+    /// Lives here rather than in a schedules file so it rides the task's
+    /// lifecycle for free: profile-scoped, paused while archived, back on
+    /// restore, gone with a hard delete. Written solely by
+    /// `task_set_schedule`; every other writer is a load-modify-save of the
+    /// whole record and so carries it forward. Absent on every other task,
+    /// so existing task files are unchanged. See `schedules.rs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<schedules::TaskSchedule>,
     /// Which profile this record was loaded from. IN-MEMORY ONLY
     /// (`serde(skip)`): nothing is written into the JSON on disk, so there is
     /// no schema bump and an existing install's files stay byte-identical.
@@ -2293,23 +2304,31 @@ fn link_config_dir(repo: &Path, wt: &Path, name: &str) {
 /// Append `name` to the repo's `.git/info/exclude` (shared across the repo's
 /// worktrees, local + never committed) if not already present. Best-effort.
 fn ensure_git_excluded(repo: &Path, name: &str) {
-    let info = repo.join(".git").join("info");
-    let exclude = info.join("exclude");
-    let existing = fs::read_to_string(&exclude).unwrap_or_default();
-    if existing.lines().any(|l| l.trim() == name) {
+    append_exclude_line(&repo.join(".git").join("info").join("exclude"), name);
+}
+
+/// Append `line` to an exclude file if no line already equals it. Best-effort.
+/// Split out of `ensure_git_excluded` for callers that resolve the file
+/// themselves (a schedule's report folder, whose project may sit below its
+/// repo root: `schedules::exclude_target`).
+fn append_exclude_line(exclude: &Path, line: &str) {
+    let existing = fs::read_to_string(exclude).unwrap_or_default();
+    if existing.lines().any(|l| l.trim() == line) {
         return;
     }
-    if fs::create_dir_all(&info).is_err() {
-        return;
+    if let Some(info) = exclude.parent() {
+        if fs::create_dir_all(info).is_err() {
+            return;
+        }
     }
     let mut body = existing;
     if !body.is_empty() && !body.ends_with('\n') {
         body.push('\n');
     }
-    body.push_str(name);
+    body.push_str(line);
     body.push('\n');
     // Atomic: a torn rewrite here would eat the user's own exclude entries.
-    let _ = write_atomic(&exclude, body.as_bytes());
+    let _ = write_atomic(exclude, body.as_bytes());
 }
 
 /// Write `schema_version = TASKS_SCHEMA_VERSION` into settings.json directly
@@ -6012,7 +6031,7 @@ async fn project_remove(state: State<'_, PtyManager>, id: String) -> Result<(), 
             // archive script, removing the worktree, and saving archived=true.
             // Errors per-task are logged but don't abort — we want a
             // best-effort full cleanup even if one worktree is borked.
-            if let Err(e) = task_archive_sync(w.id.clone(), false) {
+            if let Err(e) = task_archive_sync(w.id.clone(), false, false) {
                 eprintln!("project_remove: archive {} failed: {}", w.id, e);
             }
             // Hard-delete the JSON so it doesn't linger as a ghost archived
@@ -6360,6 +6379,7 @@ fn task_open_repo(
         order: None,
         group: None,
         spawned_by: None,
+        schedule: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
     Ok(task)
@@ -6786,6 +6806,7 @@ fn task_import_worktree(
         order: None,
         group: None,
         spawned_by: None,
+        schedule: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
     Ok(task)
@@ -7218,6 +7239,7 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         order: None,
         group: None,
         spawned_by: None,
+        schedule: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
     drop(port_guard);
@@ -7615,6 +7637,7 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         order: None,
         group: None,
         spawned_by: None,
+        schedule: None,
     };
     save_task(&task).map_err(|e| e.to_string())?;
     drop(port_guard);
@@ -8738,6 +8761,115 @@ fn task_set_tab_scheduled(
     tab.scheduled = items;
     save_task(w).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Refusal for a schedule on a Docker task. A Docker parent's runs never fall
+/// back to running on the host: that would quietly take away the container
+/// the user chose. Several containers on one live checkout is untested, and
+/// Docker has its own rules for where an agent's files live (docs/gotchas.md,
+/// "Docker is a SECOND REALM"), so v1 refuses instead.
+const SCHEDULE_DOCKER_REFUSED: &str =
+    "Scheduled runs do not support Docker yet. Switch this task to Seatbelt or no sandbox, then schedule it.";
+
+/// Set or clear a task's recurring schedule (`Task::schedule`). The frontend
+/// always sends the whole record, like `task_set_tab_scheduled`, and an
+/// unchanged one writes nothing: the runner calls this once per slot it acts
+/// on, never on an idle pass. Async because creating a schedule creates its
+/// report folder and asks git where the repo root is.
+#[tauri::command]
+async fn task_set_schedule(id: String, schedule: Option<schedules::TaskSchedule>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || task_set_schedule_sync(&id, schedule))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn task_set_schedule_sync(id: &str, schedule: Option<schedules::TaskSchedule>) -> Result<(), String> {
+    let mut list = load_tasks_all();
+    let i = list.iter().position(|w| w.id == id).ok_or("no such task")?;
+    if list[i].schedule == schedule {
+        return Ok(());
+    }
+    if let Some(next) = &schedule {
+        if let Some(problem) = schedules::schedule_problem(next) {
+            return Err(problem);
+        }
+        match &list[i].schedule {
+            Some(prev) if prev.slug != next.slug => {
+                return Err("a schedule's report folder is fixed when the schedule is created".into());
+            }
+            Some(_) => {}
+            None => {
+                // Checked when a schedule is CREATED only. A parent switched
+                // to Docker afterwards keeps its record, so the runner can
+                // still write the failed entry that says why it did not run.
+                if list[i].docker_sandbox_enabled {
+                    return Err(SCHEDULE_DOCKER_REFUSED.into());
+                }
+                // One folder per schedule: two sharing a slug would write
+                // over each other's reports and prune by each other's rules.
+                // Archived parents count, since a restore brings them back.
+                let taken = list.iter().any(|t| {
+                    t.id != id
+                        && t.project_id == list[i].project_id
+                        && t.schedule.as_ref().is_some_and(|s| s.slug == next.slug)
+                });
+                if taken {
+                    return Err(format!("another schedule in this project already uses the folder \"{}\"", next.slug));
+                }
+                let root = project_root_of(&list[i].project_id)?;
+                let is_git = !load_projects_all().iter().any(|p| p.id == list[i].project_id && p.non_git);
+                schedules::ensure_report_dir(&root, is_git, &next.slug)?;
+            }
+        }
+    }
+    list[i].schedule = schedule;
+    save_task(&list[i]).map_err(|e| e.to_string())
+}
+
+/// The registered root of a project, for the schedule commands. The webview
+/// names a project and a slug, never a path, so every file these commands
+/// touch is derived from the project record (the `open_with_app` discipline:
+/// the webview sits outside the sandbox).
+fn project_root_of(project_id: &str) -> Result<PathBuf, String> {
+    load_projects_all()
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .map(|p| PathBuf::from(p.root_path))
+        .ok_or_else(|| "the task's project is not registered".to_string())
+}
+
+/// Delete one schedule's reports dated before `before` (`YYYY-MM-DD`, the
+/// caller's LOCAL date, so local time lives in one place). Returns the names
+/// it deleted; the rules are `schedules::prune_reports`.
+#[tauri::command]
+async fn schedule_prune_reports(project_id: String, slug: String, before: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        schedules::prune_reports(&project_root_of(&project_id)?, &slug, Some(&before))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Delete every report of one schedule, then its folder if nothing else is in
+/// it. Deleting a schedule asks first and defaults to keeping them.
+#[tauri::command]
+async fn schedule_delete_reports(project_id: String, slug: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        schedules::prune_reports(&project_root_of(&project_id)?, &slug, None)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Whether the run for report stem `stem` (`YYYY-MM-DD_HHMM`) wrote its
+/// report, and the report's title.
+#[tauri::command]
+async fn schedule_report_status(project_id: String, slug: String, stem: String) -> Result<schedules::ReportStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        schedules::report_status(&project_root_of(&project_id)?, &slug, &stem)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Persist the JSON-encoded SplitTree for a task so the split layout
@@ -10552,11 +10684,17 @@ fn task_set_agent_session_id(id: String, cli: String, uuid: String) -> Result<()
 /// sit in a deleted directory) and fatal on Windows: a working directory
 /// that is open cannot be deleted (os error 32), and the archive failed.
 #[tauri::command]
-async fn task_archive(state: State<'_, PtyManager>, id: String, delete_branch: Option<bool>) -> Result<(), String> {
+async fn task_archive(
+    state: State<'_, PtyManager>,
+    id: String,
+    delete_branch: Option<bool>,
+    // Only the schedule runner passes true: see `archive_script_plan`.
+    skip_scripts: Option<bool>,
+) -> Result<(), String> {
     let ptys = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         stop_every_task_pty(&ptys, &id);
-        task_archive_sync(id, delete_branch.unwrap_or(false))
+        task_archive_sync(id, delete_branch.unwrap_or(false), skip_scripts.unwrap_or(false))
     })
         .await
         .map_err(|e| e.to_string())?
@@ -10625,7 +10763,46 @@ fn prune_empty_worktree_ancestors(worktree_path: &Path) {
     }
 }
 
-fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
+/// The archive scripts archiving `w` runs, in order, each with the folder it
+/// runs in.
+///
+/// Multi-repo tasks: only members have scripts (host is a wrapper, not a
+/// thing you run). Members archive in REVERSE declared order, the stack
+/// teardown convention (last started, first stopped). Single-repo tasks,
+/// main checkout included: the host project's archive_script fires (covers
+/// `npm run cleanup` etc). A multi task with every member unchecked has an
+/// empty composition, so key on project type, not emptiness.
+///
+/// `skip_scripts` empties the plan. Only the schedule runner sets it, when it
+/// archives an old run: a run is a main-checkout task that never ran a setup
+/// script, so it has nothing to tear down, and running the project's archive
+/// script would run it in the user's LIVE checkout every morning.
+fn archive_script_plan(w: &Task, proj: Option<&Project>, skip_scripts: bool) -> Vec<(String, PathBuf)> {
+    if skip_scripts {
+        return Vec::new();
+    }
+    let is_multi = proj.map(|p| p.project_type == ProjectType::Multi).unwrap_or(false);
+    let mut plan = Vec::new();
+    if is_multi || !w.composition.is_empty() {
+        for m in w.composition.iter().rev() {
+            // Per-member override, else the member's committed `.termic.yaml`
+            // archive (same resolution as setup/run) so a member configured
+            // via `.termic.yaml` still tears down.
+            let script = member_effective_script(m, |s| s.archive.clone(), &m.archive_script);
+            if !script.trim().is_empty() && Path::new(&m.path).exists() {
+                plan.push((script, PathBuf::from(&m.path)));
+            }
+        }
+    } else if let Some(p) = proj {
+        let archive = effective_scripts(p).2;
+        if !archive.trim().is_empty() {
+            plan.push((archive, PathBuf::from(&w.path)));
+        }
+    }
+    plan
+}
+
+fn task_archive_sync(id: String, delete_branch: bool, skip_scripts: bool) -> Result<(), String> {
     // Stop spotlight for this task before tearing down — otherwise the
     // polling thread will keep trying to sync a worktree that no longer exists.
     spotlight_stop_for_ws(&id);
@@ -10662,30 +10839,8 @@ fn task_archive_sync(id: String, delete_branch: bool) -> Result<(), String> {
         }
     }
 
-    // Multi-repo tasks: only members have scripts (host is a
-    // wrapper, not a thing you run). Members archive in REVERSE
-    // declared order — stack teardown convention (last started,
-    // first stopped). Single-repo tasks: host's project
-    // archive_script fires (covers `npm run cleanup` etc).
-    // A multi task with every member unchecked has an empty
-    // composition — key on project type, not emptiness.
-    let is_multi = proj.as_ref()
-        .map(|p| p.project_type == ProjectType::Multi).unwrap_or(false);
-    if is_multi || !w.composition.is_empty() {
-        for m in w.composition.iter().rev() {
-            // Per-member override, else the member's committed `.termic.yaml`
-            // archive (same resolution as setup/run) so a member configured
-            // via `.termic.yaml` still tears down.
-            let script = member_effective_script(m, |s| s.archive.clone(), &m.archive_script);
-            if !script.trim().is_empty() && Path::new(&m.path).exists() {
-                let _ = run_script(&script, Path::new(&m.path), w.port, &w.name, &w.extra_named_ports);
-            }
-        }
-    } else if let Some(p) = &proj {
-        let archive = effective_scripts(p).2;
-        if !archive.trim().is_empty() {
-            let _ = run_script(&archive, Path::new(&w.path), w.port, &w.name, &w.extra_named_ports);
-        }
+    for (script, dir) in archive_script_plan(w, proj.as_ref(), skip_scripts) {
+        let _ = run_script(&script, &dir, w.port, &w.name, &w.extra_named_ports);
     }
 
     let mut errs = Vec::new();
@@ -10876,7 +11031,7 @@ async fn task_delete(state: State<'_, PtyManager>, id: String) -> Result<(), Str
             // it only unlinked members, which are gone already.
             .is_some_and(|w| w.archived && (w.is_main_checkout || !Path::new(&w.path).exists()));
         if !torn_down {
-            let _ = task_archive_sync(id2.clone(), false);
+            let _ = task_archive_sync(id2.clone(), false, false);
         }
         delete_task_file(&id2).map_err(|e| e.to_string())
     }).await.map_err(|e| e.to_string())?
@@ -24999,6 +25154,7 @@ pub fn run() {
             task_group_dissolve,
             task_restore, task_delete, task_run_script, task_run_script_stream, task_ensure_extra_ports, task_stop_script, task_record_spawn, task_set_has_history, task_set_agent_session_id,
             task_set_tabs, task_set_tab_session_id, task_set_tab_scheduled,
+            task_set_schedule, schedule_prune_reports, schedule_delete_reports, schedule_report_status,
             task_set_split_layout,
             task_set_right_tabs, task_set_right_tab_session_id,
             task_grep_start, task_grep_cancel, task_find_backend,
@@ -35217,5 +35373,236 @@ mod windows_port_tests {
         let argv = browser_argv(r#""C:\Program Files\Google\Chrome\Application\chrome.exe" --incognito"#, "https://x/").unwrap();
         assert_eq!(argv[0], r"C:\Program Files\Google\Chrome\Application\chrome.exe");
         assert_eq!(argv[1], "--incognito");
+    }
+}
+
+// ── recurring schedules on the task record (GH #300) ───────────────────────
+//
+// `Task::schedule` is written by `task_set_schedule` alone and must survive
+// every other writer, which are all load-modify-save of the whole record. The
+// file-system half (report folder, exclude line, pruning) is `schedules.rs`.
+#[cfg(test)]
+mod schedule_record_tests {
+    use super::*;
+    use crate::schedules::{CadenceKind, RunOutcome, ScheduleCadence, ScheduleRun, TaskSchedule};
+    use crate::test_support::with_scratch_data_dir;
+
+    fn sched(slug: &str) -> TaskSchedule {
+        TaskSchedule {
+            enabled: true,
+            name: "nightly".into(),
+            slug: slug.into(),
+            prompt: Some("check the dashboards".into()),
+            cadence: ScheduleCadence { kind: CadenceKind::Daily, time: "09:00".into(), weekday: None },
+            keep_runs: 7,
+            report_days: Some(30),
+            ..Default::default()
+        }
+    }
+
+    fn task(id: &str, root: &Path) -> Task {
+        Task {
+            id: id.into(),
+            project_id: "p1".into(),
+            name: id.into(),
+            path: root.to_string_lossy().into_owned(),
+            cli: "claude".into(),
+            is_main_checkout: true,
+            created: "2026-01-01T00:00:00Z".into(),
+            ..Default::default()
+        }
+    }
+
+    /// A registered plain-folder project rooted in its own tempdir, plus a
+    /// task in it. Plain folder so these tests need no git.
+    fn setup(root: &Path, ids: &[&str]) {
+        save_projects(&[Project {
+            id: "p1".into(),
+            name: "p1".into(),
+            root_path: root.to_string_lossy().into_owned(),
+            non_git: true,
+            ..Default::default()
+        }])
+        .unwrap();
+        for id in ids {
+            save_task(&task(id, root)).unwrap();
+        }
+    }
+
+    fn stored(id: &str) -> Option<TaskSchedule> {
+        load_tasks_all().into_iter().find(|t| t.id == id).unwrap().schedule
+    }
+
+    #[test]
+    fn a_schedule_round_trips_and_creates_its_report_folder() {
+        let project = tempfile::tempdir().unwrap();
+        with_scratch_data_dir(|_| {
+            setup(project.path(), &["parent"]);
+            let mut s = sched("nightly");
+            s.history.push(ScheduleRun { slot: 1, outcome: RunOutcome::Fired, report: Some("r.md".into()), ..Default::default() });
+            task_set_schedule_sync("parent", Some(s.clone())).unwrap();
+            assert_eq!(stored("parent"), Some(s));
+            assert!(project.path().join(".termic/schedules/nightly").is_dir());
+            task_set_schedule_sync("parent", None).unwrap();
+            assert_eq!(stored("parent"), None);
+        });
+    }
+
+    #[test]
+    fn a_task_without_a_schedule_writes_no_schedule_key() {
+        let json = serde_json::to_value(task("t", Path::new("/tmp/x"))).unwrap();
+        assert!(json.get("schedule").is_none(), "existing task files would change");
+    }
+
+    // An unchanged value must not write. The tasks dir is made read-only, so a
+    // write would fail: the unchanged call succeeding proves it never tried.
+    #[cfg(unix)]
+    #[test]
+    fn an_unchanged_schedule_writes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let project = tempfile::tempdir().unwrap();
+        with_scratch_data_dir(|data| {
+            setup(project.path(), &["parent"]);
+            task_set_schedule_sync("parent", Some(sched("nightly"))).unwrap();
+            let dir = data.join("tasks");
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+            let same = task_set_schedule_sync("parent", Some(sched("nightly")));
+            let mut moved = sched("nightly");
+            moved.last_slot = Some(42);
+            let changed = task_set_schedule_sync("parent", Some(moved));
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(same.is_ok(), "an unchanged schedule tried to write: {same:?}");
+            assert!(changed.is_err(), "the read-only guard is not doing anything");
+        });
+    }
+
+    #[test]
+    fn every_other_writer_carries_the_schedule_forward() {
+        let project = tempfile::tempdir().unwrap();
+        with_scratch_data_dir(|_| {
+            setup(project.path(), &["parent", "other"]);
+            let s = sched("nightly");
+            task_set_schedule_sync("parent", Some(s.clone())).unwrap();
+
+            task_set_yolo("parent".into(), true).unwrap();
+            assert_eq!(stored("parent"), Some(s.clone()), "task_set_yolo");
+            task_rename("parent".into(), "renamed".into()).unwrap();
+            assert_eq!(stored("parent"), Some(s.clone()), "task_rename");
+            task_set_has_history("parent".into(), true).unwrap();
+            assert_eq!(stored("parent"), Some(s.clone()), "task_set_has_history");
+            task_reorder(vec!["other".into(), "parent".into()]).unwrap();
+            assert_eq!(stored("parent"), Some(s.clone()), "task_reorder");
+            let tab: PersistedTabInput = serde_json::from_value(serde_json::json!({
+                "id": "tab1", "cli": "claude", "is_default": true,
+            }))
+            .unwrap();
+            task_set_tabs("parent".into(), vec![tab]).unwrap();
+            assert_eq!(stored("parent"), Some(s.clone()), "task_set_tabs");
+            let msg = ScheduledMessage { id: "m".into(), text: "hi".into(), not_before: 1, created: 1 };
+            task_set_tab_scheduled("parent".into(), "tab1".into(), vec![msg]).unwrap();
+            assert_eq!(stored("parent"), Some(s.clone()), "task_set_tab_scheduled");
+            // The group writers, through the same pure rules the commands run.
+            let mut list = load_tasks_all();
+            let changed = apply_group_new(&mut list, "parent", None).unwrap();
+            save_changed(&list, changed).unwrap();
+            let mut list = load_tasks_all();
+            let changed = apply_spawn_link(&mut list, "other", "parent", None).unwrap();
+            save_changed(&list, changed).unwrap();
+            assert_eq!(stored("parent"), Some(s), "group writers");
+        });
+    }
+
+    #[test]
+    fn a_docker_task_cannot_gain_a_schedule_but_keeps_one_it_has() {
+        let project = tempfile::tempdir().unwrap();
+        with_scratch_data_dir(|_| {
+            setup(project.path(), &["kept"]);
+            let mut docker = task("docker", project.path());
+            docker.docker_sandbox_enabled = true;
+            save_task(&docker).unwrap();
+            let err = task_set_schedule_sync("docker", Some(sched("a"))).unwrap_err();
+            assert!(err.contains("Docker"), "{err}");
+            assert!(!err.contains('\u{2014}'), "no em dash in user-visible text");
+            assert_eq!(stored("docker"), None);
+
+            // Scheduled first, switched to Docker afterwards: the runner still
+            // has to record why the next slot did not run.
+            task_set_schedule_sync("kept", Some(sched("b"))).unwrap();
+            let mut t = load_tasks_all().into_iter().find(|t| t.id == "kept").unwrap();
+            t.docker_sandbox_enabled = true;
+            save_task(&t).unwrap();
+            let mut failed = sched("b");
+            failed.history.push(ScheduleRun { slot: 1, outcome: RunOutcome::Failed, error: Some("docker".into()), ..Default::default() });
+            task_set_schedule_sync("kept", Some(failed.clone())).unwrap();
+            assert_eq!(stored("kept"), Some(failed));
+        });
+    }
+
+    #[test]
+    fn a_report_folder_is_fixed_and_owned_by_one_schedule() {
+        let project = tempfile::tempdir().unwrap();
+        with_scratch_data_dir(|_| {
+            setup(project.path(), &["a", "b"]);
+            task_set_schedule_sync("a", Some(sched("nightly"))).unwrap();
+            let err = task_set_schedule_sync("a", Some(sched("renamed"))).unwrap_err();
+            assert!(err.contains("fixed"), "{err}");
+            let err = task_set_schedule_sync("b", Some(sched("nightly"))).unwrap_err();
+            assert!(err.contains("already uses"), "{err}");
+            // Archived parents still own their folder: a restore brings them back.
+            let mut a = load_tasks_all().into_iter().find(|t| t.id == "a").unwrap();
+            a.archived = true;
+            save_task(&a).unwrap();
+            assert!(task_set_schedule_sync("b", Some(sched("nightly"))).is_err());
+            task_set_schedule_sync("b", Some(sched("weekly"))).unwrap();
+        });
+    }
+
+    #[test]
+    fn the_boundary_validates_what_the_webview_sends() {
+        let project = tempfile::tempdir().unwrap();
+        with_scratch_data_dir(|_| {
+            setup(project.path(), &["parent"]);
+            let mut bad = sched("../escape");
+            assert!(task_set_schedule_sync("parent", Some(bad.clone())).is_err());
+            bad.slug = "ok".into();
+            bad.keep_runs = 0;
+            assert!(task_set_schedule_sync("parent", Some(bad)).is_err());
+            assert_eq!(stored("parent"), None);
+            assert!(!project.path().join(".termic").exists(), "a refused schedule made a folder");
+        });
+    }
+
+    // ── archiving a run skips the scripts ────────────────────────────────
+
+    #[test]
+    fn skip_scripts_empties_the_archive_plan_for_a_single_repo_task() {
+        let root = tempfile::tempdir().unwrap();
+        let proj = Project {
+            id: "p1".into(),
+            root_path: root.path().to_string_lossy().into_owned(),
+            archive_script: "npm run cleanup".into(),
+            ..Default::default()
+        };
+        let t = task("run", root.path());
+        let plan = archive_script_plan(&t, Some(&proj), false);
+        assert_eq!(plan, vec![("npm run cleanup".to_string(), root.path().to_path_buf())]);
+        assert!(archive_script_plan(&t, Some(&proj), true).is_empty());
+    }
+
+    #[test]
+    fn skip_scripts_empties_the_archive_plan_for_a_multi_repo_task() {
+        let host = tempfile::tempdir().unwrap();
+        let member = tempfile::tempdir().unwrap();
+        let proj = Project { id: "p1".into(), project_type: ProjectType::Multi, ..Default::default() };
+        let mut t = task("run", host.path());
+        t.composition.push(TaskMember {
+            dir_name: "api".into(),
+            path: member.path().to_string_lossy().into_owned(),
+            archive_script: "make down".into(),
+            ..Default::default()
+        });
+        let plan = archive_script_plan(&t, Some(&proj), false);
+        assert_eq!(plan, vec![("make down".to_string(), member.path().to_path_buf())]);
+        assert!(archive_script_plan(&t, Some(&proj), true).is_empty());
     }
 }
