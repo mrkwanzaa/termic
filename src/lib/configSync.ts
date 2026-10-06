@@ -158,7 +158,9 @@ export function valueLabel(v: unknown, t: (k: string) => string): string {
   return String(v);
 }
 
-/** One safety change as a line: "app: Start new tasks in YOLO, Off to On". */
+/** One safety change as a line: "All projects: Start new tasks in YOLO changed
+ *  from Off to On". The verb is in the line on purpose: "YOLO, Off to On" read
+ *  as if the setting were called "Off to On". */
 export function describeSafety(c: SyncChange, t: (k: string, o?: Record<string, unknown>) => string): string {
   const field = c.kind === "pref" ? fieldLabel(c.target, t) : fieldLabel(c.field ?? "", t);
   const scope = c.kind === "pref" ? t("settings:sync.appWide") : c.target;

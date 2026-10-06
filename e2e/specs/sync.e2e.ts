@@ -191,11 +191,16 @@ describe("config sync", () => {
     await syncNow();
     await waitVisible('[data-testid="sync-notices"]');
     const notice = await textOf('[data-testid="sync-notices"]');
-    expect(notice).toContain("fixture-repo: Start new tasks in YOLO");
+    expect(notice).toContain("fixture-repo: Start new tasks in YOLO changed from");
     expect(notice).toContain("to On");
-    // Highlighted in the report, and announced: it never changes silently.
-    await waitVisible('[data-testid="sync-result-list"] [data-testid="sync-change-safety"]');
+    // Announced, and kept in the panel; the report counts it without
+    // repeating the line a third time on the same screen.
     await waitForText("Sync changed a YOLO or sandbox default");
+    const report = await textOf('[data-testid="sync-result"]');
+    expect(report).toContain("1 change from the repo applied.");
+    expect(report).not.toContain("Start new tasks in YOLO");
+    expect(await browser.execute(() =>
+      document.querySelectorAll('[data-testid="sync-result"] [data-testid="sync-change-safety"]').length)).toBe(0);
     expect((await fixture()).default_yolo).toBe(true);
     await snap("sync-safety-notice.png");
     await clickWhenVisible('[data-testid="sync-notices-dismiss"]');
@@ -222,9 +227,11 @@ describe("config sync", () => {
     const names = await browser.execute(() =>
       window.__termic!.useApp.getState().projects.map((p: any) => p.name));
     expect(names).not.toContain("elsewhere-app");
-    // Listed in the report, but nothing was applied, so nothing is counted.
+    // One count in the report: the section below names them, and nothing
+    // was applied.
     const report = await textOf('[data-testid="sync-result"]');
-    expect(report).toContain("elsewhere-app waits for a folder");
+    expect(report).toContain("2 projects wait for a folder.");
+    expect(report).not.toContain("elsewhere-app");
     expect(report).not.toContain("from the repo applied");
     await snap("sync-waiting.png");
 
@@ -257,7 +264,7 @@ describe("config sync", () => {
     await clickWhenVisible('[data-testid="sync-preview"]');
     await waitVisible('[data-testid="sync-preview-panel"]');
     const safety = await textOf('[data-testid="sync-preview-list"] [data-testid="sync-change-safety"]');
-    expect(safety).toContain("fixture-repo: Start new tasks in YOLO");
+    expect(safety).toContain("fixture-repo: Start new tasks in YOLO changed from");
     expect(await textOf('[data-testid="sync-preview-list"]')).toContain("elsewhere-app waits for a folder");
     await snap("sync-preview.png");
 

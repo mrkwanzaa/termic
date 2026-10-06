@@ -484,15 +484,23 @@ function describeChange(c: SyncChange, t: (k: string, o?: Record<string, unknown
 function ResultLine({ result }: { result: SyncRunResult }) {
   const { t } = useTranslation("settings");
   if (result.error || result.conflicts.length) return null;
-  // A project waiting for a folder was not applied: it is listed, not counted.
-  const n = result.changes.filter(c => c.action !== "wait").length;
+  // The report names only what the sections below do not. A project waiting
+  // for a folder was not applied, and "Waiting for a folder" lists it, so it
+  // is one count here. A YOLO or sandbox change WAS applied and is counted,
+  // but its detail lives in "Sync changed these defaults" and the toast, so
+  // it is not a line here as well.
+  const applied = result.changes.filter(c => c.action !== "wait");
+  const waiting = result.changes.length - applied.length;
+  const listed = applied.filter(c => !c.safety);
+  const n = applied.length;
   const nextLaunch = result.changes.some(c => c.kind === "settings" && NEXT_LAUNCH_SETTINGS.includes(c.field ?? ""));
   return (
     <div className="text-[12.5px] text-[var(--color-fg-dim)]" data-testid="sync-result">
       <span>{result.pushed ? t("sync.resultPushed") : t("sync.resultNoPush")}</span>{" "}
-      {n > 0 && <span>{n === 1 ? t("sync.resultChanges_one", { count: n }) : t("sync.resultChanges_other", { count: n })}</span>}
+      {n > 0 && <span>{n === 1 ? t("sync.resultChanges_one", { count: n }) : t("sync.resultChanges_other", { count: n })}</span>}{" "}
+      {waiting > 0 && <span>{waiting === 1 ? t("sync.resultWaiting_one", { count: waiting }) : t("sync.resultWaiting_other", { count: waiting })}</span>}
       {nextLaunch && <div className="mt-1">{t("sync.nextLaunchHooks")}</div>}
-      {result.changes.length > 0 && <ChangeList changes={result.changes} testid="sync-result-list" />}
+      {listed.length > 0 && <ChangeList changes={listed} testid="sync-result-list" />}
     </div>
   );
 }

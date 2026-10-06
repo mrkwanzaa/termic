@@ -178,9 +178,9 @@ describe("describeSafety", () => {
     const { i18n } = await import("@/lib/i18n");
     const t = i18n.t.bind(i18n) as (k: string, o?: Record<string, unknown>) => string;
     const line = describeSafety({ kind: "pref", target: "defaultYolo", action: "update", from: null, to: "1", safety: true }, t);
-    expect(line).toBe("All projects: Start new tasks in YOLO, Default to On");
+    expect(line).toBe("All projects: Start new tasks in YOLO changed from Default to On");
     const proj = describeSafety({ kind: "project", target: "app", action: "update", field: "default_sandbox", from: true, to: false, safety: true }, t);
-    expect(proj).toBe("app: Sandbox new tasks, On to Off");
+    expect(proj).toBe("app: Sandbox new tasks changed from On to Off");
     expect(line + proj).not.toContain("\u2014");
   });
 });
