@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { dataDir } from "../../wdio.conf.js";
@@ -136,6 +136,29 @@ describe("config sync", () => {
     expect(note).toContain("Agent environment variables (env and Docker env) never sync");
     expect(note).toContain("paths, port ranges, logins and tokens");
     await snap("sync-disconnected.png");
+  });
+
+  it("refuses a URL git would run as a command or read as an option, before cloning", async () => {
+    // `ext::` is a remote helper that runs its argument; a leading `-` is an
+    // option to `git clone`. Rust refuses both (check_repo_url); the page
+    // names the forms it takes.
+    const marker = path.join(root, "sync-ext-ran");
+    rmTree(marker, { bestEffort: true });
+    await setInputValue('[data-testid="sync-url"]', `ext::sh -c touch% ${marker}`);
+    await clickWhenVisible('[data-testid="sync-connect"]');
+    await waitVisible('[data-testid="sync-action-error"]');
+    expect(await textOf('[data-testid="sync-action-error"]')).toBe(
+      "Unsupported repo URL. Use an https://, http://, ssh://, git:// or file:// URL, or user@host:path.");
+    await waitVisible('[data-testid="sync-url"]');
+    // The option form, straight at the command: the refusal is Rust's.
+    const refused = await browser.execute(async () => {
+      try { await window.__termic!.invoke("sync_connect", { url: "--upload-pack=touch /tmp/x" }); return "connected"; }
+      catch (e) { return String(e); }
+    });
+    expect(refused).toMatch(/^Unsupported repo URL\./);
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(path.join(dataDir, "sync"))).toBe(false);
+    await snap("sync-bad-url.png");
   });
 
   it("pushes this setup to an empty repo, without an agent's env", async () => {

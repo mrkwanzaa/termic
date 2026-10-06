@@ -489,6 +489,7 @@ export default {
     urlLabel: "Repo URL",
     urlPlaceholder: "git@git.acme.com:alice/termic-config.git",
     urlHint: "Use an empty private repo, or the one another machine already syncs to.",
+    badUrl: "Unsupported repo URL. Use an https://, http://, ssh://, git:// or file:// URL, or user@host:path.",
     connect: "Connect",
     connecting: "Connecting…",
     repo: "Repo",
