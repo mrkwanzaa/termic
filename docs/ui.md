@@ -1662,7 +1662,13 @@ shows its lead's name) agrees; a parent with a name of its own keeps it.
 Seatbelt sandbox and YOLO seeded the way New Task seeds them, catch-up,
 runs to keep, report retention) or from a task's "Schedule..." menu item,
 where the agent settings are the task's and are not asked for. A Docker
-default seeds no sandbox at all and Create waits for a choice. "Schedule..."
+default seeds no sandbox at all and Create waits for a choice. The dialog
+takes New Task's two widths (`max-w-xl`, or `max-w-[72rem]` with a right
+column): picking a Seatbelt mode for a new parent opens the cage's allowed
+paths and hosts beside the form, seeded from the app-wide and project lists
+and editable for this schedule, exactly as New Task does. Size it with
+`max-w-*`, never `w-*`: AppDialog's own `max-w-md` caps a bare width, which is
+how the dialog shipped 448px wide while asking for 560. "Schedule..."
 is disabled on a Docker task with the reason written on the item, and is
 offered only for agents with work-done detection. The dialog and the view
 both state the ceiling in one line: runs happen only while Termic is running

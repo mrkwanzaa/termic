@@ -332,6 +332,32 @@ describe("the Scheduled view and dialog", () => {
       Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, String((new Date().getDay() + 3) % 7));
       s.dispatchEvent(new Event("change", { bubbles: true }));
     }, inDialog('[data-testid="schedule-weekday"]'));
+    // The dialog takes New Task's two widths: one column until a Seatbelt
+    // cage is picked, then a second column with the cage's allow-lists. It
+    // shipped capped at AppDialog's 448px and with no second column at all.
+    const dialogWidth = () => browser.execute(
+      (sel) => Math.round((document.querySelector(sel)!.closest('[role="dialog"]') as HTMLElement).getBoundingClientRect().width),
+      '[data-testid="schedule-dialog"]',
+    );
+    const cage = inDialog('[data-testid="schedule-cage-column"]');
+    const pick = (mode: string) => clickWhenVisible(inDialog(`[data-sandbox-option="${mode}"]`));
+    await pick("off");
+    await waitGone(cage);
+    const narrow = await dialogWidth();
+    expect(narrow).toBeGreaterThan(448);
+    if (process.platform === "darwin") {
+      await pick("enforce");
+      await waitVisible(inDialog('[data-testid="schedule-allowed-hosts"]'));
+      expect(await dialogWidth()).toBeGreaterThan(narrow);
+      await snap("schedules-ui-02b-dialog-cage.png");
+      // Enforcing (FS) has no network cage, so no host list to fill in.
+      await pick("enforce-fs");
+      await waitGone(inDialog('[data-testid="schedule-allowed-hosts"]'));
+      await waitVisible(inDialog('[data-testid="schedule-rw-paths"]'));
+      await pick("off");
+      await waitGone(cage);
+      expect(await dialogWidth()).toBe(narrow);
+    }
     await snap("schedules-ui-02-dialog.png");
     await clickWhenVisible('[data-testid="schedule-submit"]');
     await waitGone('[data-testid="schedule-dialog"]');

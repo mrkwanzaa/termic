@@ -826,6 +826,7 @@ export default {
     weekday: "Day",
     time: "Time",
     sandbox: "Sandbox",
+    sandboxConfigTitle: "Sandbox config for every run",
     dockerUnavailable: "Docker is not available for scheduled runs yet.",
     dockerPick: "Your default sandbox is Docker, which scheduled runs do not support yet. Pick one of the others.",
     catchUp: "Run once at launch if a run was missed",

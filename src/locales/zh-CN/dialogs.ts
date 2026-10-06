@@ -819,6 +819,7 @@ export default {
     weekday: "星期",
     time: "时刻",
     sandbox: "沙箱",
+    sandboxConfigTitle: "每次执行的沙箱配置",
     dockerUnavailable: "定时执行暂不支持 Docker。",
     dockerPick: "你的默认沙箱是 Docker，定时执行暂不支持。请选择其他沙箱。",
     catchUp: "如果错过了执行，启动时补执行一次",

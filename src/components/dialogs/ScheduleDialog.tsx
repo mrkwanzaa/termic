@@ -9,6 +9,8 @@
 // The sandbox is seeded from the project the way New Task seeds it, except
 // Docker: scheduled runs do not support it, so a Docker default seeds NOTHING
 // and Create waits for a choice, rather than quietly running on the host.
+// A Seatbelt choice opens the cage's allow-lists in a second column, the
+// layout New Task uses, and the dialog takes New Task's two widths for it.
 
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -28,6 +30,7 @@ import { settingsLoad } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { SEATBELT_AVAILABLE } from "@/lib/platform";
 import { mergeLists, projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
+import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
 import { selectionToFields, type CadenceKind, type SandboxSelection } from "@/lib/types";
 import { createSchedule, updateSchedule } from "@/lib/schedules/runner";
 import {
@@ -68,6 +71,10 @@ export function ScheduleDialog() {
   const [selection, setSelection] = useState<SandboxSelection | null>("off");
   const [dockerSeeded, setDockerSeeded] = useState(false);
   const [yolo, setYolo] = useState(false);
+  // The cage's allow-lists as multi-line text, split at submit, so a blank
+  // line while typing does not fight the split (New Task does the same).
+  const [sbRw, setSbRw] = useState("");
+  const [sbHosts, setSbHosts] = useState("");
   const [catchUp, setCatchUp] = useState(false);
   const [keepRuns, setKeepRuns] = useState(DEFAULT_KEEP_RUNS);
   const [reportDays, setReportDays] = useState<number | null>(DEFAULT_REPORT_DAYS);
@@ -120,6 +127,28 @@ export function ScheduleDialog() {
     if (!agentChoices.some(a => a.id === cli)) setCli(agentChoices[0]?.id ?? "");
   }, [open, newParent, agentChoices, cli]);
 
+  // The allow-lists follow the project: its own lists at once, then the
+  // app-wide defaults merged in front once Settings loads. Changing the
+  // project re-seeds them, since the old project's paths mean nothing there.
+  useEffect(() => {
+    if (!open || !newParent) return;
+    const p = useApp.getState().projects.find(x => x.id === projectId) ?? null;
+    setSbRw((p?.sandbox_rw_paths ?? []).join("\n"));
+    setSbHosts((p?.sandbox_allowed_hosts ?? []).join("\n"));
+    let stale = false;
+    settingsLoad().then(st => {
+      if (stale) return;
+      setSbRw(mergeLists(st.sandbox_default_rw_paths, p?.sandbox_rw_paths).join("\n"));
+      setSbHosts(mergeLists(st.sandbox_default_allowed_hosts, p?.sandbox_allowed_hosts).join("\n"));
+    }).catch(() => {});
+    return () => { stale = true; };
+  }, [open, newParent, projectId]);
+
+  const sandboxMode = selection ? selectionToFields(selection).mode : "off";
+  // The second column exists only while a Seatbelt mode is picked, so there
+  // is no ghost width when the cage is off.
+  const cage = newParent && sandboxMode !== "off";
+
   const lang = i18n.language;
   const takenSlugs = useApp.getState().tasks.filter(x => x.project_id === projectId && x.schedule && x.id !== parent?.id)
     .map(x => x.schedule!.slug);
@@ -149,15 +178,9 @@ export function ScheduleDialog() {
       } else {
         const sel = selection!;
         const { mode } = selectionToFields(sel);
-        const settings = await settingsLoad().catch(() => null);
         const sandbox = mode === "off"
           ? { enabled: false, rwPaths: [], allowedHosts: [] }
-          : {
-              enabled: true,
-              mode,
-              rwPaths: mergeLists(settings?.sandbox_default_rw_paths, project?.sandbox_rw_paths),
-              allowedHosts: mergeLists(settings?.sandbox_default_allowed_hosts, project?.sandbox_allowed_hosts),
-            };
+          : { enabled: true, mode, rwPaths: splitLines(sbRw), allowedHosts: splitLines(sbHosts) };
         await createSchedule({
           projectId,
           agent: {
@@ -187,7 +210,10 @@ export function ScheduleDialog() {
       open={open}
       onOpenChange={v => { if (!v) close(); }}
       title={title}
-      className="w-[560px]"
+      // New Task's two widths, on the one thing they depend on: whether
+      // there is a right column. A `w-*` here does nothing, because
+      // AppDialog's own `max-w-md` still caps it.
+      className={cage ? "max-w-[72rem]" : "max-w-xl"}
       stickyFooter={
         <div className="flex items-center gap-3">
           {err && <span className="min-w-0 flex-1 text-[12px] text-[var(--color-err)]" data-testid="schedule-error">{err}</span>}
@@ -205,7 +231,8 @@ export function ScheduleDialog() {
         </div>
       }
     >
-      <div className="flex flex-col gap-4" data-testid="schedule-dialog">
+      <div className="flex" data-testid="schedule-dialog">
+      <div className="flex min-w-0 flex-1 flex-col gap-4">
         <p className="text-[12px] leading-snug text-[var(--color-fg-faint)]" data-testid="schedule-ceiling">
           {tch("scheduled.ceiling")}
           {profilesExist && <> {tch("scheduled.ceilingProfile")}</>}
@@ -391,12 +418,68 @@ export function ScheduleDialog() {
           </p>
         )}
       </div>
+
+      {cage && (
+        <div
+          data-testid="schedule-cage-column"
+          className="ml-8 flex min-w-0 flex-1 flex-col gap-3 border-l border-[var(--color-border-soft)] pl-6"
+        >
+          <div className="text-[11.5px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
+            {t("schedule.sandboxConfigTitle")}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-[12px]">
+            <span className="text-[var(--color-fg-faint)]">{t("newTask.presetLabel")}</span>
+            {SANDBOX_PRESETS.map(p => (
+              <button
+                key={p.id}
+                type="button"
+                title={presetHint(p)}
+                onClick={() => { setSbRw(p.rwPaths.join("\n")); setSbHosts(p.allowedHosts.join("\n")); }}
+                className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[12px] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]"
+              >
+                {presetLabel(p)}
+              </button>
+            ))}
+          </div>
+          <Field label={t("newTask.allowedPathsLabel")} hint={t("newTask.allowedPathsHint")}>
+            <textarea
+              data-testid="schedule-rw-paths"
+              value={sbRw}
+              onChange={e => setSbRw(e.target.value)}
+              rows={3}
+              placeholder={"$HOME/Work/other-project\n$HOME/Notes"}
+              className={listClass}
+            />
+          </Field>
+          {/* Enforcing (FS) leaves the network alone, so the host list is moot. */}
+          {sandboxMode !== "enforce-fs" ? (
+            <Field label={t("newTask.allowedHostsLabel")} hint={t("newTask.allowedHostsHint")}>
+              <textarea
+                data-testid="schedule-allowed-hosts"
+                value={sbHosts}
+                onChange={e => setSbHosts(e.target.value)}
+                rows={3}
+                placeholder={"*.mycompany.com\nbitbucket.org"}
+                className={listClass}
+              />
+            </Field>
+          ) : (
+            <p className="text-[12px] leading-snug text-[var(--color-fg-faint)]">{t("newTask.enforceFsNote")}</p>
+          )}
+        </div>
+      )}
+      </div>
     </AppDialog>
   );
 }
 
 const selectClass =
   "h-8 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]";
+
+const listClass =
+  "w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2 font-mono text-[12.5px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]";
+
+const splitLines = (s: string) => s.split("\n").map(l => l.trim()).filter(Boolean);
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (

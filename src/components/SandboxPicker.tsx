@@ -56,6 +56,8 @@ export function SandboxPicker({
               key={id}
               type="button"
               disabled={unsupported}
+              data-sandbox-option={id}
+              aria-pressed={active}
               onClick={() => onChange(id)}
               title={unsupported ? t("sandbox.picker.macOnly") : sandboxModeText(id, t).desc}
               className={cn(
@@ -94,6 +96,8 @@ export function SandboxPicker({
           <button
             type="button"
             disabled={disabled}
+            data-sandbox-option="docker"
+            aria-pressed={active}
             onClick={() => onChange("docker")}
             title={title}
             className={cn(
