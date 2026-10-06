@@ -4,6 +4,7 @@ export default {
   navDashboard: "Dashboard",
   navHistory: "History",
   navBoard: "Kanban",
+  navScheduled: "Scheduled",
   projectsHeader: "Projects",
   listOptionsTip: "Project list options",
   expandAll: "Expand all agents",
@@ -161,4 +162,9 @@ export default {
     resume: "Resume",
     archivedNow: "now",
   },
+
+  // Task menu entries for recurring schedules (GH #300).
+  scheduleTask: "Schedule…",
+  editSchedule: "Edit schedule…",
+  scheduleDocker: "Scheduled runs do not support Docker yet",
 };

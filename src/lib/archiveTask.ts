@@ -25,9 +25,9 @@ import { taskLabel } from "@/lib/taskLabel";
  *  archived and the sidebar must reflect that immediately (issue #24). A
  *  cleanup failure is reported as a toast, never as a rejection (issue #246).
  *  The caller owns the confirm dialog and the "archiving" row state. */
-export async function archiveAndRefresh(taskId: string, deleteBranch: boolean): Promise<void> {
+export async function archiveAndRefresh(taskId: string, deleteBranch: boolean, skipScripts = false): Promise<void> {
   try {
-    await taskArchive(taskId, deleteBranch);
+    await (skipScripts ? taskArchive(taskId, deleteBranch, true) : taskArchive(taskId, deleteBranch));
   } catch (err) {
     // Cleanup warning (the archive flag is still persisted). Surface it for
     // debugging but don't let it strand the sidebar.
@@ -168,7 +168,9 @@ export async function confirmAndArchive(w: Task): Promise<void> {
  *
  *  The returned promise never rejects: `archiveAndRefresh` turns a cleanup
  *  failure into a toast. */
-export function startArchive(taskId: string, deleteBranch: boolean): Promise<void> {
+/** `skipScripts` is the schedule runner's alone: archiving an old scheduled
+ *  run must not run the project's archive script in the live checkout. */
+export function startArchive(taskId: string, deleteBranch: boolean, skipScripts = false): Promise<void> {
   const archiving = useArchivingTasks.getState();
   // Double-fire guard. Without the modal overlay, the row's menu, the unified
   // bar button and the command palette are all still reachable while the
@@ -178,7 +180,7 @@ export function startArchive(taskId: string, deleteBranch: boolean): Promise<voi
   // Deselect NOW rather than after the IPC returns: the task's TaskView is in
   // front of the user with a worktree that is being removed under it.
   if (useApp.getState().activeTaskId === taskId) useApp.getState().setActiveTask(null);
-  return archiveAndRefresh(taskId, deleteBranch).finally(() => {
+  return archiveAndRefresh(taskId, deleteBranch, skipScripts).finally(() => {
     useArchivingTasks.getState().end(taskId);
   });
 }

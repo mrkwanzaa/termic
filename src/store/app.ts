@@ -4,7 +4,8 @@
 import { create } from "zustand";
 import { logWorkState } from "@/lib/workStateLog";
 import { useUI } from "@/store/ui";
-import type { Project, Task, Tab, TerminalTab, DiffTab, PersistedTab, SplitTree, PaneLeaf, SplitDir } from "@/lib/types";
+import type { Project, Task, Tab, TerminalTab, DiffTab, PersistedTab, SplitTree, PaneLeaf, SplitDir, TaskSchedule } from "@/lib/types";
+import { sameSchedule } from "@/lib/schedules/record";
 import {
   findLeaf, getAllLeaves, countLeaves, replaceNode, removeLeaf,
   addLeafTab, removeLeafTab, setLeafTabs, setLeafActiveTabId, pruneLeafTabs, dropEmptyLeaves,
@@ -74,10 +75,10 @@ export interface ClosedTabEntry {
 const MAX_CLOSED_TABS = 6;
 
 interface View {
-  /** Underlying page — dashboard / history / board / empty. NOT "settings":
+  /** Underlying page — dashboard / history / board / scheduled / empty. NOT "settings":
    *  Settings is a separate overlay flag (`settingsOpen`), so closing it
    *  returns to whatever this page was. */
-  page: "dashboard" | "history" | "board" | "empty";
+  page: "dashboard" | "history" | "board" | "scheduled" | "empty";
   /** True when the Settings overlay is up. The overlay renders on top of
    *  the main app layout (see App.tsx) so the active task, terminals,
    *  and panel state all stay intact while it's open. */
@@ -366,6 +367,10 @@ export interface AppState {
   /** Optimistically set a task's YOLO flag in the store. The caller
    *  persists via ipc.taskSetYolo. */
   setTaskYolo: (taskId: string, yolo: boolean) => void;
+  /** Mirror a task's recurring schedule (GH #300) after `taskSetSchedule`
+   *  landed. Bails on an unchanged record (bear trap 8): `tasks` feeds every
+   *  sidebar row. The schedule runner is the only caller. */
+  setTaskSchedule: (taskId: string, schedule: TaskSchedule | null) => void;
   /** `opts.focus` (default true) — pass false to add the tab without
    *  activating or stealing keyboard focus (e.g. a background setup run). */
   addTab: (taskId: string, tab: Tab, opts?: { focus?: boolean }) => void;
@@ -2140,6 +2145,11 @@ export const useApp = create<AppState>((set, get) => ({
   setTaskYolo: (taskId, yolo) => set(s => ({
     tasks: s.tasks.map(w => w.id === taskId ? { ...w, yolo } : w),
   })),
+  setTaskSchedule: (taskId, schedule) => set(s => {
+    const cur = s.tasks.find(w => w.id === taskId);
+    if (!cur || sameSchedule(cur.schedule, schedule)) return s;
+    return { tasks: s.tasks.map(w => w.id === taskId ? { ...w, schedule: schedule ?? undefined } : w) };
+  }),
   setTaskCustomCommand: (taskId, command) => set(s => {
     const tabs = s.tabs[taskId];
     // Re-seed any custom-command tab so a future respawn re-runs the

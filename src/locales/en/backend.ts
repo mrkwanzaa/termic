@@ -29,6 +29,16 @@ export default {
     compositionNone: "none",
   },
 
+  schedules: {
+    // OS notification bodies for a scheduled run; the title is the schedule.
+    notifyReportReady: "Report ready",
+    notifyNoReport: "Finished without a report",
+    notifyNeedsInput: "Needs your input",
+    notifyExited: "The agent exited before it finished",
+    notifyFailed: "The run did not start: {{error}}",
+    parentRenameFailed: "Renamed the schedule, but not its task: {{error}}",
+  },
+
   attentionNotify: {
     taskFallback: "task",
     agentBody: "agent {{phrase}}",

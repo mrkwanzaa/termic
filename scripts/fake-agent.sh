@@ -247,7 +247,51 @@ while IFS= read -r line; do
   # turn the following `#longwork-silent` into an unrecognised line, which
   # dispatched to the default branch and silently tested nothing. Every
   # directive begins with `#`, so anything before it is debris.
+  # A bracketed paste is ONE prompt, as it is to every real agent TUI: read on
+  # to the closing marker, so a multi-line message is one turn rather than one
+  # turn per line. Each physical line is still logged above and here.
+  # Before the debris strip below, which would eat the marker's ESC.
+  if [[ "$line" == *$'\e[200~'* && "$line" != *$'\e[201~'* ]]; then
+    while IFS= read -r more; do
+      printf '%s\n' "$more" \
+        >> "${TERMIC_DATA_DIR}/e2e-agent-prompts.log" 2>/dev/null || true
+      line+=$'\n'"$more"
+      [[ "$more" == *$'\e[201~'* ]] && break
+    done
+  fi
   line="${line#"${line%%[!$'\x1b\x03']*}"}"
+  # A scheduled run's prompt (GH #300): the first line is the directive, and
+  # Termic's appended instruction names the report file to write, relative to
+  # the run's directory (the project's live checkout).
+  if [[ "$line" == *"[Termic scheduled run:"* ]]; then
+    body="${line//$'\e[200~'/}"
+    body="${body//$'\e[201~'/}"
+    body="${body#\[200~}"
+    first="${body%%$'\n'*}"
+    rest="${body#*write a report of this run to \`}"
+    report="${rest%%\`*}"
+    case "$first" in
+      "#report")
+        spin
+        mkdir -p "$(dirname "$report")"
+        printf '# Fake scheduled report\n\nEverything is green.\n' > "$report"
+        echo "FAKE-AGENT wrote ${report}"
+        set_title "✳ ${name}"
+        continue ;;
+      "#attn")
+        spin
+        echo "FAKE-AGENT needs your permission to continue"
+        set_title "✳ ${name}"
+        osc777 "termic;agent needs your input"
+        continue ;;
+      *)
+        # `#noreport` and anything else: a turn that writes nothing.
+        spin
+        echo "FAKE-AGENT finished without a report"
+        set_title "✳ ${name}"
+        continue ;;
+    esac
+  fi
   case "$line" in
     "#pending "*)
       spin

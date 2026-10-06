@@ -44,7 +44,7 @@ logLine("[termic] boot build=resume-fix-v3-sidebar-bypass").catch(() => {});
 // release bundles: both flags are statically false there.
 if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
   void (async () => {
-    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod] =
+    const [app, ui, prefs, race, pr, ipc, core, runTabs, scriptRuns, prompts, agentRace, diffStat, issuePrompt, seedPrompt, signalLog, reviewComments, deepLink, previewBrowser, pendingTasks, archivingTasks, cmLanguage, cmAutocomplete, codeIntel, lspStatus, navHistory, pageSession, profiles, agentUsage, usageUnknownDismissed, scratchCli, i18nMod, scheduleRunner] =
       await Promise.all([
         import("@/store/app"),
         import("@/store/ui"),
@@ -77,6 +77,7 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
         import("@/store/usageUnknownDismissed"),
         import("@/lib/scratchCli"),
         import("@/lib/i18n"),
+        import("@/lib/schedules/runner"),
       ]);
     (window as unknown as Record<string, unknown>).__termic = {
       useApp: app.useApp,
@@ -109,6 +110,17 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
       // between a precise "no raw keys reached the UI" check and a regex
       // guessing at what a key looks like. See i18n.e2e.ts.
       i18n: i18nMod.i18n,
+      // Recurring schedules (GH #300). A spec cannot wait for 09:00, so it
+      // runs one pass at a chosen moment, or presses Run now, through the
+      // same functions the minute ticker and the Scheduled view call.
+      scheduleRunner: {
+        scheduleTickNow: scheduleRunner.scheduleTickNow,
+        runScheduleNow: scheduleRunner.runScheduleNow,
+        createSchedule: scheduleRunner.createSchedule,
+        updateSchedule: scheduleRunner.updateSchedule,
+        deleteSchedule: scheduleRunner.deleteSchedule,
+        isRunInFlight: scheduleRunner.isRunInFlight,
+      },
       ipc,
       invoke: core.invoke,
       runTabs,

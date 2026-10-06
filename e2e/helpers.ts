@@ -175,6 +175,17 @@ export interface TermicApi {
    *  cannot be simulated from inside a spec, so the reap is driven with a
    *  DIFFERENT id, which is exactly what the next page load would send. */
   lspPageId: string;
+  /** Recurring schedules (GH #300): the runner the minute ticker and the
+   *  Scheduled view drive. A spec cannot wait for 09:00, so it runs a pass at
+   *  a chosen `now`, or presses Run now. */
+  scheduleRunner: {
+    scheduleTickNow: (now?: number) => Promise<number>;
+    runScheduleNow: (parentId: string, now?: number) => Promise<{ kind: string; runId?: string; error?: string }>;
+    createSchedule: (args: any, now?: number) => Promise<string>;
+    updateSchedule: (parentId: string, patch: any, now?: number) => Promise<any>;
+    deleteSchedule: (parentId: string, deleteReports: boolean) => Promise<void>;
+    isRunInFlight: (taskId: string) => boolean;
+  };
 }
 
 declare global {

@@ -11,7 +11,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import {
   Search, Plus, FileText, Pencil, GitBranch, Archive, Zap, ShieldCheck,
   PanelLeft, PanelRight, PanelBottom, Palette, Keyboard, Settings as SettingsIcon,
-  FolderCog, RefreshCw, ScrollText, Bug, SlidersHorizontal, Bot, BookText,
+  FolderCog, RefreshCw, ScrollText, CalendarClock, Bug, SlidersHorizontal, Bot, BookText,
   Check, ChevronLeft, ListTodo, Bell, SquareTerminal, FolderPlus, History, Square,
   Play, Swords, Megaphone, Columns2, Rows2, Clock, UserPen, GitPullRequest, Activity, Code2,
   NotepadText, Waypoints, CircleDot, UsersRound, WrapText, type LucideIcon } from "lucide-react";
@@ -531,6 +531,11 @@ export function CommandPalette() {
       id: "changelog", section: "Application", label: t("commandPalette.cmd.openChangelog"),
       icon: ScrollText, keywords: "release notes whats new version",
       run: act(() => useUI.getState().openChangelog()),
+    });
+    cmds.push({
+      id: "new-schedule", section: "Application", label: t("commandPalette.cmd.newSchedule"),
+      icon: CalendarClock, keywords: "recurring scheduled run daily weekly cron",
+      run: act(() => useUI.getState().openScheduleDialog({})),
     });
     cmds.push({
       id: "open-issue", section: "Application", label: t("commandPalette.cmd.openIssue"),

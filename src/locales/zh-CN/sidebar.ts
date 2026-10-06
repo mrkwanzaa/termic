@@ -4,6 +4,7 @@ export default {
   navDashboard: "仪表盘",
   navHistory: "历史",
   navBoard: "看板",
+  navScheduled: "定时任务",
   projectsHeader: "项目",
   listOptionsTip: "项目列表选项",
   expandAll: "展开所有智能体",
@@ -159,4 +160,8 @@ export default {
     resume: "恢复",
     archivedNow: "刚刚",
   },
+
+  scheduleTask: "设置定时…",
+  editSchedule: "编辑定时任务…",
+  scheduleDocker: "定时执行暂不支持 Docker",
 };

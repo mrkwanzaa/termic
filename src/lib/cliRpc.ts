@@ -23,7 +23,6 @@ import { type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useApp } from "@/store/app";
 import { agentSendDisposition } from "@/lib/agentSendDisposition";
-import { waitForAgentReady, hooksOwnStartupReadiness } from "@/lib/agentReady";
 import { usePrefs } from "@/store/prefs";
 import { usePromptLibrary } from "@/store/prompts";
 import {
@@ -49,6 +48,7 @@ import { startArchive } from "@/lib/archiveTask";
 import { withCreateLock } from "@/lib/createLock";
 import { markUnattendedSpawn } from "@/lib/unattendedSpawns";
 import { reportCliPromptDelivery } from "@/lib/cliPromptReports";
+import { agentTabFor, defaultAgentTab, deliverPromptWhenReady, waitForAgentPty } from "@/lib/agentDelivery";
 import { deliverMessage } from "@/lib/agentSend";
 import {
   agentDisplayName, cliSupportsResumeById, isTerminalCli, isTerminalEntry, visibleCliIds,
@@ -81,20 +81,12 @@ type Handler = (params: unknown, progress: Progress) => Promise<unknown> | unkno
 
 // Same rhythm as the proven recipes (agentRace / runPrompt): poll for
 // the PTY, wait for the TUI to be ready (lib/agentReady), re-read, then
-// type. Wall-clock timers throughout - never rAF (occluded windows freeze
-// rAF, and for the CLI this window is always backgrounded).
-const SPAWN_DEADLINE_MS = 15_000;
+// type; that sequence lives in lib/agentDelivery.ts. Wall-clock timers
+// throughout - never rAF (occluded windows freeze rAF, and for the CLI
+// this window is always backgrounded).
 const POLL_MS = 150;
 /** How long the setup-output forwarder waits for the setup tab's PTY. */
 const SETUP_PTY_DEADLINE_MS = 10_000;
-
-const sleep = (ms: number) => new Promise<void>(r => { window.setTimeout(r, ms); });
-
-function defaultAgentTab(taskId: string): TerminalTab | undefined {
-  return (useApp.getState().tabs[taskId] ?? []).find(
-    (t): t is TerminalTab => t.type === "terminal" && !!t.is_default,
-  );
-}
 
 // ─────────────────────────── open ────────────────────────────────────
 
@@ -331,41 +323,13 @@ function streamSetupOutput(taskId: string, progress: Progress): () => void {
   };
 }
 
-/** The injection target: a specific tab when given (send --fresh /
- *  --resume respawn), the default agent tab otherwise; a restored set
- *  with no surviving default falls back to its first agent tab so the
- *  injection still lands somewhere real. */
-function agentTabFor(taskId: string, tabId?: string): TerminalTab | undefined {
-  if (!tabId) {
-    return (
-      defaultAgentTab(taskId)
-      ?? (useApp.getState().tabs[taskId] ?? []).find(
-        (t): t is TerminalTab => t.type === "terminal" && !t.runTab && !isTerminalCli(t.cli)
-          && t.cli !== "shell" && t.cli !== "custom",
-      )
-    );
-  }
-  return (useApp.getState().tabs[taskId] ?? []).find(
-    (t): t is TerminalTab => t.id === tabId && t.type === "terminal",
-  );
-}
-
-/** Wait for the target agent tab to hold a live PTY ("spawn"). */
-async function waitForAgentPty(taskId: string, tabId?: string): Promise<boolean> {
-  const deadline = Date.now() + SPAWN_DEADLINE_MS;
-  while (Date.now() < deadline) {
-    if (agentTabFor(taskId, tabId)?.ptyId) return true;
-    await sleep(POLL_MS);
-  }
-  return false;
-}
-
 /** Inject the prompt with CONFIRMED delivery reporting. Unlike the
  *  race path's seedPromptWhenReady (which gives up silently), every
  *  exit reports to `cli_prompt_report`, because `new --wait` exit 0
  *  must mean delivered + settled (docs/plans/cli.md, Phase 1). Runs in
  *  the background AFTER the RPC returns; a webview reload kills it,
- *  which the server surfaces as "prompt never delivered". */
+ *  which the server surfaces as "prompt never delivered". The delivery
+ *  itself is lib/agentDelivery.ts, shared with the schedule runner. */
 async function injectPromptTracked(
   taskId: string,
   prompt: string,
@@ -373,55 +337,8 @@ async function injectPromptTracked(
   spawned: boolean,
   tabId?: string,
 ): Promise<void> {
-  const report = (ok: boolean, error?: string) => reportCliPromptDelivery(promptId, ok, error);
-  if (!spawned) {
-    await report(false, "the agent PTY never spawned");
-    return;
-  }
-  // Wait for the TUI to reach its input box, so the prompt lands there
-  // and not in a splash screen that discards it; then RE-READ the tab (it
-  // may have restarted onto a fresh PTY while we waited - never type into
-  // a stale pty). Same readiness rules as seedPrompt's race path: an agent
-  // that owns its own ready signal and never sends it is showing a startup
-  // prompt, where typing + Enter confirms whatever is highlighted.
-  const cli = agentTabFor(taskId, tabId)?.cli;
-  const hooksOwnReadiness = hooksOwnStartupReadiness(cli, !!cli && useApp.getState().agentHooksInstalled[cli] === true);
-  const ready = await waitForAgentReady(() => agentTabFor(taskId, tabId), { hooksOwnReadiness });
-  if (ready === "blocked") {
-    await report(false, `${cli} never reported ready; not typing (startup prompt?)`);
-    return;
-  }
-  const tab = ready === "lost" ? undefined : agentTabFor(taskId, tabId);
-  if (!tab?.ptyId) {
-    await report(false, "the agent tab lost its PTY before the prompt could be typed");
-    return;
-  }
-  try {
-    // Clear any STALE done/attention state first (a real keyboard Enter
-    // clears these via term.onData; a direct PTY write does not), so the
-    // wait's own-prompt settle logic can never trust a "done" that
-    // predates this prompt.
-    useApp.getState().patchTab(taskId, tab.id, { workState: "idle", unread: null });
-    // Resolves only after text AND the submit CR are written. Echo-verify
-    // unless the agent itself claimed ready (same protection as
-    // seedPrompt: a missing echo means the paste went somewhere that is
-    // not an input box).
-    await deliverMessage(tab.ptyId, prompt, { verifyEcho: ready !== "ready" });
-    // pty_write silently no-ops on a dead id, so "the writes resolved"
-    // is not "the agent received them": delivered means the SAME tab
-    // still holds the SAME, still-live PTY after both writes.
-    const still = agentTabFor(taskId, tabId);
-    const samePty = still?.id === tab.id && still.ptyId === tab.ptyId;
-    const alive = samePty && (await ptyAlive(tab.ptyId).catch(() => false));
-    if (!alive) {
-      await report(false, "the agent PTY exited while the prompt was being typed");
-      return;
-    }
-    useApp.getState().patchTab(taskId, tab.id, { lastInputAt: Date.now() });
-    await report(true);
-  } catch (e) {
-    await report(false, String((e as Error)?.message ?? e));
-  }
+  const r = await deliverPromptWhenReady(taskId, prompt, spawned, tabId);
+  await reportCliPromptDelivery(promptId, r.ok, r.ok ? undefined : r.error);
 }
 
 /** The CLI's `termic new`: the GUI's create recipe end to end, plus

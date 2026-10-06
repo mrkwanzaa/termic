@@ -25,6 +25,7 @@ import { usePendingTask } from "@/store/pendingTasks";
 import { Dashboard } from "@/components/views/Dashboard";
 import { HistoryView } from "@/components/views/History";
 import { BoardView } from "@/components/views/BoardView";
+import { ScheduledView } from "@/components/views/Scheduled";
 import { TaskView } from "@/components/task/TaskView";
 import { CreatingTaskPane } from "@/components/task/CreatingTaskPane";
 
@@ -64,6 +65,7 @@ export function MainArea() {
   const overlay =
     view === "history" && !task ? <HistoryView /> :
     view === "board" && !task ? <BoardView /> :
+    view === "scheduled" && !task ? <ScheduledView /> :
     pending ? <CreatingTaskPane id={pending.id} /> :
     !task ? <Dashboard /> :
     null;

@@ -5,6 +5,14 @@ import { create } from "zustand";
 import type { Prompt } from "@/store/prompts";
 import type { TaskFilter } from "@/lib/taskFilter";
 
+/** What the schedule dialog is for: a new schedule (optionally preselecting a
+ *  project), "Schedule..." on an existing task, or editing a schedule. */
+export interface ScheduleDialogTarget {
+  parentTaskId?: string;
+  projectId?: string;
+  edit?: boolean;
+}
+
 export interface ConfirmCheckbox {
   label: string;
   defaultValue?: boolean;
@@ -132,6 +140,10 @@ interface UIState {
    *  composition are being edited, null = closed. Lives in UI store so
    *  opening doesn't churn the task tree. */
   editTaskId: string | null;
+  /** The schedule dialog (GH #300), null = closed. `parentTaskId` alone is
+   *  "Schedule..." on that task (or, with `edit`, editing its schedule);
+   *  neither is a new schedule with a new parent task. */
+  scheduleDialog: ScheduleDialogTarget | null;
   /** Read-only "Keyboard shortcuts" cheat-sheet modal (opened from the
    *  sidebar footer). Distinct from Settings → Shortcuts (which edits them). */
   /** True while Termic is in windowless mode (window closed to the menu bar,
@@ -301,6 +313,8 @@ interface UIState {
   closeResumeOverride: () => void;
   openEditTask: (taskId: string) => void;
   closeEditTask: () => void;
+  openScheduleDialog: (target: ScheduleDialogTarget) => void;
+  closeScheduleDialog: () => void;
   openShortcutsHelp: () => void;
   closeShortcutsHelp: () => void;
   openWelcome: () => void;
@@ -471,6 +485,7 @@ export const useUI = create<UIState>(set => ({
   runCommandsDialog: null,
   resumeOverrideTaskId: null,
   editTaskId: null,
+  scheduleDialog: null,
   windowless: false,
   // Assume focused until told otherwise: a first paint that guessed "away"
   // would badge a turn the user watched finish.
@@ -533,6 +548,8 @@ export const useUI = create<UIState>(set => ({
   closeResumeOverride:() => set({ resumeOverrideTaskId: null }),
   openEditTask:   (taskId) => set({ editTaskId: taskId }),
   closeEditTask:  () => set({ editTaskId: null }),
+  openScheduleDialog:  (target) => set({ scheduleDialog: target }),
+  closeScheduleDialog: () => set({ scheduleDialog: null }),
   setWindowless: (v) => set({ windowless: v }),
   setWindowFocused: (v) => set(s => (s.windowFocused === v ? s : { windowFocused: v })),
   setClosePromptOpen: (v) => set({ closePromptOpen: v }),

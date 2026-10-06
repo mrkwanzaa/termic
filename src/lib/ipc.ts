@@ -217,7 +217,10 @@ export const taskImportWorktree = (
     dockerExtraMounts: sandbox?.dockerExtraMounts,
     resumeSessionId, resumeOverride, yolo, agentArgs,
   });
-export const taskArchive  = (id: string, deleteBranch?: boolean) => invoke<void>("task_archive", { id, deleteBranch });
+/** `skipScripts` is the schedule runner's alone: archiving an old run must not
+ *  run the project's archive script in the live checkout. */
+export const taskArchive  = (id: string, deleteBranch?: boolean, skipScripts?: boolean) =>
+  invoke<void>("task_archive", { id, deleteBranch, skipScripts });
 export const taskRestore  = (id: string) => invoke<Task>("task_restore", { id });
 export const taskDelete   = (id: string) => invoke<void>("task_delete", { id });
 export const taskSetCli   = (id: string, cli: string) => invoke<Task>("task_set_cli", { id, cli });
@@ -646,6 +649,22 @@ export const taskSetTabSessionId = (id: string, tabId: string, uuid: string) =>
 /** Replace one durable tab's scheduled queue messages (GH #300). */
 export const taskSetTabScheduled = (id: string, tabId: string, items: import("@/lib/types").ScheduledMessage[]) =>
   invoke<void>("task_set_tab_scheduled", { id, tabId, items });
+
+/** Set (or clear, with null) the recurring schedule a task is the parent of
+ *  (GH #300). Always the whole record; an unchanged one writes nothing. The
+ *  first set creates the report folder and keeps it out of git. */
+export const taskSetSchedule = (id: string, schedule: import("@/lib/types").TaskSchedule | null) =>
+  invoke<void>("task_set_schedule", { id, schedule });
+/** Delete a schedule's reports dated before `before` (local `YYYY-MM-DD`).
+ *  Resolves with the deleted file names. */
+export const schedulePruneReports = (projectId: string, slug: string, before: string) =>
+  invoke<string[]>("schedule_prune_reports", { projectId, slug, before });
+/** Delete every report of a schedule (and its folder, once empty). */
+export const scheduleDeleteReports = (projectId: string, slug: string) =>
+  invoke<string[]>("schedule_delete_reports", { projectId, slug });
+/** Whether the run with report stem `stem` (`YYYY-MM-DD_HHMM`) wrote its report. */
+export const scheduleReportStatus = (projectId: string, slug: string, stem: string) =>
+  invoke<import("@/lib/types").ReportStatus>("schedule_report_status", { projectId, slug, stem });
 
 /** Persist the JSON-encoded SplitTree for a task. Pass null to clear. */
 export const taskSetSplitLayout = (id: string, layout: string | null) =>

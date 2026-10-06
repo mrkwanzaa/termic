@@ -318,6 +318,13 @@ export interface Task {
    *  joins none, and this is its only link back (the sidebar draws it on
    *  hover, src/components/sidebar/SpawnLinks.tsx). */
   spawned_by?: string;
+  /** The recurring schedule this task is the parent of (GH #300). Absent on
+   *  every other task. Its runs carry `spawned_by` + this task's group, and
+   *  `schedule.history` holds their ids. */
+  schedule?: TaskSchedule;
+  /** Per-agent account override (GH #278): agent id -> account name. Absent
+   *  means "follow the agent's default". Written by `taskSetAccount`. */
+  accounts?: Record<string, string>;
   /** True when this task points at the project's main repo checkout
    *  (no git worktree). The UI shows a distinct icon and archive only
    *  removes the entry — the repo on disk is untouched. */
@@ -476,6 +483,67 @@ export interface ScheduledMessage {
   /** Epoch ms. Sent the first time the tab is live and idle on or after it. */
   not_before: number;
   created: number;
+}
+
+/** A recurring schedule's cadence (GH #300). Presets, not cron: daily,
+ *  weekdays (Mon-Fri) or weekly, each at one local wall-clock time. */
+export type CadenceKind = "daily" | "weekdays" | "weekly";
+
+export interface ScheduleCadence {
+  kind: CadenceKind;
+  /** Local wall-clock time, `HH:MM`. */
+  time: string;
+  /** Weekly only: 0 = Sunday .. 6 = Saturday (`Date.getDay()`). */
+  weekday?: number;
+}
+
+/** What became of one slot. `running` is in flight; `no_report` settled
+ *  done without writing its report; `missed` carries a streak in `count`. */
+export type RunOutcome = "running" | "fired" | "no_report" | "needs_input" | "missed" | "skipped" | "failed";
+
+/** One history entry. Mirror of `ScheduleRun` in src-tauri/src/schedules.rs. */
+export interface ScheduleRun {
+  /** The slot (epoch ms); for a Run now, when it was asked for. */
+  slot: number;
+  outcome: RunOutcome;
+  run_task_id?: string;
+  /** The report's path relative to the project. */
+  report?: string;
+  /** The report's first heading or `<title>`, read once when the run ended. */
+  title?: string;
+  count?: number;
+  error?: string;
+  manual?: boolean;
+  /** Retention deleted the report. */
+  report_gone?: boolean;
+}
+
+/** `Task.schedule`: the recurring schedule this task is the PARENT of.
+ *  Mirror of `TaskSchedule` in src-tauri/src/schedules.rs, written solely by
+ *  `taskSetSchedule` with the whole record. */
+export interface TaskSchedule {
+  enabled: boolean;
+  name: string;
+  /** The report folder's name, fixed at creation. */
+  slug: string;
+  prompt?: string;
+  /** A prompt-library entry, resolved when the run fires. */
+  prompt_id?: string;
+  cadence: ScheduleCadence;
+  catch_up: boolean;
+  keep_runs: number;
+  /** Days to keep reports; null is forever (30 when created). */
+  report_days: number | null;
+  /** The last slot the runner acted on (epoch ms). */
+  last_slot: number | null;
+  history: ScheduleRun[];
+}
+
+/** `schedule_report_status`: whether a run wrote its report. */
+export interface ReportStatus {
+  /** Relative to the project root; null when there is no report. */
+  path: string | null;
+  title: string | null;
 }
 
 /** Per-member input for `task_create_multi`. `root_path` matches a
