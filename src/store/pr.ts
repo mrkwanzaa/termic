@@ -51,6 +51,7 @@ import { usePrefs } from "@/store/prefs";
 import { archiveAndRefresh, confirmAndArchive } from "@/lib/archiveTask";
 import { i18n } from "@/lib/i18n";
 import { taskLabel } from "@/lib/taskLabel";
+import { hasPrIdentity } from "@/lib/taskBoardState";
 
 export interface PrEntry {
   lookup: PrLookup | null;
@@ -320,13 +321,13 @@ export function pollableTasks(): Task[] {
   const staleness = (id: string) => now - (byTask[id]?.fetchedAt ?? 0);
   return useApp.getState().tasks
     .filter(w => {
-      if (w.archived || w.is_main_checkout) return false;
       // Exactly the set the sidebar draws a badge for (TaskPrBadge keys on
       // the url), so no row can render a badge nothing polls. Either half of
       // the identity is enough: the lookup resolves by BRANCH first and only
       // falls back to the stored number, so a record whose url parsed but
-      // whose number did not is still perfectly pollable.
-      if (!w.pr_url && !w.pr_number) return false;
+      // whose number did not is still perfectly pollable. `hasPrIdentity` is
+      // the review column's gate too, so the board and the poller agree.
+      if (w.archived || !hasPrIdentity(w)) return false;
       const entry = byTask[w.id];
       if (entry?.loading) return false;
       return staleness(w.id) >= STATUS_STALE_MS;

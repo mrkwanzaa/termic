@@ -197,6 +197,21 @@ changed file", for why the diff is not always the right reader.
 
 `bindingGlyphs(b)` returns `["⌥","⇧","⌘", key]`. Help modal uses raw glyphs (⌘ ⌥ ⇧); settings editor uses `glyphLabel` (Cmd/Ctrl, Option/Alt). `isValidBinding` requires Cmd/Ctrl or Option to prevent swallowing normal typing. The top-bar command-palette button (docs/ui.md) builds its tooltip the same way, so a rebind retitles it.
 
+## Kanban filter bar (`/` and ⌘F)
+
+Contextual, in `BoardFilterBar`'s own capture listener, not `SHORTCUT_DEFS`:
+the board is mounted only while it is the view, and the overlay clears
+`activeTaskId`, so no task's find handler competes for ⌘F while it is up.
+It stands down for a modal (`[role="dialog"]` around the active element),
+the Settings overlay (store flag only, it traps no focus), and, for `/`
+alone, any editable control already holding the keyboard (`select` included,
+`contenteditable="false"` not). ⌘F is matched with `bindingMatches`, so it
+inherits the AltGr guard and the Ctrl fold off macOS, and it also stands
+down when the user has bound ⌘F to a command in Settings: the listener runs
+in the capture phase and stops propagation, so claiming it anyway would
+swallow that binding before `useShortcuts` saw it. See docs/ui.md "Kanban
+view" > Filtering.
+
 ## Prompt palette (⌥⌘P)
 
 `prompt-palette` (default ⌥⌘P) is a plain single-chord shortcut that opens `PromptPalette.tsx`: a searchable list of enabled prompts (fuzzy-filtered by title only). Enter runs the highlighted one; while the query is empty, digits `1-9` fire the top rows directly (a positional accelerator, Raycast-style, not a persisted per-prompt key). Firing goes through `fireOrPickDestination` in `src/lib/promptFire.ts`, which sends straight to the focused agent tab or falls back to the shared destination-picker dialog (`PromptDestinationDialog.tsx`) when there's no focused live agent. The Prompts dropdown in `UnifiedBar.tsx` always opens the picker so you can tweak the body and choose a target.

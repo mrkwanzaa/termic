@@ -43,7 +43,7 @@ import { useApp, selectTaskTabs, selectActiveTabId, EMPTY_TABS } from "@/store/a
 import { useAgentUsage, usageKey } from "@/store/agentUsage";
 import {
   createSidebarFactsSelector, createRowTabsSelector, tabRenderEqual, tabListRenderEqual,
-  createStatusFactsSelector, selectStatusRowBadge, selectStatusRowDelegated,
+  createStatusFactsSelector, createBoardFilterFactsSelector, selectStatusRowBadge, selectStatusRowDelegated,
   selectStatusRowTabCount, selectStatusRowActiveChild, selectStatusGroupMarks,
 } from "@/store/sidebarTabs";
 import { selectBoardColumnKey } from "@/lib/boardColumnKey";
@@ -390,6 +390,42 @@ describe("selector fan-out budget (bear trap 5)", () => {
       // The cast narrows past the Tab union: workState exists only on
       // terminal tabs, and a spread over the union fails to compile.
       useApp.setState({ tabs: { ...s.tabs, b1: [{ ...(tab("b1-t") as TerminalTab), workState: "working" }] } });
+    });
+
+    expect(r.invalidations).toBe(1);
+  });
+
+  // ── Kanban filter bar facts ────────────────────────────────────────
+  //
+  // While a free-text query is typed, BoardView holds the filter facts
+  // record. It must not move while agents stream or flip state, or the
+  // whole board re-renders per OSC title and per working/idle flip for no
+  // change in what the query matches. Only a STABLE title or a property
+  // value moves it.
+
+  it("the board's filter facts ignore live titles and work-state flips", () => {
+    useApp.setState({ tabs: { b1: [tab("b1-t")] } });
+    const subs = [createBoardFilterFactsSelector()];
+
+    const r = measureFanout(subs, 100, i => {
+      const s = useApp.getState();
+      useApp.setState({ tabs: { ...s.tabs, b1: [{
+        ...(tab("b1-t") as TerminalTab),
+        liveTitle: `thinking ${i}`,
+        workState: i % 2 ? "done" : "idle",
+      }] } });
+    });
+
+    expect(r.invalidations).toBe(0);
+  });
+
+  it("the board's filter facts fire once on a tab rename", () => {
+    useApp.setState({ tabs: { b1: [tab("b1-t")] } });
+    const subs = [createBoardFilterFactsSelector()];
+
+    const r = measureFanout(subs, 1, () => {
+      const s = useApp.getState();
+      useApp.setState({ tabs: { ...s.tabs, b1: [{ ...tab("b1-t"), title: "Reviewer" }] } });
     });
 
     expect(r.invalidations).toBe(1);

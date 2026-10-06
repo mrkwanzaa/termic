@@ -290,6 +290,12 @@ interface UIState {
   taskFilters: Record<string, TaskFilter>;
   setTaskFilterText: (projectId: string, text: string) => void;
   toggleTaskFilterBell: (projectId: string) => void;
+  /** The Kanban filter bar's query text (docs/ui.md "Kanban view" >
+   *  Filtering). Here, not BoardView state, because the board unmounts when
+   *  left and the query should survive a trip to a task and back. Not
+   *  persisted: a filter you forgot about would hide cards on launch. */
+  boardQuery: string;
+  setBoardQuery: (q: string) => void;
   /** Transient bottom-right toasts. Auto-dismiss handled in <Toaster/>. */
   toasts: Toast[];
   /** Bumped to force the "All files" tree to re-read from disk — e.g. after
@@ -475,7 +481,7 @@ function confirmAnswer(
   return { confirmed, checked, dontAskAgain };
 }
 
-export const useUI = create<UIState>(set => ({
+export const useUI = create<UIState>((set, get) => ({
   newProjectOpen: false,
   newTaskProjectId: null,
   newTaskSeed: null,
@@ -526,6 +532,8 @@ export const useUI = create<UIState>(set => ({
   setTaskFilterText: (projectId, text) => set(s => patchTaskFilter(s.taskFilters, projectId, { text })),
   toggleTaskFilterBell: (projectId) => set(s =>
     patchTaskFilter(s.taskFilters, projectId, { bell: !s.taskFilters[projectId]?.bell })),
+  boardQuery: "",
+  setBoardQuery: (q) => { if (get().boardQuery !== q) set({ boardQuery: q }); },
   toasts: [],
 
   openNewProject:    () => set({ newProjectOpen: true }),

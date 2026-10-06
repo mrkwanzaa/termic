@@ -72,10 +72,7 @@ function sameFacts(a: SidebarTaskFacts, b: SidebarTaskFacts): boolean {
     && a.attention === b.attention
     && a.done === b.done
     && a.liveDefault === b.liveDefault
-    && a.titles.length === b.titles.length
-    && a.titles.every((t, i) => t === b.titles[i])
-    && a.propValues.length === b.propValues.length
-    && a.propValues.every((v, i) => v === b.propValues[i]);
+    && sameFilterFacts(a, b);
 }
 
 /** The per-task cache both fact records share: returns the SAME record until
@@ -128,6 +125,33 @@ export function createSidebarFactsSelector(): (s: AppState) => SidebarTabFacts {
 export function useSidebarTabFacts(): SidebarTabFacts {
   const [select] = useState(createSidebarFactsSelector);
   return useApp(select);
+}
+
+// ─── Kanban filter bar: the free-text facts ─────────────────────────────
+
+/** What the board's free text reads (titles and property values), and
+ *  nothing else. Not the sidebar's record: that one also changes on every
+ *  attention / done / live-agent flip, which would re-render the whole board
+ *  while a filter is typed for no change in what matches. */
+export type BoardFilterFacts = Readonly<Record<string, TaskFilterFacts>>;
+
+export const EMPTY_BOARD_FILTER_FACTS: BoardFilterFacts = Object.freeze({});
+
+function sameFilterFacts(a: TaskFilterFacts, b: TaskFilterFacts): boolean {
+  return a.titles.length === b.titles.length
+    && a.titles.every((t, i) => t === b.titles[i])
+    && a.propValues.length === b.propValues.length
+    && a.propValues.every((v, i) => v === b.propValues[i]);
+}
+
+/** `notification` is left out of the compare on purpose: the board never
+ *  reads it, so it may be stale in this record. */
+export function createBoardFilterFactsSelector(): (s: AppState) => BoardFilterFacts {
+  return createFactsSelector(
+    (tabs: Tab[]) => Object.freeze(taskFilterFacts(tabs)),
+    sameFilterFacts,
+    EMPTY_BOARD_FILTER_FACTS,
+  );
 }
 
 // ─── Status section: the board column's facts ──────────────────────────

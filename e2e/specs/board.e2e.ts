@@ -15,12 +15,14 @@ import { join } from "node:path";
 import {
   archiveTask,
   clickByText,
+  clickWhenVisible,
   dismissOverlays,
   ensureActiveTask,
   openTask,
   pointerDrag,
   pointerRelease,
   requireTermicApi,
+  setInputValue,
   snap,
   waitForAppShell,
   waitGone,
@@ -59,6 +61,10 @@ describe("board view", () => {
   let cap: string[] = [];
 
   after(async () => {
+    // The filter query is session state; a later spec file gets a fresh
+    // launch, but a throw mid-case should not leave this file's board
+    // filtered for the cases after it either.
+    await browser.execute(() => window.__termic!.useUI.getState().setBoardQuery(""));
     // The cap case drives the limit pref through the store as setup; put it
     // back whichever way the case ended.
     await browser.execute(() =>
@@ -590,5 +596,202 @@ describe("board view", () => {
       await browser.execute(() => window.__termic!.usePrefs.getState().setShowBoard(true));
     }
     await waitVisible(nav);
+  });
+
+  // The filter bar (docs/ui.md "Kanban view" > Filtering). By here t1
+  // (board-a) is archived, t2 / t4 (fakeagent) and t3 (fakecapture) are live.
+  describe("the filter bar", () => {
+    const INPUT = '[data-testid="board-filter-input"]';
+    const shownIds = () =>
+      browser.execute(() =>
+        [...document.querySelectorAll<HTMLElement>('[data-testid="board-view"] [data-board-task-id]')]
+          .map(el => el.dataset.boardTaskId)) as Promise<string[]>;
+    const query = () => browser.execute(() => window.__termic!.useUI.getState().boardQuery) as Promise<string>;
+    const waitShown = (want: (ids: string[]) => boolean, msg: string) =>
+      browser.waitUntil(async () => want(await shownIds()), { timeout: 5_000, timeoutMsg: msg });
+    const type = (text: string) => setInputValue(INPUT, text);
+
+    before(async () => {
+      await dismissOverlays();
+      await clickByText("Kanban");
+      await waitVisible('[data-testid="board-view"]');
+      await waitVisible(INPUT);
+    });
+
+    it("columns share the width whatever their cards say", async () => {
+      // Columns grow into a wide window (flex-grow from a 280px floor), but
+      // the row is `w-max`, which sizes from each column's max-content. A
+      // long nowrap card title used to widen ITS column past the others.
+      const restore = await browser.execute((id) => {
+        const s = window.__termic!.useApp.getState();
+        const w = s.tasks.find((x: any) => x.id === id);
+        const was = { name: w.name, branch: w.branch };
+        const long = "a-very-long-task-name-that-would-not-fit-in-any-column-at-all";
+        window.__termic!.useApp.setState((st: any) => ({
+          tasks: st.tasks.map((x: any) => x.id === id ? { ...x, name: long, branch: long } : x),
+        }));
+        return was;
+      }, t3);
+      try {
+        await waitVisible(CARD(t3));
+        const widths = await browser.execute(() =>
+          [...document.querySelectorAll<HTMLElement>(
+            "[data-board-cell]:not([data-board-hidden-column]), [data-board-archive]",
+          )].map(el => Math.round(el.getBoundingClientRect().width)));
+        expect(widths.length).toBeGreaterThan(1);
+        expect(Math.max(...widths) - Math.min(...widths)).toBeLessThanOrEqual(1);
+      } finally {
+        await browser.execute((id, was) => {
+          window.__termic!.useApp.setState((st: any) => ({
+            tasks: st.tasks.map((x: any) => x.id === id ? { ...x, ...was } : x),
+          }));
+        }, t3, restore);
+      }
+    });
+
+    it("free text narrows every column, and the count says how many are left", async () => {
+      await type("board-c");
+      await waitShown(ids => ids.includes(t3) && !ids.includes(t2) && !ids.includes(t4),
+        "free text never narrowed the board to board-c");
+      await waitVisible('[data-testid="board-filter-count"]');
+      await snap("board-filter-text.png");
+    });
+
+    it("a column the filter empties stays on the board instead of folding away", async () => {
+      // backlog held every live card before the query; it must still be a
+      // real column (not an Inactive row) once nothing in it matches.
+      await type("project:nope");
+      await waitShown(ids => ids.length === 0, "an unmatched project still showed cards");
+      await waitVisible(`${COLUMN("backlog")}:not([data-board-hidden-column])`);
+      const count = await browser.execute(
+        sel => document.querySelector(sel)?.textContent ?? "",
+        '[data-testid="board-filter-count"]',
+      );
+      expect(count).toMatch(/^0\b/);
+      await type("project:fixture-repo");
+      await waitShown(ids => [t2, t3, t4].every(id => ids.includes(id)), "an exact project match hid its cards");
+    });
+
+    it("negation excludes, and the archived column filters too", async () => {
+      await type("-agent:fakecapture");
+      await waitShown(ids => !ids.includes(t3) && ids.includes(t2), "negated agent did not exclude board-c");
+      // An archived card is found by the same query that finds live ones.
+      await type("board-a");
+      await waitVisible(`[data-board-archive] ${CARD(t1)}`);
+      await waitShown(ids => !ids.includes(t2), "free text left a non-matching live card");
+    });
+
+    it("an unknown qualifier is called out rather than silently matching nothing", async () => {
+      await type("colour:red");
+      await waitVisible('[data-testid="board-filter-unknown"]');
+    });
+
+    it("autocomplete completes a qualifier, then its value", async () => {
+      await type("agen");
+      await waitVisible('[data-board-filter-suggestion="agent:"]');
+      await browser.keys(["Enter"]);
+      await browser.waitUntil(async () => (await query()) === "agent:", { timeout: 5_000, timeoutMsg: "picking agent: did not write it" });
+      await type("agent:fakec");
+      await waitVisible('[data-board-filter-suggestion="fakecapture"]');
+      await snap("board-filter-suggest.png");
+      await browser.keys(["Enter"]);
+      await browser.waitUntil(async () => (await query()) === "agent:fakecapture ", { timeout: 5_000, timeoutMsg: "picking a value did not write it" });
+      await waitShown(ids => ids.includes(t3) && !ids.includes(t2), "the completed query did not filter");
+    });
+
+    it("Esc clears, and the clear button empties the query", async () => {
+      await browser.keys(["Escape"]);
+      await browser.waitUntil(async () => (await query()) === "", { timeout: 5_000, timeoutMsg: "Esc did not clear" });
+      await waitShown(ids => [t2, t3, t4].every(id => ids.includes(id)), "clearing did not restore the board");
+      await type("board-d");
+      await clickWhenVisible('[data-testid="board-filter-clear"]');
+      await browser.waitUntil(async () => (await query()) === "", { timeout: 5_000, timeoutMsg: "the clear button did not clear" });
+    });
+
+    it("clicking a lane divider or project header toggles that filter in the text", async () => {
+      await browser.execute(() =>
+        (document.querySelector('[data-board-lane-filter="fakecapture"]') as HTMLElement).click());
+      await browser.waitUntil(async () => (await query()) === "agent:fakecapture", { timeout: 5_000, timeoutMsg: "lane click did not filter" });
+      await waitShown(ids => ids.includes(t3) && !ids.includes(t2), "lane filter did not narrow");
+      // The same click again takes it back out, so the divider must survive
+      // its own filter: lanes come from the unfiltered board.
+      await waitVisible('[data-board-lane-filter="fakecapture"]');
+      await browser.execute(() =>
+        (document.querySelector('[data-board-lane-filter="fakecapture"]') as HTMLElement).click());
+      await browser.waitUntil(async () => (await query()) === "", { timeout: 5_000, timeoutMsg: "second lane click did not unfilter" });
+
+      await browser.execute(() =>
+        (document.querySelector("[data-board-project-filter]") as HTMLElement).click());
+      await browser.waitUntil(async () => (await query()) === "project:fixture-repo", { timeout: 5_000, timeoutMsg: "project header click did not filter" });
+    });
+
+    it("the funnel opens a menu whose chips write the query: include, exclude, clear", async () => {
+      await browser.execute(() => window.__termic!.useUI.getState().setBoardQuery(""));
+      await clickWhenVisible('[data-testid="board-filter-menu-trigger"]');
+      await waitVisible('[data-testid="board-filter-menu"]');
+      const CHIP = '[data-board-filter-chip="agent:fakecapture"]';
+      const chipState = () => browser.execute(sel => document.querySelector(sel)?.getAttribute("data-state"), CHIP);
+
+      // The count is what a click would leave: one fakecapture card (t3).
+      const chipCount = () => browser.execute(
+        sel => document.querySelector(`${sel} > span:last-child`)?.textContent ?? "", CHIP);
+      expect(await chipCount()).toBe("1");
+      await snap("board-filter-menu.png");
+
+      // Counts are against the CURRENT query, recomputed live while open:
+      // under `board-d` (a fakeagent task) the fakecapture chip would leave 0.
+      await browser.execute(() => window.__termic!.useUI.getState().setBoardQuery("board-d"));
+      await browser.waitUntil(
+        async () => (await chipCount()) === "0",
+        { timeout: 5_000, timeoutMsg: "the chip count ignored the active query" },
+      );
+      await browser.execute(() => window.__termic!.useUI.getState().setBoardQuery(""));
+
+      await clickWhenVisible(CHIP);
+      await browser.waitUntil(async () => (await query()) === "agent:fakecapture", { timeout: 5_000, timeoutMsg: "first chip click did not include" });
+      expect(await chipState()).toBe("include");
+      await waitShown(ids => ids.includes(t3) && !ids.includes(t2), "including the agent did not narrow");
+
+      await clickWhenVisible(CHIP);
+      await browser.waitUntil(async () => (await query()) === "-agent:fakecapture", { timeout: 5_000, timeoutMsg: "second chip click did not exclude" });
+      expect(await chipState()).toBe("exclude");
+      await waitShown(ids => !ids.includes(t3) && ids.includes(t2), "excluding the agent did not narrow");
+      await snap("board-filter-menu-exclude.png");
+
+      // A second facet merges in rather than replacing what is there.
+      await clickWhenVisible('[data-board-filter-chip="project:fixture-repo"]');
+      await browser.waitUntil(
+        async () => (await query()) === "-agent:fakecapture project:fixture-repo",
+        { timeout: 5_000, timeoutMsg: "a second facet did not join the query" },
+      );
+
+      await clickWhenVisible('[data-testid="board-filter-menu-clear"]');
+      await browser.waitUntil(async () => (await query()) === "", { timeout: 5_000, timeoutMsg: "Clear all did not clear" });
+      expect(await chipState()).toBe("off");
+
+      await browser.keys(["Escape"]);
+      await waitGone('[data-testid="board-filter-menu"]');
+    });
+
+    it("the query survives leaving the board, and / focuses the bar", async () => {
+      // Set here, not inherited: the funnel case before this one clears it.
+      await browser.execute(() => window.__termic!.useUI.getState().setBoardQuery("project:fixture-repo"));
+      await ensureActiveTask(t2);
+      await waitGone('[data-testid="board-view"]', 5_000);
+      await clickByText("Kanban");
+      await waitVisible('[data-testid="board-view"]');
+      const value = await browser.execute(sel => (document.querySelector(sel) as HTMLInputElement).value, INPUT);
+      expect(value).toBe("project:fixture-repo");
+
+      await browser.execute(() => (document.activeElement as HTMLElement | null)?.blur());
+      await browser.keys(["/"]);
+      await browser.waitUntil(
+        () => browser.execute(sel => document.activeElement === document.querySelector(sel), INPUT),
+        { timeout: 5_000, timeoutMsg: "/ did not focus the filter bar" },
+      );
+      // The `/` itself must not have been typed into the query.
+      expect(await query()).toBe("project:fixture-repo");
+      await browser.execute(() => window.__termic!.useUI.getState().setBoardQuery(""));
+    });
   });
 });
