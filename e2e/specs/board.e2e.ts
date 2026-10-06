@@ -573,4 +573,22 @@ describe("board view", () => {
     ) as string[];
     expect(after).not.toContain(emptyCol);
   });
+
+  // The nav entry is the only way in, so the pref that hides it is the whole
+  // switch. Driven through the store: the Settings row is a plain toggle over
+  // this setter, and the default is pinned in prefs.test.ts.
+  it("the Kanban nav entry follows the showBoard pref", async () => {
+    const nav = '[data-testid="nav-board"]';
+    await waitVisible(nav);
+    try {
+      await browser.execute(() => window.__termic!.usePrefs.getState().setShowBoard(false));
+      await browser.waitUntil(
+        () => browser.execute((s) => !document.querySelector(s), nav),
+        { timeout: 5_000, timeoutMsg: "the Kanban nav entry stayed with the pref off" },
+      );
+    } finally {
+      await browser.execute(() => window.__termic!.usePrefs.getState().setShowBoard(true));
+    }
+    await waitVisible(nav);
+  });
 });

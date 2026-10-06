@@ -104,6 +104,7 @@ const LS_BOARD_ARCHIVE_LIMIT_MODE = scoped("boardArchiveLimitMode");
 const LS_BOARD_ARCHIVE_LIMIT = scoped("boardArchiveLimit");
 const LS_BOARD_PINNED_COLUMNS = scoped("boardPinnedColumns");
 const LS_SHOW_STATUS_SECTION = scoped("showStatusSection");
+const LS_SHOW_BOARD = scoped("showBoard");
 const LS_STATUS_BUCKET_COLLAPSED = scoped("statusBucketCollapsed");
 const LS_STATUS_TASK_EXPANDED = scoped("statusTaskExpanded");
 const LS_STATUS_GROUP_COLLAPSED = scoped("statusGroupCollapsed");
@@ -804,6 +805,9 @@ interface PrefsState {
    *  status section"). Off by default: it pays off with many parallel tasks
    *  and is clutter with two. */
   showStatusSection: boolean;
+  /** The Kanban entry in the sidebar's primary nav, the only way into the
+   *  board. On by default; off hides the entry for people who never use it. */
+  showBoard: boolean;
   /** Per-bucket overrides of the default fold (count-only buckets start
    *  closed). Only buckets the user toggled are stored. */
   statusBucketCollapsed: StatusBucketCollapsed;
@@ -974,6 +978,7 @@ interface PrefsState {
   setBoardArchiveLimit: (n: number) => void;
   setBoardPinnedColumns: (cols: readonly BoardStateColumn[]) => void;
   setShowStatusSection: (v: boolean) => void;
+  setShowBoard: (v: boolean) => void;
   setStatusBucketCollapsed: (bucket: StatusBucket, collapsed: boolean) => void;
   /** `liveIds`: the tasks that still exist, so dead ids are pruned on write. */
   setStatusTaskExpanded: (taskId: string, expanded: boolean, liveIds: readonly string[]) => void;
@@ -1204,6 +1209,7 @@ const initialBoardArchiveLimit = (() => {
 })();
 const initialBoardPinnedColumns = parseBoardPinnedColumns(lsGet(LS_BOARD_PINNED_COLUMNS, ""));
 const initialShowStatusSection = lsGet(LS_SHOW_STATUS_SECTION, "") === "1";
+const initialShowBoard = lsGet(LS_SHOW_BOARD, "") !== "0";
 const initialStatusBucketCollapsed = parseStatusBucketCollapsed(lsGet(LS_STATUS_BUCKET_COLLAPSED, ""));
 const initialStatusTaskExpanded = parseIdFlags(lsGet(LS_STATUS_TASK_EXPANDED, ""));
 const initialStatusGroupCollapsed = parseIdFlags(lsGet(LS_STATUS_GROUP_COLLAPSED, ""));
@@ -1296,6 +1302,7 @@ export const usePrefs = create<PrefsState>(set => ({
   boardArchiveLimit: initialBoardArchiveLimit,
   boardPinnedColumns: initialBoardPinnedColumns,
   showStatusSection: initialShowStatusSection,
+  showBoard: initialShowBoard,
   statusBucketCollapsed: initialStatusBucketCollapsed,
   statusTaskExpanded: initialStatusTaskExpanded,
   statusGroupCollapsed: initialStatusGroupCollapsed,
@@ -1645,6 +1652,11 @@ export const usePrefs = create<PrefsState>(set => ({
     if (s.showStatusSection === v) return s;
     try { localStorage.setItem(LS_SHOW_STATUS_SECTION, v ? "1" : "0"); } catch {}
     return { showStatusSection: v };
+  }),
+  setShowBoard: (v) => set(s => {
+    if (s.showBoard === v) return s;
+    try { localStorage.setItem(LS_SHOW_BOARD, v ? "1" : "0"); } catch {}
+    return { showBoard: v };
   }),
   setStatusBucketCollapsed: (bucket, collapsed) => set(s => {
     // Effective state, not the stored override: an absent override already

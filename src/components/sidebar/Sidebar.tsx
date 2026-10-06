@@ -173,6 +173,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const hideInactiveProjects = usePrefs(s => s.hideInactiveProjects);
   const setHideInactiveProjects = usePrefs(s => s.setHideInactiveProjects);
   const showStatusSection = usePrefs(s => s.showStatusSection);
+  const showBoard = usePrefs(s => s.showBoard);
   const setShowStatusSection = usePrefs(s => s.setShowStatusSection);
   // Temporary, non-persisted reveal of the hidden inactive projects. Reset
   // whenever the hide pref flips off so the "Show N inactive" row starts
@@ -1142,10 +1143,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           active={currentView === "history" && !activeTask} compact={compact}
           onClick={() => setView("history")}
         />
-        <NavItem icon={<Columns3 className={iconSize(compact)} />} label={t("navBoard")}
-          active={currentView === "board" && !activeTask} compact={compact}
-          onClick={() => setView("board")}
-        />
+        {showBoard && (
+          <NavItem icon={<Columns3 className={iconSize(compact)} />} label={t("navBoard")}
+            active={currentView === "board" && !activeTask} compact={compact}
+            onClick={() => setView("board")} testId="nav-board"
+          />
+        )}
         <NavItem icon={<CalendarClock className={iconSize(compact)} />} label={t("navScheduled")}
           active={currentView === "scheduled" && !activeTask} compact={compact}
           onClick={() => setView("scheduled")} testId="nav-scheduled"

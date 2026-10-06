@@ -707,6 +707,21 @@ describe("prefs: status section", () => {
     expect(s.statusBucketCollapsed).toEqual({ settled: false });
   });
 
+  it("the Kanban nav entry ships on, and only a stored 0 turns it off", async () => {
+    const first = await import("./prefs");
+    expect(first.usePrefs.getState().showBoard).toBe(true);
+    first.usePrefs.getState().setShowBoard(false);
+    expect(localStorage.getItem("showBoard")).toBe("0");
+    vi.resetModules();
+    const second = await import("./prefs");
+    expect(second.usePrefs.getState().showBoard).toBe(false);
+    let calls = 0;
+    const off = second.usePrefs.subscribe(() => { calls++; });
+    second.usePrefs.getState().setShowBoard(false);
+    off();
+    expect(calls).toBe(0);
+  });
+
   it("the setters persist", async () => {
     const { usePrefs } = await import("./prefs");
     usePrefs.getState().setShowStatusSection(true);

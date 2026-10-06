@@ -3,6 +3,7 @@
 // governs xterm. Sizes are independent.
 
 import { CodeIntelServers } from "./CodeIntelServers";
+import { useApp } from "@/store/app";
 import { usePrefs, resolveTheme, BUNDLED_FONT_ID, MONO_FONT_OPTIONS, APPEARANCE_DEFAULTS, availableMonoFonts, availableMonoFontsAsync, sortFontOptions, stackFor } from "@/store/prefs";
 import type { TerminalRendererKind } from "@/store/prefs";
 import { useEffect, useRef, useState } from "react";
@@ -441,6 +442,8 @@ function SidebarSection() {
   const setSidebarHoverReveal = usePrefs(s => s.setSidebarHoverReveal);
   const showStatusSection = usePrefs(s => s.showStatusSection);
   const setShowStatusSection = usePrefs(s => s.setShowStatusSection);
+  const showBoard = usePrefs(s => s.showBoard);
+  const setShowBoard = usePrefs(s => s.setShowBoard);
 
   return (
     <div className="flex flex-col gap-6">
@@ -486,6 +489,19 @@ function SidebarSection() {
         hint={t("appearance.statusSection.hint")}
         value={showStatusSection}
         onChange={setShowStatusSection}
+      />
+      <Toggle
+        label={t("appearance.board.label")}
+        hint={t("appearance.board.hint")}
+        value={showBoard}
+        onChange={v => {
+          setShowBoard(v);
+          // Settings sits over the view it was opened from. Turned off over
+          // the board, closing Settings would land on a view with no way
+          // back in and no nav entry lit, so leave it now.
+          const app = useApp.getState();
+          if (!v && app.view.page === "board") app.setView("dashboard");
+        }}
       />
     </div>
   );

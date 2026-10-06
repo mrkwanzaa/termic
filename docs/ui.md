@@ -305,6 +305,11 @@ draw it:
   row that is not in the DOM (collapsed project, filtered out) gets no line.
 ## Kanban view (over tasks)
 
+Its nav entry is on by default and Settings -> Appearance -> Sidebar's "Kanban
+board" switch hides it (`showBoard` in prefs, stored only once changed). The
+entry is the only way into the board, so hiding it is the whole switch; turning
+it off while the board is showing goes to the Dashboard.
+
 The third nav view (GH #318), an overlay like History: `view.page === "board"`
 in `src/store/app.ts`, mounted by `MainArea`'s overlay chain, unmounted when
 left, so idle cost is zero by construction. One global board across projects,
