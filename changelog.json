@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "1.13.0",
+      "date": "2026-10-06",
+      "summary": "Scheduled tasks, config sync through your own git repo, and a sidebar status section."
+    },
+    {
       "version": "1.12.2",
       "date": "2026-10-02",
       "summary": "Azure DevOps, the Cursor CLI, and agent hooks on by default."

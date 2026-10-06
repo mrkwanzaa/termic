@@ -4,6 +4,82 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.13.0] - 2026-10-06
+
+Scheduled tasks, config sync through your own git repo, and a sidebar status section.
+
+### Features
+- **Scheduled tasks.** Recurring agent runs: a daily dashboard check, a
+  morning triage. A schedule is a parent task, each run is a new task in its
+  group, and every run writes a report you can open from the new Scheduled
+  view. Daily, weekdays or weekly at a time you pick. Runs happen only while
+  Termic is running, and a missed run is skipped unless you ask for one
+  catch-up at launch. Create one from the Scheduled view, the command palette,
+  or "Schedule..." on a task. Thanks to
+  [@nvkvin](https://github.com/nvkvin).
+- **Config sync (experimental).** Settings, Sync keeps your setup in a private
+  git repo you own: projects, per-project overrides, custom agents, prompts,
+  shortcuts and themes. No account, no token stored, no new host the app talks
+  to. Sync is manual for now: one pull at launch and a "Sync now" button.
+  Agent environment variables, paths, port ranges and logins never leave the
+  machine, and a change to a YOLO or sandbox default from another machine is
+  always announced. Thanks to [@nvkvin](https://github.com/nvkvin).
+- **Profiles sync too.** A profile on one machine is created on the other,
+  with its name and colour, and a rename follows. Delete a profile you do not
+  want on a machine and it stays deleted there; disconnect one you do not want
+  synced. Two profiles that merely share a name are never merged without
+  asking.
+- **A status section in the sidebar.** Tasks that need you, are working or are
+  in review, listed above Projects in the Kanban board's columns, with task
+  groups kept whole and rows that expand to their agent tabs. Off by default:
+  turn it on from the project list options or Settings, Appearance. Thanks to
+  [@nvkvin](https://github.com/nvkvin).
+- **Agents can label their own tab.** `termic prop ticket ABC-1` (or the
+  `task_prop` MCP tool) puts a small property on the agent's tab, and the
+  task's sidebar row collects them, so a row can say which ticket each agent
+  is on. The sidebar filter matches them. Thanks to
+  [@GabrielDumbrava](https://github.com/GabrielDumbrava).
+- **oh-my-pi (omp)** joins the built-in agents, with hooks. Thanks to
+  [@lymanzhao](https://github.com/lymanzhao).
+- **One "Agent state" section per agent.** Settings, Agents now says where
+  each agent's state comes from: reported by the agent through hooks, or
+  guessed from the terminal, with Install right there when hooks are available
+  and not installed. The terminal patterns are folded away as a fallback while
+  hooks are in.
+- **The MCP endpoint can be reached from another device.** Settings, MCP has a
+  bind address and a port, and shows a ready-to-copy `claude mcp add` command
+  while the endpoint is on the network. The token now changes only when you
+  press "Regenerate token", so a client on another machine survives a restart.
+- **Windows: the `termic` command installs onto PATH**, for you or for all
+  users, and "Add to Claude" now produces a working MCP connection there.
+- **Sidebar choices.** Hide the Kanban entry, show Scheduled always, never, or
+  only when you have a schedule, and optionally carry a profile's colour from
+  the title bar down the sidebar.
+- **A custom run command's tab is titled "Run · name"**, so it reads as a run
+  and not as a terminal that happens to share the command's name.
+- **Profiles is no longer experimental.**
+
+### Improvements
+- **Sandboxed tasks cost less in the background.** Every sandboxed terminal
+  used to start its own system log reader; they now share one. Thanks to
+  [@wagoodman](https://github.com/wagoodman).
+
+### Bug fixes
+- **A question you looked at no longer reads as answered.** An agent waiting
+  on a permission prompt lost its bell as soon as its tab was on screen, so a
+  question glanced at and left alone looked like a finished turn. The bell
+  now stays until you answer.
+- **A Docker extra mount can no longer reach Termic's own data folder**, which
+  holds agent logins and the CLI token. Such a mount is refused when saved and
+  skipped at launch.
+- **Quick create follows the right profile.** In a second profile's window it
+  started from the first profile's last task type.
+- **Windows: opening a folder showed Documents** instead of the folder. Thanks
+  to [@lymanzhao](https://github.com/lymanzhao).
+- **Windows: `termic help --json` could crash** with a stack overflow.
+- **The agents strip in Settings** no longer draws a scrollbar under itself;
+  it fades at the end that has more.
+
 ## [1.12.2] - 2026-10-02
 
 Azure DevOps, the Cursor CLI, and agent hooks on by default.
