@@ -38,9 +38,6 @@ export type PrefKey = PrefClass & {
   /** Read, never written: an old spelling kept so an upgrade does not lose
    *  the value it held. */
   legacy?: true;
-  /** A file that reads this SCOPED key without `scoped()`. Not a design: a
-   *  known inconsistency, recorded so the test can tell it from a new one. */
-  bareIn?: string;
 };
 
 const DEBUG_FLAG = "debug switch set by hand in the webview console";
@@ -109,13 +106,7 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "findInFilesMatchCase", scoped: false, class: "local", reason: "last-used toggle in the find-in-files bar" },
 
   // ── New Task dialog memory ──
-  {
-    key: "newTaskLastMode", scoped: true, class: "local", reason: "last-used New Task mode",
-    // quickTask.ts reads and writes the bare key, so in a non-root profile
-    // window the sidebar's quick create and the dialog remember two different
-    // modes. Recorded here, not fixed: fixing it changes behaviour.
-    bareIn: "src/lib/quickTask.ts",
-  },
+  { key: "newTaskLastMode", scoped: true, class: "local", reason: "last-used New Task mode" },
   { key: "newTaskLastSandboxMode", scoped: true, class: "local", reason: "last-used New Task sandbox mode" },
   { key: "newTaskMemberModes", scoped: true, class: "local", reason: "keyed by member root_path, a path on this machine" },
   { key: "newTaskMemberSets", scoped: true, class: "local", reason: "member subsets stored as root_paths, paths on this machine" },

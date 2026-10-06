@@ -107,7 +107,7 @@ function renames(raw: string): [string, string][] {
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
-    // Forward slashes on Windows too, so paths compare against `bareIn`.
+    // Forward slashes on Windows too, so paths compare against SELF.
     const p = join(dir, name).replace(/\\/g, "/");
     if (statSync(p).isDirectory()) {
       // Test helpers seed keys for tests; they are not the app using them.
@@ -155,7 +155,6 @@ describe("localStorage prefs registry", () => {
     for (const u of uses) {
       const e = exact.get(u.key);
       if (!e || e.scoped === u.scoped) continue;
-      if (e.scoped && !u.scoped && e.bareIn === u.file) continue;
       wrong.push(`${u.key}: registry says scoped=${e.scoped}, ${u.file} uses it ${u.scoped ? "through scoped()" : "bare"}`);
     }
     expect(wrong, wrong.join("\n")).toEqual([]);
@@ -199,14 +198,6 @@ describe("localStorage prefs registry", () => {
     for (const [from, to] of migrated) {
       expect(exact.get(from)?.legacy, `${from} (old name) must be listed with legacy: true`).toBe(true);
       expect(exact.get(to)?.legacy, `${to} (new name) must be listed, not as legacy`).toBeUndefined();
-    }
-  });
-
-  it("only excuses a bare read of a scoped key where it still happens", () => {
-    for (const e of PREF_KEYS.filter(p => p.bareIn)) {
-      expect(e.scoped, `${e.key}: bareIn only means something on a scoped key`).toBe(true);
-      expect(uses.some(u => u.key === e.key && !u.scoped && u.file === e.bareIn),
-        `${e.key}: ${e.bareIn} no longer reads it bare, drop bareIn`).toBe(true);
     }
   });
 
