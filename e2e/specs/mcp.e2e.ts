@@ -424,6 +424,45 @@ describe("MCP tools/call: a real task round-trip through the live webview", () =
     }
   });
 
+  // A client OUTSIDE any task (Claude Code on another machine, say) has no
+  // parent for its tasks to group under, so a shared group name is the only
+  // way it can say "these belong together". Naming each task's group founded
+  // a group per call: two groups, one name, two colours.
+  it("two tasks given the same group name from outside any task share one group", async () => {
+    const made: string[] = [];
+    try {
+      for (const name of ["mcp-pair-a", "mcp-pair-b"]) {
+        const r = await call("task_new", { name, project: "fixture-repo", agent: "fakeagent" });
+        expect(r.isError).toBe(false);
+        made.push(r.structuredContent.task.id);
+        const named = await call("task_group", { task: name, project: "fixture-repo", name: "Pair batch" });
+        expect(named.isError).toBe(false);
+      }
+      const groups = await browser.execute(async (ids) => {
+        const all: any[] = await window.__termic!.ipc.tasksList();
+        return ids.map(id => all.find(t => t.id === id)?.group ?? null);
+      }, made) as unknown as ({ id: string; name?: string; color?: string } | null)[];
+      // One group: the first task founded it, the second joined it.
+      expect(groups[0]?.id).toBe(made[0]);
+      expect(groups[1]?.id).toBe(made[0]);
+      expect(groups[1]?.color).toBe(groups[0]?.color);
+      // And one caption with that name in the sidebar, holding both rows.
+      await browser.waitUntil(
+        () => browser.execute(
+          (g, b) => !!document.querySelector(`[data-task-group-id="${g}"] [data-sidebar-task-id="${b}"]`),
+          made[0], made[1],
+        ),
+        { timeout: 8_000, timeoutMsg: "the second task was not drawn inside the first one's group" },
+      );
+      const captions = await browser.execute(() =>
+        [...document.querySelectorAll('[data-testid^="task-group-label-"]')]
+          .filter(e => e.textContent === "Pair batch").length);
+      expect(captions).toBe(1);
+    } finally {
+      for (const id of made) await archiveTask(id);
+    }
+  });
+
   it("scratchpads round-trip over MCP, defaulting to the caller's own task", async () => {
     // No `task` anywhere: the X-Termic-Task header says whose, as `termic
     // scratchpad` reads $TERMIC_TASK_ID. The pad is a note for the user,

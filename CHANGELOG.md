@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.13.3] - 2026-10-06
+## [1.13.4] - 2026-10-06
 
 Scheduled tasks, config sync through your own git repo, and a sidebar status section.
 
@@ -63,6 +63,8 @@ Scheduled tasks, config sync through your own git repo, and a sidebar status sec
   exclude. The funnel opens every facet as a chip with a live count, a click
   on a lane divider or project header filters by it, and `/` or ⌘F focuses the
   bar. Thanks to [@wagoodman](https://github.com/wagoodman).
+- **Middle-click a tab to close it**, as in a browser. A pinned tab ignores
+  it. Thanks to [@franzkurt](https://github.com/franzkurt) for the report.
 - **Profiles is no longer experimental.**
 
 ### Improvements
@@ -85,6 +87,11 @@ Scheduled tasks, config sync through your own git repo, and a sidebar status sec
 - **Windows: `termic help --json` could crash** with a stack overflow.
 - **The agents strip in Settings** no longer draws a scrollbar under itself;
   it fades at the end that has more.
+- **Two tasks given the same group name ended up in two groups.** Naming a
+  task's group over MCP or the CLI always started a new group, so an agent
+  that created two tasks and named each one's group the same got two groups
+  with one name and two colours. A task now joins the group in its project
+  that already has that name.
 - **Messages from other agents could queue forever behind an empty prompt.**
   Termic holds a message while you have a draft in the agent's prompt, and it
   could believe there was one when there was not: after answering a Claude

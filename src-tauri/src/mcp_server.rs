@@ -1242,7 +1242,7 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "task_group",
         cli_verb: "group",
-        description: "Show, name or recolour a task's sidebar group (tasks you create join yours). Name it for the batch of work. Setting either on an ungrouped task founds a group.",
+        description: "Show, name or recolour a task's sidebar group (tasks you create join yours). Name it for the batch of work. An ungrouped task joins the project's group of that name, or founds one.",
         params: &[
             P_TASK_SELF,
             P_PROJECT,

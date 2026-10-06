@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { crossProjectStrays, flattenSegments, groupBadgeKinds, groupColorCss, groupLabel, layoutTaskList, liveGroups, nextGroupColor, GROUP_FALLBACK_COLOR } from "./taskGroups";
+import { crossProjectStrays, flattenSegments, groupBadgeKinds, groupColorCss, groupLabel, groupMemberByName, layoutTaskList, liveGroups, nextGroupColor, GROUP_FALLBACK_COLOR } from "./taskGroups";
 import type { Tab } from "./types";
 import type { Task, TaskGroup } from "./types";
 
@@ -19,6 +19,46 @@ describe("liveGroups", () => {
       t("x"),
     ]);
     expect(gs).toEqual([G("o", { color: "teal" }), G("solo")]);
+  });
+});
+
+describe("groupMemberByName", () => {
+  // The reported case: an MCP client created two tasks and named each one's
+  // group "Release prep". The second call has to find the first's group.
+  it("finds the group a second task should join, through its lead", () => {
+    const tasks = [
+      t("a", G("a", { name: "Release prep", color: "blue" })),
+      t("a2", G("a", { name: "Release prep", color: "blue" })),
+      t("b"),
+    ];
+    expect(groupMemberByName(tasks, "p", "Release prep", "b")?.id).toBe("a");
+    // Trimmed and case-insensitive: it is a label typed by an agent.
+    expect(groupMemberByName(tasks, "p", "  release PREP ", "b")?.id).toBe("a");
+  });
+
+  it("matches a group that only follows its lead's name", () => {
+    const tasks = [t("orchestrator", G("orchestrator")), t("child", G("orchestrator")), t("new")];
+    expect(groupMemberByName(tasks, "p", "orchestrator", "new")?.id).toBe("orchestrator");
+  });
+
+  it("joins through any live member when the lead is archived", () => {
+    const tasks = [
+      t("lead", G("lead", { name: "Batch" }), { archived: true }),
+      t("m", G("lead", { name: "Batch" })),
+      t("new"),
+    ];
+    expect(groupMemberByName(tasks, "p", "Batch", "new")?.id).toBe("m");
+  });
+
+  it("stays inside the project, and ignores archived groups and the task itself", () => {
+    const tasks = [
+      t("other", G("other", { name: "Batch" }), { project_id: "q" }),
+      t("old", G("old", { name: "Batch" }), { archived: true }),
+      t("me", G("me", { name: "Batch" })),
+    ];
+    expect(groupMemberByName(tasks, "p", "Batch", "me")).toBeUndefined();
+    expect(groupMemberByName(tasks, "p", "Batch")?.id).toBe("me");
+    expect(groupMemberByName(tasks, "p", "   ")).toBeUndefined();
   });
 });
 

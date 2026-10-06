@@ -1148,7 +1148,9 @@ e.g. \"Auth refactor\"); --name \"\" returns it to following the lead \
 task's name, which is what a new group does. --color picks one of red, \
 orange, yellow, green, teal, blue, purple, pink. A task in no group founds \
 one around itself when you set either, so you can name the group before \
-you create any workers.
+you create any workers. If its project already has a group with that name, \
+it joins that group instead: give several tasks one --name to put them \
+together.
 
 Without <TASK>, targets your own task ($TERMIC_TASK_ID), then the current \
 directory.

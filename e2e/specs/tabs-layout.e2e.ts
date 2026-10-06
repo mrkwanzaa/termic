@@ -1286,6 +1286,43 @@ describe("tab context menu", () => {
     });
   });
 
+  // GH #369. Dispatched for the same reason the context menu is: what is
+  // under test is what the pill does with a middle click, not whether
+  // WebDriver can produce one. `auxclick` is the event the browser raises for
+  // a non-primary button, and `button: 1` is the middle one.
+  it("a middle click closes a tab, and leaves a pinned one alone", async () => {
+    const middleClick = (tabId: string) => browser.execute((id) => {
+      const el = document.querySelector(`[data-tab-id="${id}"]`) as HTMLElement;
+      if (!el) throw new Error(`no tab pill ${id}`);
+      el.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 }));
+    }, tabId);
+    const [s2] = await strip(); // [s2*, agent, s0, s1]
+    expect(await isPinned(s2)).toBe(true);
+    const before = await strip();
+
+    // A throwaway shell tab, so the cases below still find the strip they expect.
+    const [extra] = await addShells("mid", 1);
+    await browser.waitUntil(async () => (await strip()).includes(extra), {
+      timeout: 5_000, timeoutMsg: "the extra tab never appeared",
+    });
+
+    // The two that must do NOTHING go first, so the close below is also the
+    // proof they had their chance: a pinned tab ("do not lose this": no close
+    // X, and no middle-click close), and the right button on a loose one.
+    await middleClick(s2);
+    await browser.execute((id) => {
+      const el = document.querySelector(`[data-tab-id="${id}"]`) as HTMLElement;
+      el.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 2 }));
+    }, before[1]);
+
+    await middleClick(extra);
+    await browser.waitUntil(async () => !(await strip()).includes(extra), {
+      timeout: 5_000, timeoutMsg: "a middle click did not close the tab",
+    });
+    // Only the tab that was middle-clicked is gone.
+    expect(await strip()).toEqual(before);
+  });
+
   it("a second pin appends to the END of the pinned block", async () => {
     const [, , s0] = await strip(); // [s2*, agent, s0, s1]
     await openTabMenu(s0);

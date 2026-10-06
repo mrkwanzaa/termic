@@ -430,6 +430,18 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
       // inline input handles text selection / caret normally).
       onPointerDown={(e) => { if (!isRenaming) onStartDrag(e); }}
       onClick={() => { if (!isRenaming) onSelect(); }}
+      // Middle click closes the tab, as in browsers and VS Code (GH #369).
+      // Through the same `onClose` the × uses, so a running agent still gets
+      // its close confirm. A pinned tab ignores it for the reason it has no ×:
+      // pinning means "do not lose this". The mousedown half stops the
+      // middle button's own defaults, autoscroll and (on Linux) pasting the
+      // primary selection into whatever is under the pointer.
+      onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
+      onAuxClick={(e) => {
+        if (e.button !== 1 || isRenaming || tab.pinned) return;
+        e.stopPropagation();
+        onClose();
+      }}
       onDoubleClick={(e) => {
         e.stopPropagation();
         if (tab.preview) {

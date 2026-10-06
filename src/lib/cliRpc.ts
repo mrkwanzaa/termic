@@ -40,10 +40,11 @@ import {
   taskSetYolo,
   tasksList,
   taskLinkSpawn,
+  taskGroupJoin,
   taskGroupNew,
   taskGroupUpdate,
 } from "@/lib/ipc";
-import { nextGroupColor } from "@/lib/taskGroups";
+import { groupMemberByName, nextGroupColor } from "@/lib/taskGroups";
 import { startArchive } from "@/lib/archiveTask";
 import { withCreateLock } from "@/lib/createLock";
 import { markUnattendedSpawn } from "@/lib/unattendedSpawns";
@@ -760,7 +761,13 @@ async function renameTaskHandler(params: unknown): Promise<null> {
  *  leaves that property as it is; `name: ""` returns the group to following
  *  its lead's name. A task in no group founds a group of one around itself
  *  first, coloured like any founding, so an orchestrator can name its group
- *  before it spawns anyone. The server validated the colour key. */
+ *  before it spawns anyone. The server validated the colour key.
+ *
+ *  Unless the project already HAS a group with that name: then the ungrouped
+ *  task joins it (`groupMemberByName`). A caller outside any task has no
+ *  parent for its tasks to group under, so the name is how it says "these
+ *  belong together", and founding per call gave it two groups with one name
+ *  and two colours. A task already in a group is renamed, never moved. */
 export async function setTaskGroupHandler(params: unknown): Promise<null> {
   const p = params as { taskId?: unknown; name?: unknown; color?: unknown };
   const taskId = p?.taskId;
@@ -775,8 +782,17 @@ export async function setTaskGroupHandler(params: unknown): Promise<null> {
     const task = all.find(t => t.id === taskId);
     if (!task) throw new Error("no such task");
     if (!task.group) {
-      await taskGroupNew(taskId, color ?? nextGroupColor(all));
-      await useApp.getState().loadAll();
+      const peer = name ? groupMemberByName(all, task.project_id, name, taskId) : undefined;
+      if (peer) {
+        await taskGroupJoin(taskId, peer.id);
+        await useApp.getState().loadAll();
+        // Joined a group that already has this name and a colour of its
+        // own. Only an explicit colour is still something to apply.
+        if (color === undefined) return;
+      } else {
+        await taskGroupNew(taskId, color ?? nextGroupColor(all));
+        await useApp.getState().loadAll();
+      }
     }
     const g = useApp.getState().tasks.find(t => t.id === taskId)?.group;
     if (!g) throw new Error("the task's group could not be read back");

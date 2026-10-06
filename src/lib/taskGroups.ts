@@ -41,6 +41,28 @@ export function groupLabel(g: TaskGroup, tasks: Task[], t?: (k: string) => strin
   return t ? t("taskGroup.fallback") : "Task group";
 }
 
+/** A live member of the group called `name` in one project, to join through,
+ *  or undefined when no such group exists there.
+ *
+ *  For a caller that names the group of an UNGROUPED task. A group's identity
+ *  is its id, but a name is the only handle an agent has: one outside any
+ *  task (an MCP client on another machine) creates two tasks and gives each
+ *  the group name "Release prep", meaning one group. Founding a group per
+ *  call made two groups with one name and two colours.
+ *
+ *  Matched on the label the sidebar SHOWS (`groupLabel`: the group's own
+ *  name, else its lead's), trimmed and case-insensitive, and only within the
+ *  project: a group never spans projects. The lead's copy is preferred so the
+ *  join goes through the canonical record. */
+export function groupMemberByName(tasks: Task[], projectId: string, name: string, exceptTaskId?: string): Task | undefined {
+  const want = name.trim().toLowerCase();
+  if (!want) return undefined;
+  const members = tasks.filter(t =>
+    !t.archived && !!t.group && t.project_id === projectId && t.id !== exceptTaskId
+    && groupLabel(t.group, tasks).trim().toLowerCase() === want);
+  return members.find(t => t.id === t.group!.id) ?? members[0];
+}
+
 /** The order founding picks accents in. Not the palette's order: that one
  *  starts at red, and a red caption on a fresh group reads as an error.
  *  Calm hues first, red last. */
