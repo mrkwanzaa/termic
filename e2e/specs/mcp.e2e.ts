@@ -591,6 +591,39 @@ describe("MCP lifecycle: disable goes quiet, re-enable serves the same token", (
     const frame = await rpc("server/discover");
     expect(frame.result._meta["io.modelcontextprotocol/serverInfo"].name).toBe("termic");
   });
+
+  // The other half of "the token changes only when you regenerate it": the
+  // one action that does change it, through the command the Settings button
+  // calls. A client on another machine holds a pasted token, so what matters
+  // is that the OLD value is refused afterwards, not just that the file moved.
+  it("Regenerate token replaces the credential, and the old one is refused", async () => {
+    const urlBefore = endpoint();
+    const old = token();
+    await browser.execute(() => window.__termic!.invoke("mcp_regenerate_token"));
+    // The listener restarts on the new token; the port file is briefly gone.
+    await browser.waitUntil(() => fs.existsSync(portFile) && fs.existsSync(tokenFile) && token() !== old,
+      { timeout: 10_000, timeoutMsg: "the token file never changed after Regenerate token" });
+    // Same address: only the credential moved, so a client needs one new
+    // value, not a new URL as well.
+    expect(endpoint()).toBe(urlBefore);
+
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    let stale: HttpResult | undefined;
+    await browser.waitUntil(async () => {
+      try {
+        stale = await raw({ headers: { authorization: `Bearer ${old}`, "mcp-method": "tools/list" } }, body);
+        return true;
+      } catch {
+        return false; // connection refused: the restart has not bound yet
+      }
+    }, { timeout: 10_000, timeoutMsg: "the listener never came back after Regenerate token" });
+    expect(stale!.status).toBe(401);
+    expect(stale!.body).toBe("");
+
+    // And the new one works, read from the file the way a local client does.
+    const frame = await rpc("server/discover");
+    expect(frame.result._meta["io.modelcontextprotocol/serverInfo"].name).toBe("termic");
+  });
 });
 
 describe("MCP bind address and port: the settings decide where it listens", () => {
