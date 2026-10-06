@@ -167,20 +167,36 @@ export function describeSafety(c: SyncChange, t: (k: string, o?: Record<string, 
   return t("settings:sync.safetyLine", { scope, field, from: valueLabel(c.from, t), to: valueLabel(c.to, t) });
 }
 
+/** Announced and kept until dismissed: mirrors `is_notice` in config_sync.rs. */
+export function isNotice(c: SyncChange): boolean {
+  return c.safety || (c.kind === "agent" && c.action === "remove");
+}
+
+/** A notice as a line, for the panel and the toast. An agent removal is
+ *  applied, not asked (it deletes no files, unlike removing a project), so
+ *  the line says what it costs here. */
+export function describeNotice(c: SyncChange, t: (k: string, o?: Record<string, unknown>) => string): string {
+  if (c.kind === "agent" && c.action === "remove") return t("settings:sync.agentRemoved", { name: c.target });
+  return describeSafety(c, t);
+}
+
 let lastToasted = "";
 
-/** Toast the safety-default changes a pull made for this window's profile,
- *  once per set. They stay listed in Settings > Sync until dismissed. */
+/** Toast the notices a pull made for this window's profile (safety-default
+ *  changes, agents removed elsewhere), once per set. They stay listed in
+ *  Settings > Sync until dismissed. */
 export async function surfaceNotices(): Promise<void> {
   let st: SyncStatus;
   try { st = await syncStatus(); } catch { return; }
-  const notices = st.notices.filter(n => n.safety);
+  const notices = st.notices.filter(isNotice);
   const sig = JSON.stringify(notices);
   if (!notices.length || sig === lastToasted) return;
   lastToasted = sig;
   const t = i18n.t.bind(i18n) as (k: string, o?: Record<string, unknown>) => string;
-  const lines = notices.slice(0, 3).map(n => describeSafety(n, t)).join("; ");
-  const more = notices.length > 3 ? ` ${t("settings:sync.andMore", { count: notices.length - 3 })}` : "";
+  // Each line ends its own sentence: an agent removal is two of them.
+  const end = (s: string) => (/[.。]$/.test(s) ? s : `${s}${/[\u4e00-\u9fff]/.test(s) ? "。" : "."}`);
+  const lines = notices.slice(0, 3).map(n => end(describeNotice(n, t))).join(" ");
+  const more = notices.length > 3 ? ` ${end(t("settings:sync.andMore", { count: notices.length - 3 }))}` : "";
   useUI.getState().pushToast(t("settings:sync.safetyToast", { lines: lines + more }), "warning", {
     sticky: true,
     action: { label: t("settings:sync.review"), onClick: () => useApp.getState().openSettings("sync") },

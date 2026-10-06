@@ -23,7 +23,7 @@ import {
   syncPreview, syncResolve, syncSkip, syncStatus,
 } from "@/lib/ipc";
 import {
-  NEXT_LAUNCH_SETTINGS, SYNC_CHANGED_EVENT, applyRunResult, describeSafety, runSync, snapshotFor,
+  NEXT_LAUNCH_SETTINGS, SYNC_CHANGED_EVENT, applyRunResult, describeNotice, describeSafety, isNotice, runSync, snapshotFor,
 } from "@/lib/configSync";
 import type { SyncChange, SyncFolder, SyncRunResult, SyncStatus } from "@/lib/types";
 import { useApp } from "@/store/app";
@@ -251,7 +251,7 @@ export default function SyncSection() {
             </div>
             <p className="mt-1 text-[12px] text-[var(--color-fg-dim)]">{t("sync.noticesHint")}</p>
             <ul className="mt-2 flex flex-col gap-1 text-[12.5px]">
-              {st.notices.map((n, i) => <li key={i}>{describeSafety(n, t)}</li>)}
+              {st.notices.map((n, i) => <li key={i}>{describeNotice(n, t)}</li>)}
             </ul>
             <Button size="sm" className="mt-2" data-testid="sync-notices-dismiss"
               onClick={() => void syncDismissNotices().then(refresh).catch(e => setErr(String(e)))}>
@@ -486,12 +486,12 @@ function ResultLine({ result }: { result: SyncRunResult }) {
   if (result.error || result.conflicts.length) return null;
   // The report names only what the sections below do not. A project waiting
   // for a folder was not applied, and "Waiting for a folder" lists it, so it
-  // is one count here. A YOLO or sandbox change WAS applied and is counted,
-  // but its detail lives in "Sync changed these defaults" and the toast, so
-  // it is not a line here as well.
+  // is one count here. A notice (a YOLO or sandbox change, an agent removed
+  // elsewhere) WAS applied and is counted, but its detail lives in the
+  // notices panel and the toast, so it is not a line here as well.
   const applied = result.changes.filter(c => c.action !== "wait");
   const waiting = result.changes.length - applied.length;
-  const listed = applied.filter(c => !c.safety);
+  const listed = applied.filter(c => !isNotice(c));
   const n = applied.length;
   const nextLaunch = result.changes.some(c => c.kind === "settings" && NEXT_LAUNCH_SETTINGS.includes(c.field ?? ""));
   return (

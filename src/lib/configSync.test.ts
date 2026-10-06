@@ -172,6 +172,20 @@ describe("reloading the stores", () => {
   });
 });
 
+describe("describeNotice", () => {
+  it("says an agent removed elsewhere is gone here and what that costs", async () => {
+    const { describeNotice, isNotice } = await load();
+    const { i18n } = await import("@/lib/i18n");
+    const t = i18n.t.bind(i18n) as (k: string, o?: Record<string, unknown>) => string;
+    const removal = { kind: "agent" as const, target: "My agent", action: "remove" as const, safety: false };
+    expect(isNotice(removal)).toBe(true);
+    expect(isNotice({ ...removal, action: "add" as const })).toBe(false);
+    expect(describeNotice(removal, t)).toBe(
+      "Agent My agent removed: it was deleted on another machine. Tasks here that use it can no longer start it.");
+    expect(describeNotice(removal, t)).not.toContain("\u2014");
+  });
+});
+
 describe("describeSafety", () => {
   it("names the field and both values, with no em dash", async () => {
     const { describeSafety } = await load();

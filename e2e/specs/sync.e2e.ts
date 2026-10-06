@@ -195,7 +195,7 @@ describe("config sync", () => {
     expect(notice).toContain("to On");
     // Announced, and kept in the panel; the report counts it without
     // repeating the line a third time on the same screen.
-    await waitForText("Sync changed a YOLO or sandbox default");
+    await waitForText("Sync changed settings on this machine");
     const report = await textOf('[data-testid="sync-result"]');
     expect(report).toContain("1 change from the repo applied.");
     expect(report).not.toContain("Start new tasks in YOLO");

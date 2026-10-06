@@ -1789,8 +1789,17 @@ fn merge_outcome(res: &mut SyncRunResult, o: ApplyOutcome) {
     res.changes.extend(o.changes);
 }
 
+/// Whether a change is announced and kept until dismissed: a YOLO or sandbox
+/// default, or a custom agent deleted on another machine. The removal is
+/// applied, not asked, because it deletes no files (unlike `project_remove`,
+/// which archives tasks and worktrees), but tasks here that use the agent can
+/// no longer start it, so it is never silent.
+pub(crate) fn is_notice(c: &Change) -> bool {
+    c.safety || (c.kind == "agent" && c.action == "remove")
+}
+
 fn record_notices(state: &mut SyncState, changes: &[Change]) {
-    for c in changes.iter().filter(|c| c.safety) {
+    for c in changes.iter().filter(|c| is_notice(c)) {
         state.notices.retain(|n| !(n.kind == c.kind && n.target == c.target && n.field == c.field && n.profile == c.profile));
         state.notices.push(c.clone());
     }
@@ -2856,6 +2865,29 @@ mod tests {
             assert!(r.error.as_deref().is_some_and(|e| e.contains("already follows")), "{r:?}");
             assert_eq!(crate::load_settings_in(&work).sync.sync_id, None, "nothing was bound");
         });
+    }
+
+    #[test]
+    fn an_agent_removed_elsewhere_is_applied_and_kept_as_a_notice() {
+        let mut settings = Settings { agents: vec![full_agent()], ..Default::default() };
+        let base = as_obj(agent_doc(&full_agent()));
+        let mut changes = Vec::new();
+        apply_agent(&mut settings, "my-agent", Some(&base), None, "sid", &mut changes);
+        assert!(settings.agents.is_empty(), "applied, not asked");
+        let mut state = SyncState::default();
+        record_notices(&mut state, &changes);
+        assert_eq!(state.notices.len(), 1);
+        let n = &state.notices[0];
+        assert_eq!((n.kind.as_str(), n.action.as_str(), n.target.as_str()), ("agent", "remove", "My agent"));
+        assert_eq!(n.profile.as_deref(), Some("sid"));
+        // A built-in is never removed, so it is never announced either.
+        let mut builtin = full_agent();
+        builtin.builtin = true;
+        let mut settings = Settings { agents: vec![builtin], ..Default::default() };
+        let mut changes = Vec::new();
+        apply_agent(&mut settings, "my-agent", Some(&base), None, "sid", &mut changes);
+        assert_eq!(settings.agents.len(), 1);
+        assert!(changes.is_empty());
     }
 
     // ── the git loop, two machines, one bare repo ──
