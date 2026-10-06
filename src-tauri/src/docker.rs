@@ -2182,6 +2182,34 @@ mod tests {
     }
 
     #[test]
+    fn no_mount_reaches_the_config_sync_clone() {
+        // The sync clone (`<data>/sync`, config_sync.rs) holds the user's
+        // whole setup and a remote they can push to. Docker mounts named
+        // subfolders of the data dir only; this pins that no spec, for any
+        // built-in agent with persistence on, mounts the clone or the data
+        // dir above it. Anything added later that mounts the data dir has to
+        // keep `sync/` out (docs/sandbox.md).
+        with_scratch_data_dir(|| {
+            let data = crate::global_dir().unwrap();
+            let clone = data.join("sync");
+            std::fs::create_dir_all(&clone).unwrap();
+            let canon = |p: &std::path::Path| dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+            let (data_c, clone_c) = (canon(&data), canon(&clone));
+            for agent in ["claude", "codex", "agy", "opencode", "pi"] {
+                let task = stub_task("t-sync", "/tmp/termic-docker-test-does-not-exist");
+                let env = std::collections::HashMap::new();
+                let spec = build_spec(&task, agent, "img", &task.path, vec![], &env,
+                    &[".extra".to_string()], true, &[], &[], "pty-sync00001", agent, &[], None);
+                for m in &spec.mounts {
+                    let host = canon(std::path::Path::new(&m.host));
+                    assert!(host != data_c, "{agent}: mounts the whole data dir");
+                    assert!(!host.starts_with(&clone_c), "{agent}: mounts the sync clone: {}", m.host);
+                }
+            }
+        });
+    }
+
+    #[test]
     fn an_agent_with_no_relocation_var_still_gets_its_dir_mounted() {
         // gemini-family and opencode have no relocation var, so the mount
         // alone has to carry the login: the agent writes to its default path

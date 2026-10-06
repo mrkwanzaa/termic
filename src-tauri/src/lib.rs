@@ -46,6 +46,8 @@ mod automation;
 mod cli_server;
 mod forge;
 mod mcp_server;
+// Config sync through a git repo the user owns (docs/ideas/config-sync.md).
+mod config_sync;
 // Row shapes + OS-agnostic logic (subtree walk, cpu_ratio, label_for,
 // signal_from_name) shared by every `procmon` variant below.
 // Linux AppImage desktop integration (menu entry + icon + `termic://`
@@ -6039,6 +6041,11 @@ async fn project_remove(state: State<'_, PtyManager>, id: String) -> Result<(), 
             let _ = delete_task_file(&w.id);
         }
         let mut list = load_projects_all();
+        // A synced profile publishes the removal as a tombstone on its next
+        // sync, so no other machine ever runs this unasked.
+        if let Some(p) = list.iter().find(|p| p.id == id) {
+            config_sync::note_project_removed(p, &config_sync::machine_name());
+        }
         list.retain(|p| p.id != id);
         save_projects(&list).map_err(|e| e.to_string())
     }).await.map_err(|e| e.to_string())?
@@ -21385,6 +21392,14 @@ pub struct Settings {
     /// override it via `Project.preview_browser`.
     #[serde(default)]
     pub preview_browser: String,
+    /// Config sync state for this profile (config_sync.rs): its folder in the
+    /// sync repo, its Skip list, and the removals and Keep answers waiting to
+    /// reach the remote. Machine-local, never synced, never written by the
+    /// Settings form (`settings_save` carries the disk copy across). Absent
+    /// until the profile first connects, so a profile that never syncs keeps
+    /// a byte-identical settings.json.
+    #[serde(default, skip_serializing_if = "config_sync::SyncLocal::is_empty")]
+    pub sync: config_sync::SyncLocal,
 }
 
 /// Whether the pre-create base fetch (GH #79) is enabled. Default-on: only an
@@ -23160,6 +23175,10 @@ fn discovery_dismiss(window: tauri::Window, path: String, dismissed: bool) -> Re
 /// `agents_save`.
 fn keep_disk_account_fields(disk: &Settings, mut incoming: Settings) -> Settings {
     carry_account_fields(&disk.agents, &mut incoming.agents);
+    // Same rule for the sync state: only the sync_* commands write it, and a
+    // form holding a snapshot from before a Skip or a connect must not put
+    // the old one back.
+    incoming.sync = disk.sync.clone();
     incoming
 }
 
@@ -25174,7 +25193,11 @@ pub fn run() {
             procmon_start, procmon_sample, procmon_stop, procmon_signal, procmon_open_window,
             lsp_offer, lsp_catalog, lsp_install, lsp_install_zuban, lsp_check_update, lsp_update, lsp_start, lsp_send, lsp_stop, lsp_reap_foreign, lsp_list,
             notify, open_path, reveal_path, open_file_external, open_with_apps, open_with_app, open_external_url, browser_command_check, home_dir, project_tasks_path_default, tasks_path_conflicts, default_shell, script_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
-            settings_load, settings_save, discovery_dismiss, agents_save, agents_defaults, run_capture_command, discover_repos, detect_clis,
+            settings_load, settings_save, discovery_dismiss,
+            config_sync::sync_status, config_sync::sync_connect, config_sync::sync_preview,
+            config_sync::sync_bind, config_sync::sync_now, config_sync::sync_launch_pull,
+            config_sync::sync_resolve, config_sync::sync_locate, config_sync::sync_skip,
+            config_sync::sync_keep, config_sync::sync_dismiss_notices, config_sync::sync_disconnect, agents_save, agents_defaults, run_capture_command, discover_repos, detect_clis,
             docker_check, docker_image_status, docker_get_dockerfile, docker_default_dockerfile, docker_set_dockerfile, docker_build_image, docker_agent_dirs, docker_command_preview,
             automation::automation_result,
             automation::automation_armed,
