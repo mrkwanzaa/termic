@@ -285,8 +285,16 @@ migration, and nothing resets on the release that ships this.
 Scoped: project/task/group collapse state, folder colors, `taskExpandMode`,
 `hideInactiveProjects`, the status section's switch and folds
 (`showStatusSection`, `statusBucketCollapsed`, `statusTaskExpanded`,
-`statusGroupCollapsed`),
-`newTaskLast*`, member modes, the prompt library.
+`statusGroupCollapsed`), the board's archive limit and pinned columns,
+`newTaskLast*`, member modes, the prompt library, recent tasks and the
+dismissed "usage unknown" labels. That is a summary: the `scoped` flag in
+`src/lib/prefsRegistry.ts` is the complete list, and its test fails when a
+`scoped()` key is missing from it or listed the wrong way.
+
+One key is read both ways: `src/lib/quickTask.ts` reads and writes
+`newTaskLastMode` bare while the New Task dialog scopes it, so in a non-root
+window the sidebar's quick create and the dialog remember different modes. The
+registry records it as `bareIn` rather than treating it as intended.
 
 **NOT scoped, on purpose:** theme, fonts, terminal and editor settings, shortcut
 bindings. Those are machine-level (muscle memory does not change per identity)

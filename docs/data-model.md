@@ -8,6 +8,11 @@ Three directories, different owners:
 - `~/Library/Application Support/com.simion.termic/` — tauri-plugin-window-state owned (window position/size). Path from `tauri.conf.json#identifier`.
 - `~/.config/termic/themes/` — user-owned, hand-authored custom theme files ([docs/themes.md](themes.md)). `$XDG_CONFIG_HOME` respected; shared by release + dev builds (no `termic_dev` split). Path via `lib.rs#themes_dir_path()`.
 
+Prefs and UI state live in the webview's `localStorage`, separate for dev and
+release builds because they are different webview origins.
+`src/lib/prefsRegistry.ts` lists every key: whether it is profile-scoped, and
+whether it is a portable preference or tied to this machine.
+
 ## Entities
 
 - **Project** (`projects.json`, single JSON array) — git repo path (which need NOT be the repository ROOT: pointing termic at `packages/app` of a monorepo makes that directory the project, and git then phrases its own paths differently from termic's — see [gotchas.md](gotchas.md) "git speaks repo-root paths") + scripts + `preview_url` template + `preview_browser` (GH #245, an `Option<String>` **on purpose**: absent = follow the global `Settings.preview_browser`, `Some("")` = force the OS default for this project even when the global names a browser, `Some(cmd)` = override. A plain `String` cannot express that middle state, since empty is already spoken for by "inherit" — which is why `tasks_path`, the other project override, gets away with being one. Personal, never `.termic.yaml`: a launch command is machine-specific, so a committed `open -a "Google Chrome"` would be a silently dead link for a teammate on Linux, whereas a `preview_url` is portable) + `files_to_copy` globs (personal list wins when non-empty, else the repo's committed `.termic.yaml` one — `effective_files_to_copy`) + `default_cli` + `default_yolo` (an `Option<bool>` on purpose, like `preview_browser`: absent = follow the app-wide `defaultYolo` pref (Settings → Sandbox, a machine-level localStorage key), `Some(false)` = keep asking in this project even when the app says YOLO. Resolved by `projectYoloDefault` in the FRONTEND only, which then sends `yolo` on the create; Rust never falls back to it, so a create that omits `yolo` (the CLI, MCP) gets it off. Personal, never `.termic.yaml`: a committed file must not be able to switch approvals off for whoever clones the repo) + `extra_named_ports` (personal env-var-name list for GH #196, unioned with the repo's committed `.termic.yaml` `extra_named_ports`; yaml order first, deduped, invalid/reserved names dropped — see `effective_extra_named_ports`) + optional `group` label (UI-only collapsible folder in the sidebar; no filesystem effect; a group exists iff ≥1 project carries the label. All group reads go through `groupOf()` in `src/lib/projectGroups.ts`, THE normalization point: trim + ALL-CAPS, so mixed-case labels on disk converge to one group. Collapse state + folder color live in `localStorage` keyed by normalized name, pruned when a group disappears).
@@ -50,8 +55,10 @@ record, or an active worktree whose dir was deleted externally, is dropped +
 logged to `tasks-migration.log`, never carried forward). The JS half
 (`src/lib/lsMigration.ts`) renames the persisted `localStorage` pref keys
 (`workspaceExpandMode` → `taskExpandMode`, `collapsedWorkspaces` → `collapsedTasks`,
-plus the two `newWorkspaceLast*` keys); everything else in `localStorage` is keyed
-by task UUID, which never changes.
+plus the two `newWorkspaceLast*` keys); everything else in `localStorage` kept its
+name, and the per-task records among it are keyed by task UUID, which never
+changes. Every key, the old names included (marked `legacy`), is listed in
+`src/lib/prefsRegistry.ts`.
 
 
 ### Per-tab launch arguments

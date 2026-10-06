@@ -65,12 +65,15 @@ team config already travels with the repo it belongs to.
 
 | Store | Syncs | Stays local |
 |---|---|---|
-| `projects.json` | `id`, `name`, `group`, position in the list, `base_branch`, scripts and `run_scripts`, `files_to_copy`, `preview_url`, `default_cli`, sandbox, Docker and YOLO defaults (open question 2), `sandbox_allowed_hosts`, `extra_named_ports`, `on_pr_merge`, PR watch flags, code-intel toggles and settings, members (without paths) | `root_path`, `tasks_path`, `remote` (a remote NAME in this clone), `preview_browser`, `sandbox_rw_paths`, `docker_extra_mounts`, `code_intel_servers`, `code_intel_commands` |
+| `projects.json` | `id`, `name`, `group`, position in the list, `base_branch`, scripts and `run_scripts`, `files_to_copy`, `preview_url`, `default_cli`, sandbox, Docker and YOLO defaults (see open question 2), `sandbox_allowed_hosts`, `extra_named_ports`, `on_pr_merge`, PR watch flags, code-intel toggles and settings, members (without paths) | `root_path`, `tasks_path`, `remote` (a remote NAME in this clone), `preview_browser`, `sandbox_rw_paths`, `docker_extra_mounts`, `code_intel_servers`, `code_intel_commands` |
 | `settings.json` | `agents` (see below), `file_tree_exclude`, `sandbox_default_allowed_hosts`, Docker rebuild settings, `fetch_before_create`, `close_action`, `tray_enabled`, `auto_install_hooks` | `repos_dir`, `default_tasks_path`, `preview_browser`, `task_port_min` / `task_port_max`, `sandbox_default_rw_paths`, `docker_default_extra_mounts`, `docker_agent_extra_dirs`, `discovery_dismissed` (paths), CLI and MCP install state, `welcomed`, `schema_version` |
 | Agents | `id`, name, `command`, `args`, `yolo_args`, icon and color, capabilities, `sandbox_allowed_hosts`, account NAMES, `default_account`, `extends`, `kind` | `adopted_account` (the login that already existed on THIS machine), `disabled` (often hides a CLI not installed here), `sandbox_allowed_paths`, and `env` / `docker_env` (never, see below) |
 | `localStorage` | fonts and sizes, editor and terminal themes, theme mode, shortcuts, the prompt library, folder colors, indicators, confirm-before prompts, branch prefix, language, sounds | collapse state, recent tasks, split and panel sizes, last New Task mode, `terminalRenderer` and GPU (hardware), `uiScale` (display), `openWithApp` (an app installed here) |
 | `~/.config/termic/themes/` | all of it | |
 | Never | | `tasks/`, `scratch/`, `logins/`, `docker-agents/`, `docker-forge/`, the CLI token, window state, `servers/`, `backups/` |
+
+The `localStorage` row is a summary. The per-key answer, including the
+keys the table does not name, is `src/lib/prefsRegistry.ts`.
 
 **`Agent.env` and `docker_env` are where people put API keys**, so they
 never sync by default. A private repo is still a copy of the secret on a
@@ -220,12 +223,14 @@ one most likely to surprise.
 
 Measured against the pieces, not a guess at the whole:
 
-- **A prefs registry.** About 40 files read and write localStorage
-  directly, with about a hundred keys between them and no central list.
-  Sync needs one: every key classified sync or local, a `setPref` write
-  path that doubles as the change signal, and a test that fails on a key
-  nobody classified, like the i18n parity test does for strings. This is
-  the largest mechanical piece, and it is useful on its own.
+- **A prefs registry.** The list exists: `src/lib/prefsRegistry.ts`
+  names every localStorage key and runtime-built key family, each
+  marked profile-scoped or not and classified sync or local with a
+  reason, and `src/lib/prefsRegistry.test.ts` fails on a key in source
+  the registry does not list, or a listed key nothing uses. What sync
+  still needs is a `setPref` write path that doubles as the change
+  signal: about 20 files still write localStorage directly, and routing
+  them through one function is the remaining mechanical piece.
 - **Field classification in Rust**, for `Project`, `Settings` and
   `Agent`, with a test that serializes each struct and fails on a field
   in neither list. Without it, the next field added to `Project` is
@@ -236,11 +241,12 @@ Measured against the pieces, not a guess at the whole:
 - **Tombstones and the per-file conflict choice.**
 - **The Settings section**, en and zh-CN.
 - **Tests:** cargo for export determinism, classification and
-  tombstones; vitest for the registry and apply; one e2e spec against a
-  bare repo.
+  tombstones; vitest for apply (the registry has its test already); one
+  e2e spec against a bare repo.
 
 Phase 1 is a manual "Sync now" with keep-local on conflict: roughly a
-week, most of it the prefs registry and the classification tests.
+week, most of it the `setPref` write path and the Rust classification
+tests.
 Phase 2 is the automatic push and pull, about the same again, most of it
 edge cases. Field-level merging is phase 3 and optional.
 
@@ -257,8 +263,9 @@ edge cases. Field-level merging is phase 3 and optional.
    are preferences by the rule above, but
    [data-model.md](../data-model.md) calls `defaultYolo` machine-level,
    and switching approvals off on a work laptop because of a click on a
-   personal one is a bad surprise. Sync them, keep them local, or sync
-   them and show them in the first-pull preview?
+   personal one is a bad surprise. Proposed answer: sync them, and show
+   any change to one in the preview before it applies.
+   `src/lib/prefsRegistry.ts` already classifies them `sync`.
 3. **Agent `env`.** Never, opt-in with a warning, or encrypted in the
    repo (age, sops)? Never is the simplest honest answer.
 4. **Agent `command`.** Usually a bare name, sometimes an absolute path
