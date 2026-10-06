@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.13.1] - 2026-10-06
+## [1.13.2] - 2026-10-06
 
 Scheduled tasks, config sync through your own git repo, and a sidebar status section.
 
@@ -57,6 +57,12 @@ Scheduled tasks, config sync through your own git repo, and a sidebar status sec
   the title bar down the sidebar.
 - **A custom run command's tab is titled "Run · name"**, so it reads as a run
   and not as a terminal that happens to share the command's name.
+- **A filter bar on the Kanban board.** Type to narrow every column by task
+  name, tab title or branch, or use qualifiers like `project:`, `agent:`,
+  `status:`, `pr:` and `checks:`, with a comma for "or" and a leading `-` to
+  exclude. The funnel opens every facet as a chip with a live count, a click
+  on a lane divider or project header filters by it, and `/` or ⌘F focuses the
+  bar. Thanks to [@wagoodman](https://github.com/wagoodman).
 - **Profiles is no longer experimental.**
 
 ### Improvements
