@@ -3784,8 +3784,17 @@ mod tests {
         crate::load_settings_in(id).sync.sync_id
     }
 
+    /// The one branch the bare repo holds. Not `HEAD`: a bare repo's HEAD
+    /// names git's configured default branch, which is `master` on a CI
+    /// runner while the sync pushes `main`, so `HEAD:` resolved to nothing
+    /// there and to the right commit on a laptop.
+    fn pushed_branch(bare: &Path) -> String {
+        sh(bare, &["for-each-ref", "--format=%(refname)", "refs/heads"]).lines().next().expect("something was pushed").to_string()
+    }
+
     fn repo_folders(bare: &Path) -> Vec<String> {
-        let mut v: Vec<String> = sh(bare, &["ls-tree", "--name-only", "HEAD:profiles"]).lines().map(str::to_string).collect();
+        let tree = format!("{}:profiles", pushed_branch(bare));
+        let mut v: Vec<String> = sh(bare, &["ls-tree", "--name-only", &tree]).lines().map(str::to_string).collect();
         v.sort();
         v
     }
@@ -3825,7 +3834,8 @@ mod tests {
         assert!(r.changes.iter().any(|c| c.kind == "profile" && c.action == "upload" && c.target == "Work"), "{:?}", r.changes);
         // Uploading creates no local profile, so no window has anything to learn.
         assert!(!r.profiles_changed);
-        let meta: Value = serde_json::from_str(&sh(&bare, &["show", "HEAD:profiles/work/profile.json"])).unwrap();
+        let blob = format!("{}:profiles/work/profile.json", pushed_branch(&bare));
+        let meta: Value = serde_json::from_str(&sh(&bare, &["show", &blob])).unwrap();
         assert_eq!(meta, serde_json::json!({ "accent": "orange", "name": "Work" }));
 
         // ── machine B: a plain install, no profiles at all. It follows

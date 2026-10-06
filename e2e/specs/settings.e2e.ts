@@ -840,7 +840,10 @@ describe("settings rail", () => {
             document.querySelectorAll('[data-testid="settings-pane"] canvas')
               .length,
         )) > 0,
-      { timeout: 10_000, timeoutMsg: "terminal preview never mounted after arming" },
+      // 30s, not 10: mounting a terminal is a PTY spawn plus a WebGL context,
+      // and a hosted macOS runner took longer than 10s once (one run in six
+      // that day, every other one passing in well under a second).
+      { timeout: 30_000, timeoutMsg: "terminal preview never mounted after arming" },
     );
 
     // Armed stays armed for this Appearance session: leaving and returning to
@@ -2474,7 +2477,13 @@ describe("settings reorder drags", () => {
         const cs = getComputedStyle(el);
         return {
           overflows: el.scrollWidth > el.clientWidth + 1,
-          scrollbar: cs.scrollbarWidth,
+          // `.no-scrollbar` hides it two ways, and which one a WebKit reports
+          // depends on its age: `scrollbar-width` is the standard property,
+          // and the CI runner's WebKit predates it (the computed value comes
+          // back undefined there), so the `::-webkit-scrollbar` rule is the
+          // one doing the work on it. Either is the scrollbar being hidden.
+          scrollbar: cs.scrollbarWidth === "none"
+            || getComputedStyle(el, "::-webkit-scrollbar").display === "none",
           mask: cs.webkitMaskImage || cs.maskImage,
           left: el.hasAttribute("data-more-left"),
           right: el.hasAttribute("data-more-right"),
@@ -2486,7 +2495,7 @@ describe("settings reorder drags", () => {
 
       await scrollTo(0);
       const start = await read();
-      expect(start.scrollbar).toBe("none");
+      expect(start.scrollbar).toBe(true);
       expect(start.left).toBe(false);
       // A window wide enough for every pill has nothing to fade, and must not.
       if (!start.overflows) {
