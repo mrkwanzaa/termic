@@ -691,7 +691,11 @@ describe("board view", () => {
       await waitVisible('[data-board-filter-suggestion="agent:"]');
       await browser.keys(["Enter"]);
       await browser.waitUntil(async () => (await query()) === "agent:", { timeout: 5_000, timeoutMsg: "picking agent: did not write it" });
-      await type("agent:fakec");
+      // "fakecap", not "fakec": values are every agent in use on the board,
+      // and in a full run earlier specs leave tasks on fakeclaude and
+      // fakecodex behind. All three match "fakec" equally, so Enter picked
+      // whichever came first and the case passed alone and failed in CI.
+      await type("agent:fakecap");
       await waitVisible('[data-board-filter-suggestion="fakecapture"]');
       await snap("board-filter-suggest.png");
       await browser.keys(["Enter"]);
@@ -732,10 +736,20 @@ describe("board view", () => {
       const CHIP = '[data-board-filter-chip="agent:fakecapture"]';
       const chipState = () => browser.execute(sel => document.querySelector(sel)?.getAttribute("data-state"), CHIP);
 
-      // The count is what a click would leave: one fakecapture card (t3).
+      // The count is what a click would leave, so measure what the click
+      // leaves and compare. Not a literal 1: t3 is this spec's only
+      // fakecapture task, but in a full run earlier specs leave more of them
+      // on the board, and the chip (correctly) counts those too.
       const chipCount = () => browser.execute(
         sel => document.querySelector(`${sel} > span:last-child`)?.textContent ?? "", CHIP);
-      expect(await chipCount()).toBe("1");
+      await browser.execute(() => window.__termic!.useUI.getState().setBoardQuery("agent:fakecapture"));
+      await waitShown(ids => ids.includes(t3) && !ids.includes(t2), "the agent query did not narrow");
+      const left = (await shownIds()).length;
+      expect(left).toBeGreaterThan(0);
+      await browser.execute(() => window.__termic!.useUI.getState().setBoardQuery(""));
+      await browser.waitUntil(async () => (await chipCount()) === String(left),
+        { timeout: 5_000, timeoutMsg: `the chip count is not what its click leaves (${left})` })
+        .catch(async () => { throw new Error(`the chip says ${await chipCount()}, its click leaves ${left}`); });
       await snap("board-filter-menu.png");
 
       // Counts are against the CURRENT query, recomputed live while open:
