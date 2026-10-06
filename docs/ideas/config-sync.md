@@ -1,9 +1,9 @@
 # Future work: config sync through a git repo
 
-Not approved. Phase 1 is built (`src-tauri/src/config_sync.rs`,
-`src/lib/configSync.ts`, Settings > Sync, behind an Experimental
-badge), but the maintainer has not approved the design, so this file
-stays an idea. "Phase 1 as built" below records the answers that build
+Not approved. Phase 1 is built and on main (#365:
+`src-tauri/src/config_sync.rs`, `src/lib/configSync.ts`, Settings >
+Sync, behind an Experimental badge), but the maintainer has not
+approved the design, so this file stays an idea. "Phase 1 as built" below records the answers that build
 chose; everything after it is the proposal as written.
 
 Everything a user sets up in termic (projects, project folders and
@@ -90,6 +90,11 @@ Decided while building, not by the questions above:
 - **A pulled agent that `extends` a local one** borrows that agent's
   `sandbox_allowed_paths`, which are local, or it could not run caged.
   A custom agent deleted on another machine is deleted here.
+- **The repo URL** must be `https://`, `http://`, `ssh://`, `git://`,
+  `file://` or `user@host:path`, checked before git runs: git reads
+  `ext::` as a command to run and a leading `-` as an option. Network
+  git also runs with `ext` and `fd` transports off whatever the user's
+  config allows.
 - **Commit identity** is fixed in the clone's own config (`termic
   <sync@termic.dev>`), with hooks and signing off there too.
 - **Disconnect** unbinds the profile and, once no profile is bound,

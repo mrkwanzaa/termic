@@ -32,6 +32,11 @@ import { cn } from "@/lib/utils";
 
 type Busy = null | "connect" | "preview" | "apply" | "sync" | "resolve" | "disconnect";
 
+// The fixed start of `check_repo_url`'s refusal (BAD_URL in config_sync.rs,
+// which pins this copy). Rust decides; this only picks the language. Every
+// other backend error stays raw (docs/i18n.md).
+const BAD_URL = "Unsupported repo URL.";
+
 export default function SyncSection() {
   const { t } = useTranslation("settings");
   const [st, setSt] = useState<SyncStatus | null>(null);
@@ -72,7 +77,10 @@ export default function SyncSection() {
   async function act<T>(kind: Busy, f: () => Promise<T>): Promise<T | undefined> {
     setBusy(kind);
     setErr(null);
-    try { return await f(); } catch (e) { setErr(String(e)); return undefined; } finally { setBusy(null); }
+    try { return await f(); } catch (e) {
+      setErr(String(e).startsWith(BAD_URL) ? t("sync.badUrl") : String(e));
+      return undefined;
+    } finally { setBusy(null); }
   }
 
   async function finish(res: SyncRunResult | undefined) {

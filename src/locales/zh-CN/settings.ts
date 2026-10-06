@@ -488,6 +488,7 @@ export default {
     urlLabel: "仓库 URL",
     urlPlaceholder: "git@git.acme.com:alice/termic-config.git",
     urlHint: "使用一个空的私有仓库，或另一台机器已在同步的那个仓库。",
+    badUrl: "不支持此仓库 URL。请使用 https://、http://、ssh://、git:// 或 file:// URL，或 user@host:path 形式。",
     connect: "连接",
     connecting: "正在连接…",
     repo: "仓库",

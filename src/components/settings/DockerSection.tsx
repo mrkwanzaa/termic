@@ -61,6 +61,7 @@ export function DockerSection() {
   const [defaultMounts, setDefaultMounts] = useState("");
   const [defaultMountsOriginal, setDefaultMountsOriginal] = useState("");
   const [mountsBusy, setMountsBusy] = useState(false);
+  const [mountsErr, setMountsErr] = useState<string | null>(null);
   const mountsHydrated = useRef(false);
   useEffect(() => {
     if (!settings || mountsHydrated.current) return;
@@ -73,11 +74,15 @@ export function DockerSection() {
   async function saveDefaultMounts() {
     if (!settings) return;
     setMountsBusy(true);
+    setMountsErr(null);
     try {
       const next: Settings = { ...settings, docker_default_extra_mounts: cleanLines(defaultMounts) };
       await settingsSave(next);
       store(next);
       setDefaultMountsOriginal(defaultMounts);
+    } catch (e) {
+      // settings_save refuses a host path in termic's data dir.
+      setMountsErr(String(e));
     } finally { setMountsBusy(false); }
   }
 
@@ -809,6 +814,7 @@ export function DockerSection() {
               <Button variant="primary" disabled={!defaultMountsDirty || mountsBusy} onClick={saveDefaultMounts}>
                 {mountsBusy ? t("common:saving") : t("common:save")}
               </Button>
+              {mountsErr && <p className="mt-2 text-[12px] text-[var(--color-err)]" data-testid="docker-mounts-error">{mountsErr}</p>}
             </div>
           </Block>
 

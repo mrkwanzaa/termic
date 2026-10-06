@@ -523,6 +523,10 @@ pub(crate) fn git_bounded(args: &[&str], cwd: &Path, timeout: Duration) -> Resul
     use std::io::Read;
     let desc = format!("git {}", args.first().copied().unwrap_or(""));
     let mut cmd = crate::git_command();
+    // Defence in depth under `check_repo_url`: whatever the user's global
+    // config allows, no network op here runs a command as its transport or
+    // talks over an inherited descriptor. A later `-c` in `args` still wins.
+    cmd.args(["-c", "protocol.ext.allow=never", "-c", "protocol.fd.allow=never"]);
     cmd.args(args).current_dir(cwd);
     let (path, inject) = crate::shell_env::spawn_env();
     cmd.env("PATH", path);
@@ -1849,12 +1853,58 @@ fn list_folders(clone: &Path, rev: &str) -> Vec<FolderView> {
     out
 }
 
+/// The prefix of `check_repo_url`'s refusal. SyncSection.tsx matches it to
+/// show the zh-CN text, so it is pinned by a test.
+pub(crate) const BAD_URL: &str = "Unsupported repo URL.";
+
+/// The repo URL forms a sync remote can be. Anything else is refused before
+/// git sees it: git reads `<helper>::<address>` as a remote helper (`ext::`
+/// runs a command, `fd::` talks over a descriptor) and a leading `-` as an
+/// option, and a pasted string can be either.
+pub(crate) fn check_repo_url(url: &str) -> Result<(), String> {
+    const SCHEMES: &[&str] = &["https://", "http://", "ssh://", "git://", "file://"];
+    let ok = if url.starts_with('-') || url.chars().any(char::is_control) {
+        false
+    } else if let Some(s) = SCHEMES.iter().find(|s| url.starts_with(**s)) {
+        let rest = &url[s.len()..];
+        // `ssh://-oProxyCommand=..`: neither the user nor the host may read
+        // as an option to ssh.
+        let authority = rest.split('/').next().unwrap_or("");
+        let host = authority.rsplit('@').next().unwrap_or("");
+        !rest.is_empty() && !authority.starts_with('-') && !host.starts_with('-') && (*s == "file://" || !host.is_empty())
+    } else {
+        is_scp_like(url)
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("{BAD_URL} Use an https://, http://, ssh://, git:// or file:// URL, or user@host:path."))
+    }
+}
+
+/// `user@host:path`, the form `git@github.com:acme/app.git` takes.
+fn is_scp_like(url: &str) -> bool {
+    let Some((user, rest)) = url.split_once('@') else { return false };
+    let Some((host, path)) = rest.split_once(':') else { return false };
+    let word = |w: &str, extra: &str| {
+        !w.is_empty() && !w.starts_with('-') && w.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(c))
+    };
+    word(user, "._-") && word(host, ".-") && !path.is_empty()
+}
+
+/// The clone's argv. `--` ends the options, so the URL and target are only
+/// ever read as the repository and the directory.
+fn clone_args<'a>(url: &'a str, target: &'a str) -> [&'a str; 6] {
+    ["clone", "-q", "--no-tags", "--", url, target]
+}
+
 /// Clone the repo (or reuse this machine's clone of it) and describe it.
 pub(crate) fn connect(clone: &Path, url: &str) -> Result<ConnectInfo, String> {
     let url = url.trim();
     if url.is_empty() {
         return Err("Enter the repo URL.".into());
     }
+    check_repo_url(url)?;
     if is_connected(clone) {
         let have = origin_url(clone).unwrap_or_default();
         if normalize_remote_url(&have) != normalize_remote_url(url) {
@@ -1866,7 +1916,7 @@ pub(crate) fn connect(clone: &Path, url: &str) -> Result<ConnectInfo, String> {
         let partial = parent.join("sync.partial");
         let _ = fs::remove_dir_all(&partial);
         let target = partial.to_string_lossy().into_owned();
-        git_bounded(&["clone", "-q", "--no-tags", url, &target], parent, CLONE_TIMEOUT)?;
+        git_bounded(&clone_args(url, &target), parent, CLONE_TIMEOUT)?;
         configure_clone(&partial)?;
         fs::rename(&partial, clone).map_err(|e| format!("move clone: {e}"))?;
     }
@@ -2820,6 +2870,90 @@ mod tests {
         assert_eq!(changed_keys(Some(&a), &c), vec!["x".to_string(), "z".to_string()]);
         // A first connect applies only what the file sets.
         assert_eq!(changed_keys(None, &a), vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn a_repo_url_is_one_of_the_forms_a_remote_can_take() {
+        for ok in [
+            "https://github.com/acme/app.git",
+            "http://git.acme.com/acme/app.git",
+            "ssh://git@git.acme.com:2222/acme/app.git",
+            "git://git.acme.com/acme/app.git",
+            "file:///Users/alice/sync.git",
+            "file:///C:/Users/alice/sync.git",
+            "git@github.com:acme/app.git",
+            "bob.smith.ext@git.internal.acme.com:acme/app.git",
+        ] {
+            assert_eq!(check_repo_url(ok), Ok(()), "{ok}");
+        }
+        for bad in [
+            "ext::sh -c touch% /tmp/pwned",
+            "ext::git-upload-pack /tmp/x",
+            "fd::17",
+            "fd::3,4/x",
+            "-uhttps://github.com/acme/app.git",
+            "--upload-pack=touch /tmp/pwned",
+            "ssh://-oProxyCommand=touch%20pwned/x",
+            "ssh://git@-oProxyCommand=x/acme/app.git",
+            "file://-x",
+            "https://",
+            "ftp://git.acme.com/acme/app.git",
+            "HTTPS://github.com/acme/app.git",
+            "/Users/alice/sync.git",
+            "../sync.git",
+            "github.com:acme/app.git",
+            "git@github.com",
+            "git@:acme/app.git",
+            "-git@github.com:acme/app.git",
+            "git@-oProxyCommand=x:acme/app.git",
+            "ext::sh@x:y",
+            "https://github.com/acme/app.git\n--upload-pack=x",
+        ] {
+            let err = check_repo_url(bad).unwrap_err();
+            assert!(err.starts_with(BAD_URL), "{bad}: {err}");
+            assert!(!err.contains('\u{2014}'), "no em dash: {err}");
+        }
+    }
+
+    #[test]
+    fn the_settings_page_knows_the_bad_url_prefix() {
+        let tsx = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/components/settings/SyncSection.tsx");
+        let tsx = fs::read_to_string(tsx).unwrap();
+        assert!(tsx.contains(&format!("const BAD_URL = \"{BAD_URL}\";")), "SyncSection.tsx no longer matches BAD_URL");
+    }
+
+    #[test]
+    fn connect_refuses_a_bad_url_before_git_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let clone = dir.path().join("sync");
+        let err = connect(&clone, "  ext::sh -c touch% pwned  ").unwrap_err();
+        assert!(err.starts_with(BAD_URL), "{err}");
+        assert!(!dir.path().join("sync.partial").exists() && !clone.exists());
+    }
+
+    #[test]
+    fn the_clone_url_follows_the_end_of_options() {
+        let args = clone_args("https://github.com/acme/app.git", "/tmp/sync.partial");
+        let dd = args.iter().position(|a| *a == "--").expect("a -- in the clone argv");
+        assert_eq!(&args[dd + 1..], ["https://github.com/acme/app.git", "/tmp/sync.partial"]);
+        assert!(args[..dd].iter().all(|a| a.starts_with('-') || *a == "clone"), "{args:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_network_op_runs_with_ext_off_whatever_the_config_says() {
+        // A config that allows `ext::`, the way a user's global one might.
+        let dir = tempfile::tempdir().unwrap();
+        crate::git(&["init", "-q"], dir.path()).unwrap();
+        crate::git(&["config", "protocol.ext.allow", "always"], dir.path()).unwrap();
+        let mark = dir.path().join("ran");
+        let url = format!("ext::sh -c touch% {}", mark.display());
+        // The control: plain git honours that config and runs the command.
+        let _ = crate::git(&["ls-remote", &url], dir.path());
+        assert!(mark.exists(), "control: the config should let ext:: run");
+        fs::remove_file(&mark).unwrap();
+        assert!(git_bounded(&["ls-remote", &url], dir.path(), Duration::from_secs(20)).is_err());
+        assert!(!mark.exists(), "git_bounded ran the ext:: transport");
     }
 
     #[cfg(unix)]
