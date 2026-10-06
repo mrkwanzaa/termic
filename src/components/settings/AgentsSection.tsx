@@ -887,10 +887,15 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
   const hasSignals = !!(sig?.busy?.length || sig?.idle?.length || sig?.attention?.length || sig?.pending?.length);
   // Hooks installed: the patterns below are a fallback, so they start folded
   // away. Otherwise they ARE the mechanism and start open. `null` follows that
-  // default, so installing from the row above folds them as it happens; a
-  // click on the disclosure is the user's own answer and sticks.
+  // default, so installing from the row above folds them as it happens. A
+  // click on the disclosure is the user's own answer, but only for the source
+  // it was given under: when the source changes, the default comes back.
+  // Without that reset, peeking at the fallback and closing it again left the
+  // patterns folded after the hooks were removed, labelled "in use" and out
+  // of sight (the e2e case that removes from the card caught it).
   const hooksInstalled = useApp(s => s.agentHooksInstalled[agent.id] === true);
   const [patternsOpen, setPatternsOpen] = useState<boolean | null>(null);
+  useEffect(() => { setPatternsOpen(null); }, [hooksInstalled]);
   const showPatterns = patternsOpen ?? !hooksInstalled;
   const tracked = agent.work_done !== false;
 
