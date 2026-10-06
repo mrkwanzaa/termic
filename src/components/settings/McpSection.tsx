@@ -72,6 +72,12 @@ function isIpAddress(s: string): boolean {
   return s.includes(":") && /^[0-9a-fA-F:.]+$/.test(s);
 }
 
+/** What another device runs to register this endpoint with Claude Code.
+ *  Double quotes only, so it pastes the same into bash, PowerShell and cmd. */
+function remoteClaudeCommand(url: string, token: string): string {
+  return `claude mcp add --transport http termic ${url} --header "X-Termic-Token: ${token}" -s user`;
+}
+
 function isLoopback(s: string): boolean {
   return s.startsWith("127.") || s === "::1";
 }
@@ -108,6 +114,7 @@ export function McpSection() {
   const [address, setAddress] = useState("");
   const [port, setPort] = useState("");
   const [bindError, setBindError] = useState<string | null>(null);
+  const [remoteCommand, setRemoteCommand] = useState<string | null>(null);
 
   useEffect(() => {
     if (!settings) return;
@@ -148,6 +155,27 @@ export function McpSection() {
     setStatus(await mcpStatus().catch(() => UNBOUND));
   }
 
+  // The SAVED address, not the draft: the warning describes what is bound.
+  const saved = settings?.mcp_bind_address ?? "";
+  const exposed = saved !== "" && !isLoopback(saved);
+
+  // The one place the token IS rendered, and only once the endpoint is
+  // bound off loopback: another device cannot read the token file, so
+  // the command it runs has to carry the value, and a command you cannot
+  // select is not one you can move to that device. `status` changes on
+  // every rebind, which is also when the token does.
+  const remoteUrl = exposed ? (status?.lan_url ?? status?.url ?? null) : null;
+  useEffect(() => {
+    let live = true;
+    if (!remoteUrl) return setRemoteCommand(null);
+    mcpToken()
+      .then(tok => {
+        if (live) setRemoteCommand(tok ? remoteClaudeCommand(remoteUrl, tok) : null);
+      })
+      .catch(() => live && setRemoteCommand(null));
+    return () => { live = false; };
+  }, [remoteUrl, status]);
+
   /** Register with a client through its own config, so the common case
    *  is a button rather than a pasted block. The result line is shown
    *  rather than swallowed: this writes a file the user owns. */
@@ -175,9 +203,6 @@ export function McpSection() {
   }
 
   const url = status?.url ?? null;
-  // The SAVED address, not the draft: the warning describes what is bound.
-  const saved = settings?.mcp_bind_address ?? "";
-  const exposed = saved !== "" && !isLoopback(saved);
   const tokenPath = status?.token_path ?? null;
 
 
@@ -237,12 +262,12 @@ export function McpSection() {
               {t("mcp.bind.exposed")}
             </p>
           )}
-          {exposed && status?.lan_url && (
-            <CopyRow
-              text={status.lan_url}
-              label={t("mcp.copyUrlLabel")}
-              className="mt-3 items-center text-[12.5px]"
-            />
+          {remoteCommand && (
+            <>
+              <div className="mt-4 text-[13px] font-medium">{t("mcp.bind.remoteTitle")}</div>
+              <p className="mt-0.5 text-[12px] text-[var(--color-fg-faint)]">{t("mcp.bind.remoteHint")}</p>
+              <CopyRow text={remoteCommand} label={t("mcp.bind.remoteLabel")} className="mt-2" />
+            </>
           )}
         </Block>
       )}
