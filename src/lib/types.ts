@@ -819,6 +819,10 @@ export interface OpenWithPick {
 }
 
 export interface Settings {
+  /** Config sync state for this profile (config_sync.rs). Written only by the
+   *  sync_* commands; settings_save carries the disk copy across, so a form
+   *  holding an old snapshot cannot put an old one back. */
+  sync?: SyncLocal;
   repos_dir: string;
   welcomed: boolean;
   agents: Agent[];
@@ -1989,4 +1993,82 @@ export interface AgentAccountsView {
    *  account, and the footer needs it to say so instead of falling back to
    *  whatever is merely configured. */
   adoptedAccount: string | null;
+}
+
+// ───────────────────────── config sync ─────────────────────────
+// src-tauri/src/config_sync.rs. See docs/ipc.md "Config sync".
+
+export interface SyncLocal {
+  sync_id?: string;
+  skipped?: string[];
+  removed?: { id: string; name: string; machine: string; at: string }[];
+  kept?: string[];
+  aliases?: Record<string, string>;
+}
+
+/** One line of a first-connect preview or a sync report. */
+export interface SyncChange {
+  kind: "project" | "agent" | "settings" | "pref" | "theme";
+  /** A project or agent name, a pref key, a theme file. */
+  target: string;
+  action: "update" | "add" | "remove" | "wait";
+  field?: string;
+  from?: unknown;
+  to?: unknown;
+  /** A YOLO or sandbox default: shown highlighted, before or as it applies. */
+  safety: boolean;
+  /** The profile's sync id; absent for machine-wide prefs and themes. */
+  profile?: string;
+}
+
+export interface SyncPrefChange { key: string; value: string | null }
+
+/** The registry's "sync" keys, read from localStorage. `scoped` is keyed by a
+ *  profile's localStorage namespace ("" for the root profile). */
+export interface SyncPrefsSnapshot {
+  shared: Record<string, string>;
+  scoped: Record<string, Record<string, string>>;
+}
+
+export interface SyncPrefsChanges {
+  shared: SyncPrefChange[];
+  scoped: Record<string, SyncPrefChange[]>;
+}
+
+export interface SyncRunResult {
+  ok: boolean;
+  skipped: boolean;
+  pushed: boolean;
+  /** Namespaces of the profiles whose projects or settings changed. */
+  changed_profiles: string[];
+  prefs: SyncPrefsChanges;
+  themes_changed: boolean;
+  changes: SyncChange[];
+  conflicts: string[];
+  error: string | null;
+}
+
+export interface SyncFolder { sync_id: string; name: string }
+export interface SyncConnectInfo { url: string; empty: boolean; folders: SyncFolder[] }
+export interface SyncWaiting { id: string; name: string; remote_url: string | null; subdir: string; non_git: boolean }
+export interface SyncRemoval { id: string; name: string; machine: string; at: string }
+export interface SyncConflict { path: string; label: string; choice: "local" | "remote" | null }
+
+export interface SyncStatus {
+  connected: boolean;
+  repo_url: string | null;
+  machine: string;
+  last_sync_at: string | null;
+  last_error: string | null;
+  /** This window's localStorage namespace. */
+  ns: string;
+  sync_id: string | null;
+  folder_name: string | null;
+  /** Every bound profile on this machine, for the prefs snapshot. */
+  bound: { ns: string; sync_id: string }[];
+  conflicts: SyncConflict[];
+  waiting: SyncWaiting[];
+  skipped: SyncWaiting[];
+  removals: SyncRemoval[];
+  notices: SyncChange[];
 }

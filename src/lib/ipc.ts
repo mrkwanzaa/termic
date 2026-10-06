@@ -11,6 +11,7 @@ import type {
   SandboxMode, TaskDiffSummary, TaskDiffStat, DesktopIntegration, CliInstallStatus, McpStatus, BranchContext, PrPickList, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
   ForgeCliStatus, ForgeProvider, PrLookup, MemberPrLookup, PrComment, IssueLookup, AgentHookStatus, HookPlan,
   ProfileView, ProfilesView, ProfileDeletePreview, AgentAccountsView, ExternalAppInfo,
+  SyncStatus, SyncConnectInfo, SyncChange, SyncPrefsSnapshot, SyncRunResult,
 } from "./types";
 import type { CustomThemeFile } from "./customTheme";
 import {
@@ -1460,3 +1461,23 @@ export const agentHooksSync = () => invoke<string[]>("agent_hooks_sync");
  *  every later sync (boot, the Agents page) keeps new agents covered. */
 export const agentHooksAutoGet = () => invoke<boolean>("agent_hooks_auto_get");
 export const agentHooksAutoSet = (on: boolean) => invoke<string[]>("agent_hooks_auto_set", { on });
+
+// ───────────────────────── config sync ─────────────────────────
+// src-tauri/src/config_sync.rs. Every run command takes the window's prefs
+// snapshot (src/lib/configSync.ts), because Rust cannot read localStorage.
+
+export const syncStatus = () => invoke<SyncStatus>("sync_status");
+export const syncConnect = (url: string) => invoke<SyncConnectInfo>("sync_connect", { url });
+export const syncPreview = (folder: string | null, prefs: SyncPrefsSnapshot) =>
+  invoke<SyncChange[]>("sync_preview", { folder, prefs });
+export const syncBind = (folder: string | null, prefs: SyncPrefsSnapshot) =>
+  invoke<SyncRunResult>("sync_bind", { folder, prefs });
+export const syncNow = (prefs: SyncPrefsSnapshot) => invoke<SyncRunResult>("sync_now", { prefs });
+export const syncLaunchPull = (prefs: SyncPrefsSnapshot) => invoke<SyncRunResult>("sync_launch_pull", { prefs });
+export const syncResolve = (path: string, choice: "local" | "remote", prefs: SyncPrefsSnapshot) =>
+  invoke<SyncRunResult>("sync_resolve", { path, choice, prefs });
+export const syncLocate = (projectId: string, path: string) => invoke<void>("sync_locate", { projectId, path });
+export const syncSkip = (projectId: string, skip: boolean) => invoke<void>("sync_skip", { projectId, skip });
+export const syncKeep = (projectId: string) => invoke<void>("sync_keep", { projectId });
+export const syncDismissNotices = () => invoke<void>("sync_dismiss_notices");
+export const syncDisconnect = () => invoke<void>("sync_disconnect");

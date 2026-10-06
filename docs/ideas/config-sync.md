@@ -1,11 +1,106 @@
 # Future work: config sync through a git repo
 
-Not built, not approved. Everything a user sets up in termic (projects,
-project folders and their colors, per-project overrides, custom agents,
-prompts, shortcuts, prefs) lives on one machine. A second laptop, or a
-reinstall, starts from nothing. This file proposes syncing that setup
-through a private git repo the user owns, and lists what has to be
-decided before anyone builds it.
+Not approved. Phase 1 is built (`src-tauri/src/config_sync.rs`,
+`src/lib/configSync.ts`, Settings > Sync, behind an Experimental
+badge), but the maintainer has not approved the design, so this file
+stays an idea. "Phase 1 as built" below records the answers that build
+chose; everything after it is the proposal as written.
+
+Everything a user sets up in termic (projects, project folders and
+their colors, per-project overrides, custom agents, prompts, shortcuts,
+prefs) lives on one machine. A second laptop, or a reinstall, starts
+from nothing. This file proposes syncing that setup through a private
+git repo the user owns, and lists what has to be decided before anyone
+builds it.
+
+## Phase 1 as built
+
+The open questions at the end, answered:
+
+1. **Profiles.** One repo for the whole machine, a folder per profile
+   (`profiles/<sync-id>/`). A profile is bound to its folder by a
+   `sync_id` kept locally in that profile (`Settings.sync`). At first
+   connect, a repo that already holds folders lists them by profile
+   name: the user picks the one this profile follows, or starts a new
+   one.
+2. **Safety defaults** sync: the app-wide prefs (`defaultYolo`,
+   `globalDefaultSandboxKind`, `sandboxBypassPermissions`,
+   `sandboxAllowScope`) and a project's `default_yolo`,
+   `default_sandbox`, `default_sandbox_mode`, `default_docker`. A change
+   to one is never silent: it is highlighted in the first-connect
+   preview, and a later pull lists it in the report, keeps it as a
+   notice in Settings > Sync until dismissed (per profile, so a profile
+   whose window was closed sees it when it opens), and announces it once
+   as a toast.
+3. **Agent `env`** and `docker_env` never sync, and Settings > Sync
+   says so, with what else stays on the machine.
+4. **Agent `command`** syncs. There is no fallback to a local value
+   when the synced one is not on `PATH`.
+5. **Pull cadence.** Manual: one pull on launch (after first paint,
+   once per process, whichever window asks first) and "Sync now", which
+   exports, commits, fetches, rebases, applies and pushes. No timer, no
+   push on change: that is phase 2.
+6. **Transport** is git, not a file export.
+
+Decided while building, not by the questions above:
+
+- **Prefs split by scope.** Keys every window shares (not `scoped()`)
+  are machine-wide, so they live in a root `prefs.json`; profile-scoped
+  ones live in the profile's folder. Windows share one origin, so the
+  window that syncs snapshots, and writes, every bound profile's keys.
+  Every sync key reloads live (prefs, prompt library, folder colors);
+  of the settings, only `auto_install_hooks` waits for the next launch.
+- **Unnamed fields, classified.** Local: `created`,
+  `docker_sandbox_enabled` (follows whether Docker is installed here),
+  `docker_agent_persist_enabled`, `docker_shared_config_dirs`,
+  `cli_enabled`, `mcp_enabled` and the migration markers, an agent's
+  `builtin`. Sync: `spotlight_enabled`, `code_intel_auto` (the table's
+  "code-intel toggles", though its field comment calls it machine-local
+  with respect to `.termic.yaml`), `non_git`, `type`, `members`,
+  `worktree_symlink_paths` (repo-relative), an agent's `display_name`,
+  `work_done`, `kind`, `extends`, `post_launch_capture` and
+  `auto_switch_account`. The `*_SYNC` / `*_LOCAL` lists in
+  `config_sync.rs` are the answer per field, and a test fails on a field
+  in neither.
+- **The order is export, commit, fetch, rebase, apply, push**, the one
+  "The loop" describes, for the launch pull too (which commits locally
+  and does not push). Committing first is what turns an edit to one
+  field on two machines into a conflict instead of a silent overwrite.
+  Apply is three-way per field: only fields that changed upstream since
+  the last sync are written.
+- **Conflicts** are settled without finishing the rebase (where
+  `--ours` is upstream): once every conflicting file has a choice,
+  upstream's changes are applied to local records, skipping each file
+  answered "keep this machine's" entirely, then the clone is reset to
+  upstream, re-exported, committed and pushed.
+- **A pulled project whose repo is already a project here** under its
+  own id is aliased (`Settings.sync.aliases`), never registered twice.
+  Matching is: the id, then a registered project with the same remote
+  URL and subdir, then a repo under `repos_dir`, else the waiting list.
+  Clone into `repos_dir` from that list is not built.
+- **Remote URL spelling** in a project file is kept when this machine's
+  remote normalizes to the same repo, or two machines with `git@` and
+  `https://` remotes rewrite each other's line on every sync.
+- **Positions** keep the number a file already holds while it still
+  sorts after its predecessor, so removing a project rewrites no other
+  file.
+- **Multi-repo members** are matched by name (their folder in the task
+  wrapper); one that arrives with no local match is placed by remote URL
+  under `repos_dir`, or left out.
+- **A pulled agent that `extends` a local one** borrows that agent's
+  `sandbox_allowed_paths`, which are local, or it could not run caged.
+  A custom agent deleted on another machine is deleted here.
+- **Commit identity** is fixed in the clone's own config (`termic
+  <sync@termic.dev>`), with hooks and signing off there too.
+- **Disconnect** unbinds the profile and, once no profile is bound,
+  deletes the clone. Nothing is deleted from the repo.
+- **Not built:** the public-repo warning through `gh` / `glab`, and
+  creating the repo from termic.
+- **Known limit:** git merges by line, and sorted keys put related
+  fields next to each other (`default_sandbox`, `default_sandbox_mode`),
+  so two machines changing ADJACENT fields of one record conflict even
+  though the fields differ. The per-file choice handles it; a
+  field-level merge from the three versions is the phase 3 idea below.
 
 ## The request
 
@@ -65,12 +160,15 @@ team config already travels with the repo it belongs to.
 
 | Store | Syncs | Stays local |
 |---|---|---|
-| `projects.json` | `id`, `name`, `group`, position in the list, `base_branch`, scripts and `run_scripts`, `files_to_copy`, `preview_url`, `default_cli`, sandbox, Docker and YOLO defaults (open question 2), `sandbox_allowed_hosts`, `extra_named_ports`, `on_pr_merge`, PR watch flags, code-intel toggles and settings, members (without paths) | `root_path`, `tasks_path`, `remote` (a remote NAME in this clone), `preview_browser`, `sandbox_rw_paths`, `docker_extra_mounts`, `code_intel_servers`, `code_intel_commands` |
+| `projects.json` | `id`, `name`, `group`, position in the list, `base_branch`, scripts and `run_scripts`, `files_to_copy`, `preview_url`, `default_cli`, sandbox, Docker and YOLO defaults (see open question 2), `sandbox_allowed_hosts`, `extra_named_ports`, `on_pr_merge`, PR watch flags, code-intel toggles and settings, members (without paths) | `root_path`, `tasks_path`, `remote` (a remote NAME in this clone), `preview_browser`, `sandbox_rw_paths`, `docker_extra_mounts`, `code_intel_servers`, `code_intel_commands` |
 | `settings.json` | `agents` (see below), `file_tree_exclude`, `sandbox_default_allowed_hosts`, Docker rebuild settings, `fetch_before_create`, `close_action`, `tray_enabled`, `auto_install_hooks` | `repos_dir`, `default_tasks_path`, `preview_browser`, `task_port_min` / `task_port_max`, `sandbox_default_rw_paths`, `docker_default_extra_mounts`, `docker_agent_extra_dirs`, `discovery_dismissed` (paths), CLI and MCP install state, `welcomed`, `schema_version` |
 | Agents | `id`, name, `command`, `args`, `yolo_args`, icon and color, capabilities, `sandbox_allowed_hosts`, account NAMES, `default_account`, `extends`, `kind` | `adopted_account` (the login that already existed on THIS machine), `disabled` (often hides a CLI not installed here), `sandbox_allowed_paths`, and `env` / `docker_env` (never, see below) |
 | `localStorage` | fonts and sizes, editor and terminal themes, theme mode, shortcuts, the prompt library, folder colors, indicators, confirm-before prompts, branch prefix, language, sounds | collapse state, recent tasks, split and panel sizes, last New Task mode, `terminalRenderer` and GPU (hardware), `uiScale` (display), `openWithApp` (an app installed here) |
 | `~/.config/termic/themes/` | all of it | |
 | Never | | `tasks/`, `scratch/`, `logins/`, `docker-agents/`, `docker-forge/`, the CLI token, window state, `servers/`, `backups/` |
+
+The `localStorage` row is a summary. The per-key answer, including the
+keys the table does not name, is `src/lib/prefsRegistry.ts`.
 
 **`Agent.env` and `docker_env` are where people put API keys**, so they
 never sync by default. A private repo is still a copy of the secret on a
@@ -220,12 +318,14 @@ one most likely to surprise.
 
 Measured against the pieces, not a guess at the whole:
 
-- **A prefs registry.** About 40 files read and write localStorage
-  directly, with about a hundred keys between them and no central list.
-  Sync needs one: every key classified sync or local, a `setPref` write
-  path that doubles as the change signal, and a test that fails on a key
-  nobody classified, like the i18n parity test does for strings. This is
-  the largest mechanical piece, and it is useful on its own.
+- **A prefs registry.** The list exists: `src/lib/prefsRegistry.ts`
+  names every localStorage key and runtime-built key family, each
+  marked profile-scoped or not and classified sync or local with a
+  reason, and `src/lib/prefsRegistry.test.ts` fails on a key in source
+  the registry does not list, or a listed key nothing uses. What sync
+  still needs is a `setPref` write path that doubles as the change
+  signal: about 20 files still write localStorage directly, and routing
+  them through one function is the remaining mechanical piece.
 - **Field classification in Rust**, for `Project`, `Settings` and
   `Agent`, with a test that serializes each struct and fails on a field
   in neither list. Without it, the next field added to `Project` is
@@ -236,11 +336,12 @@ Measured against the pieces, not a guess at the whole:
 - **Tombstones and the per-file conflict choice.**
 - **The Settings section**, en and zh-CN.
 - **Tests:** cargo for export determinism, classification and
-  tombstones; vitest for the registry and apply; one e2e spec against a
-  bare repo.
+  tombstones; vitest for apply (the registry has its test already); one
+  e2e spec against a bare repo.
 
 Phase 1 is a manual "Sync now" with keep-local on conflict: roughly a
-week, most of it the prefs registry and the classification tests.
+week, most of it the `setPref` write path and the Rust classification
+tests.
 Phase 2 is the automatic push and pull, about the same again, most of it
 edge cases. Field-level merging is phase 3 and optional.
 
@@ -257,8 +358,9 @@ edge cases. Field-level merging is phase 3 and optional.
    are preferences by the rule above, but
    [data-model.md](../data-model.md) calls `defaultYolo` machine-level,
    and switching approvals off on a work laptop because of a click on a
-   personal one is a bad surprise. Sync them, keep them local, or sync
-   them and show them in the first-pull preview?
+   personal one is a bad surprise. Proposed answer: sync them, and show
+   any change to one in the preview before it applies.
+   `src/lib/prefsRegistry.ts` already classifies them `sync`.
 3. **Agent `env`.** Never, opt-in with a warning, or encrypted in the
    repo (age, sops)? Never is the simplest honest answer.
 4. **Agent `command`.** Usually a bare name, sometimes an absolute path

@@ -2,7 +2,7 @@
 // with sections + a per-repo list, a right content pane that swaps based on
 // the selected section. Reached via the gear icon in the sidebar or ⌘,.
 
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
@@ -23,6 +23,10 @@ import { ShortcutsSection } from "./ShortcutsSection";
 import { AgentsSection } from "./AgentsSection";
 import { PromptLibrarySection } from "./PromptLibrarySection";
 import { DockerSection } from "./DockerSection";
+
+// Lazy: it pulls in the prefs registry and the sync module, neither of which
+// belongs on the app-start path (Settings itself is imported by App).
+const SyncSection = lazy(() => import("./SyncSection"));
 
 export function Settings() {
   const { t } = useTranslation("settings");
@@ -107,6 +111,10 @@ export function Settings() {
             this release qualify, and both are dormant until you opt in. */}
         <RailItem icon={<UsersRound className="h-4 w-4" />} label={t("rail.profiles")} badge={t("rail.badgeExp")} tabId="profiles"
           active={tab === "profiles"} onClick={() => openSettings("profiles")} />
+        {/* Experimental for the same reason as Profiles: off until you connect
+            a repo, and Disconnect is the stated way out (docs/ui.md). */}
+        <RailItem icon={<RefreshCw className="h-4 w-4" />} label={t("rail.sync")} badge={t("rail.badgeExp")} tabId="sync"
+          active={tab === "sync"} onClick={() => openSettings("sync")} />
 
         <RailDivider />
 
@@ -166,6 +174,7 @@ export function Settings() {
           {tab === "prompts"     && <PromptLibrarySection />}
           {tab === "shortcuts"   && <ShortcutsSection />}
           {tab === "profiles"    && <ProfilesSection />}
+          {tab === "sync"        && <Suspense fallback={null}><SyncSection /></Suspense>}
           {tab === "repositories" && (
             isRepoSelected
               ? <RepositorySection projectId={repoId!} />

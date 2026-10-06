@@ -1096,32 +1096,6 @@ export const APPEARANCE_DEFAULTS = {
   showAllInstalledFonts: false,
 } as const;
 
-const initialEditorFont   = lsGet(LS_EDITOR_FONT, APPEARANCE_DEFAULTS.editorFontId);
-const initialEditorThemeDark  = lsGet(LS_EDITOR_THEME, "auto");
-// Seeds from the pre-split value on first read (no LS_EDITOR_THEME_LIGHT
-// key yet) so an existing explicit pick (or "auto") keeps applying to
-// both modes exactly as before, until the user overrides light on its own.
-const initialEditorThemeLight = lsGet(LS_EDITOR_THEME_LIGHT, initialEditorThemeDark);
-const initialTerminalFont = lsGet(LS_TERMINAL_FONT, APPEARANCE_DEFAULTS.terminalFontId);
-const initialTerminalSize = lsGetNum(LS_TERMINAL_SIZE, APPEARANCE_DEFAULTS.terminalFontSize);
-const initialTerminalLetterSpacing = Math.max(0, Math.round(lsGetNum(LS_TERMINAL_LETTERSPACING, APPEARANCE_DEFAULTS.terminalLetterSpacing)));
-const initialTerminalScrollback    = Math.max(1000, Math.min(100000, Math.round(lsGetNum(LS_TERMINAL_SCROLLBACK, APPEARANCE_DEFAULTS.terminalScrollback))));
-const initialTerminalOptionAsMeta  = lsGetBool(LS_TERMINAL_OPTION_AS_META, APPEARANCE_DEFAULTS.terminalOptionAsMeta);
-const initialTerminalGpuEnabled    = lsGetBool(LS_TERMINAL_GPU, APPEARANCE_DEFAULTS.terminalGpuEnabled);
-// No stored renderer means this profile predates the three-way pref, so honour
-// whatever the old boolean said rather than snapping everyone back to WebGL.
-const initialTerminalRenderer      = parseTerminalRenderer(
-  lsGet(LS_TERMINAL_RENDERER, ""),
-  initialTerminalGpuEnabled ? "webgl" : "dom",
-);
-const initialTerminalCopyOnSelect  = lsGetBool(LS_TERMINAL_COPY_ON_SELECT, true);
-const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, APPEARANCE_DEFAULTS.editorFontSize);
-const initialUiScale      = clampUiScale(lsGetNum(LS_UI_SCALE, APPEARANCE_DEFAULTS.uiScale));
-const initialLigatures    = lsGetBool(LS_LIGATURES, APPEARANCE_DEFAULTS.codeLigatures);
-const initialInlineBlame  = lsGetBool(LS_INLINE_BLAME, APPEARANCE_DEFAULTS.inlineBlame);
-const initialWordWrap     = lsGetBool(LS_EDITOR_WORD_WRAP, APPEARANCE_DEFAULTS.editorWordWrap);
-const initialCodeNav      = lsGetBool(LS_CODE_NAV, APPEARANCE_DEFAULTS.codeIntelligence);
-const initialCodeDiags    = lsGetBool(LS_CODE_DIAGS, APPEARANCE_DEFAULTS.codeIntelDiagnostics);
 /** A corrupt blob falls back to "no preference", which is the default order:
  *  every language still gets a server. */
 const lsRecord = (key: string): Record<string, string> => {
@@ -1135,7 +1109,6 @@ const lsRecord = (key: string): Record<string, string> => {
     ) as Record<string, string>;
   } catch { return {}; }
 };
-const initialCodeServers = lsRecord(LS_CODE_SERVERS);
 /** Which footer readouts are hidden, per agent. Only `true` survives the
  *  parse: anything else is read as "shown", the default. */
 function readFooterHidden(): Record<string, AgentFooterHidden> {
@@ -1155,53 +1128,6 @@ function readFooterHidden(): Record<string, AgentFooterHidden> {
     return out;
   } catch { return {}; }
 }
-const initialCodeCommands = lsRecord(LS_CODE_COMMANDS);
-setDiagnosticsEnabled(initialCodeDiags);
-// Same mirror, for the server choice: read once at load, then on every change.
-setChosenServers(initialCodeServers);
-setChosenCommands(initialCodeCommands);
-/** Show the memory disclosure when arming a checkout. Ticking "don't ask
- *  again" is what makes the second checkout a single click. */
-const initialConfirmCodeNav = lsGetBool(LS_CONFIRM_CODE_NAV, true);
-const initialShowAllFonts = lsGetBool(LS_SHOW_ALL_FONTS, APPEARANCE_DEFAULTS.showAllInstalledFonts);
-const initialTheme        = parseThemeMode(lsGet(LS_THEME, "claude"));
-const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
-const initialCompletionSound = readCompletionSoundEnabled();
-const initialCompletionSoundId = readCompletionSoundId();
-// WIP feature - the "agent has settled" heuristic produces false
-// positives often enough that the highlight is noise more than
-// Default ON. Claude Code's title classifier (Braille spinner glyph
-// while working, "✳" brand prefix when idle — see TerminalPane.tsx
-// classifyTitle) gives us a reliable busy→idle edge for Claude;
-// Codex/Gemini have explicit "Ready"/"Working" title states. Existing
-// users who toggled it OFF keep their setting (lsGetBool returns the
-// stored value when present).
-const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, true);
-const initialConfirmCloseAgentTab = lsGetBool(LS_CONFIRM_CLOSE_AGENT_TAB, true);
-const initialConfirmArchiveTask = lsGetBool(LS_CONFIRM_ARCHIVE_TASK, true);
-const initialOfferTouchIdForSudo = lsGetBool(LS_OFFER_TOUCH_ID_SUDO, true);
-const initialConfirmAccountRestart = lsGetBool(LS_CONFIRM_ACCOUNT_RESTART, true);
-const initialArchiveDeleteBranch = lsGetBool(LS_ARCHIVE_DELETE_BRANCH, false);
-// OFF by default — experimental re-introduction of the work-in-progress
-// spinner. Opt in via Settings → General.
-const initialWorkingIndicator = lsGetBool(LS_WORKING_INDICATOR, true);
-const initialPartialDoneIndicator = lsGetBool(LS_PARTIAL_DONE_INDICATOR, true);
-// Seeded from `settledHighlight` when this key is absent, which is every
-// install that predates the switch. Attention used to ride that pref, so
-// somebody who had turned the work-done UI off to stop being interrupted
-// would otherwise get bells back on upgrade: a preference silently reversed
-// is worse than one that was never offered.
-const initialAttentionIndicator = lsGetBool(
-  LS_ATTENTION_INDICATOR,
-  lsGetBool(LS_SETTLED_HIGHLIGHT, true),
-);
-// OFF by default (issue #69): closing the remote-image sandbox gap must not
-// silently start firing image requests for existing users.
-const initialLoadRemoteImages = lsGetBool(LS_LOAD_REMOTE_IMAGES, false);
-const initialSidebarHoverReveal = lsGetBool(LS_SIDEBAR_HOVER_REVEAL, false);
-const initialProfileSidebarWash = lsGetBool(LS_PROFILE_SIDEBAR_WASH, false);
-const initialFindInFilesRegex = lsGetBool(LS_FIND_IN_FILES_REGEX, false);
-const initialFindInFilesMatchCase = lsGetBool(LS_FIND_IN_FILES_MATCH_CASE, false);
 // Migrated from the old boolean LS_DEFAULT_SANDBOX (on = "enforce", off =
 // "off") the first time this reads - the new key wins once it exists, so
 // the migration only ever applies once per browser profile. No Rust side
@@ -1215,139 +1141,227 @@ function readInitialDefaultSandboxKind(): SandboxSelection {
   }
   return lsGetBool(LS_DEFAULT_SANDBOX, false) ? "enforce" : "off";
 }
-const initialDefaultSandboxKind = readInitialDefaultSandboxKind();
-// ON by default — sandboxed agents bypass their own permission prompts
-// because the seatbelt is the real boundary. Users can opt out.
-const initialSandboxBypass = lsGetBool(LS_SANDBOX_BYPASS, true);
-const initialDefaultYolo = lsGetBool(LS_DEFAULT_YOLO, false);
-const initialAllowScope: "agent" | "project" | "repo" | null = (() => {
-  const raw = lsGet(LS_ALLOW_SCOPE, "");
-  return raw === "agent" || raw === "project" || raw === "repo" ? raw : null;
-})();
-const initialTaskExpandMode: "chevron" | "click" | "always" = (() => {
-  const raw = lsGet(LS_TASK_EXPAND_MODE, "chevron");
-  return raw === "click" || raw === "always" ? raw : "chevron";
-})();
-const initialHideInactiveProjects = lsGet(LS_HIDE_INACTIVE_PROJECTS, "") === "1";
-const initialBoardArchiveLimitMode = parseBoardArchiveLimitMode(lsGet(LS_BOARD_ARCHIVE_LIMIT_MODE, "default"));
-const initialBoardArchiveLimit = (() => {
-  const n = lsGetNum(LS_BOARD_ARCHIVE_LIMIT, BOARD_ARCHIVE_LIMIT_DEFAULT);
-  return Number.isFinite(n) ? n : BOARD_ARCHIVE_LIMIT_DEFAULT;
-})();
-const initialBoardPinnedColumns = parseBoardPinnedColumns(lsGet(LS_BOARD_PINNED_COLUMNS, ""));
-const initialShowStatusSection = lsGet(LS_SHOW_STATUS_SECTION, "") === "1";
-const initialShowBoard = lsGet(LS_SHOW_BOARD, "") !== "0";
-const initialScheduledNav = parseScheduledNav(lsGet(LS_SCHEDULED_NAV, ""));
-const initialStatusBucketCollapsed = parseStatusBucketCollapsed(lsGet(LS_STATUS_BUCKET_COLLAPSED, ""));
-const initialStatusTaskExpanded = parseIdFlags(lsGet(LS_STATUS_TASK_EXPANDED, ""));
-const initialStatusGroupCollapsed = parseIdFlags(lsGet(LS_STATUS_GROUP_COLLAPSED, ""));
-const initialUseBranchAsTaskName = lsGet(LS_BRANCH_AS_TASK_NAME, "") === "1";
-// Absent means never set, and the gesture ships on, left-Shift only.
-const initialDoubleShiftMode: DoubleShiftMode = (() => {
-  const raw = lsGet(LS_DOUBLE_SHIFT_MODE, "left");
-  return raw === "off" || raw === "any" || raw === "outside-terminal" ? raw : "left";
-})();
-// Absent means never set, and the gesture ships on.
-const initialCtrlTabMode: CtrlTabMode = lsGet(LS_CTRL_TAB_MODE, "on") === "off" ? "off" : "on";
-const initialMarkdownView: MarkdownView = (() => {
-  const raw = lsGet(LS_MD_VIEW, "source");
-  return raw === "preview" || raw === "split" ? raw : "source";
-})();
-const initialSvgView: MarkdownView = (() => {
-  const raw = lsGet(LS_SVG_VIEW, "preview");
-  return raw === "source" || raw === "split" ? raw : "preview";
-})();
-const initialBranchPrefix = lsGet(LS_BRANCH_PREFIX, "feature");
-// Decoded here rather than in a selector: parsing per read would mint a fresh
-// object on every store notification and re-render the title bar on writes
-// that have nothing to do with it (bear trap 5). A bad value degrades to the
-// file manager, never throws — this runs before first paint.
-const initialOpenWith = parseOpenWithPick(lsGet(LS_OPEN_WITH, ""));
-// Clamp 0–120s. Default 10s — fast loops (or false "done" oscillation)
-// shouldn't fire prompts at the agent faster than this.
-const initialQueueMinInterval = Math.max(0, Math.min(120000, Math.round(lsGetNum(LS_QUEUE_MIN_INTERVAL, 10000))));
-// Clamp 0 (off) or 30s–60min. Default 4 minutes: long enough that an agent
-// thinking quietly is not interrupted, short enough that a handoff from another
-// agent is not lost for the rest of the session.
-const initialQueueStall = (() => {
-  const raw = Math.round(lsGetNum(LS_QUEUE_STALL_MS, 240000));
-  if (raw <= 0) return 0;
-  return Math.max(30000, Math.min(3600000, raw));
-})();
+
+/** Every field of the store that comes from localStorage, parsed now.
+ *
+ *  The ONE parse path. Module load seeds the store from it, and
+ *  `reloadPrefsFromStorage` runs it again when config sync has written keys
+ *  behind the store's back (src/lib/configSync.ts), so a stored value can
+ *  never be read two different ways. Pure: it reads, it never writes. */
+function readStoredPrefs() {
+  const initialEditorFont   = lsGet(LS_EDITOR_FONT, APPEARANCE_DEFAULTS.editorFontId);
+  const initialEditorThemeDark  = lsGet(LS_EDITOR_THEME, "auto");
+  // Seeds from the pre-split value on first read (no LS_EDITOR_THEME_LIGHT
+  // key yet) so an existing explicit pick (or "auto") keeps applying to
+  // both modes exactly as before, until the user overrides light on its own.
+  const initialEditorThemeLight = lsGet(LS_EDITOR_THEME_LIGHT, initialEditorThemeDark);
+  const initialTerminalFont = lsGet(LS_TERMINAL_FONT, APPEARANCE_DEFAULTS.terminalFontId);
+  const initialTerminalSize = lsGetNum(LS_TERMINAL_SIZE, APPEARANCE_DEFAULTS.terminalFontSize);
+  const initialTerminalLetterSpacing = Math.max(0, Math.round(lsGetNum(LS_TERMINAL_LETTERSPACING, APPEARANCE_DEFAULTS.terminalLetterSpacing)));
+  const initialTerminalScrollback    = Math.max(1000, Math.min(100000, Math.round(lsGetNum(LS_TERMINAL_SCROLLBACK, APPEARANCE_DEFAULTS.terminalScrollback))));
+  const initialTerminalOptionAsMeta  = lsGetBool(LS_TERMINAL_OPTION_AS_META, APPEARANCE_DEFAULTS.terminalOptionAsMeta);
+  const initialTerminalGpuEnabled    = lsGetBool(LS_TERMINAL_GPU, APPEARANCE_DEFAULTS.terminalGpuEnabled);
+  // No stored renderer means this profile predates the three-way pref, so honour
+  // whatever the old boolean said rather than snapping everyone back to WebGL.
+  const initialTerminalRenderer      = parseTerminalRenderer(
+    lsGet(LS_TERMINAL_RENDERER, ""),
+    initialTerminalGpuEnabled ? "webgl" : "dom",
+  );
+  const initialTerminalCopyOnSelect  = lsGetBool(LS_TERMINAL_COPY_ON_SELECT, true);
+  const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, APPEARANCE_DEFAULTS.editorFontSize);
+  const initialUiScale      = clampUiScale(lsGetNum(LS_UI_SCALE, APPEARANCE_DEFAULTS.uiScale));
+  const initialLigatures    = lsGetBool(LS_LIGATURES, APPEARANCE_DEFAULTS.codeLigatures);
+  const initialInlineBlame  = lsGetBool(LS_INLINE_BLAME, APPEARANCE_DEFAULTS.inlineBlame);
+  const initialWordWrap     = lsGetBool(LS_EDITOR_WORD_WRAP, APPEARANCE_DEFAULTS.editorWordWrap);
+  const initialCodeNav      = lsGetBool(LS_CODE_NAV, APPEARANCE_DEFAULTS.codeIntelligence);
+  const initialCodeDiags    = lsGetBool(LS_CODE_DIAGS, APPEARANCE_DEFAULTS.codeIntelDiagnostics);
+  const initialCodeServers = lsRecord(LS_CODE_SERVERS);
+  const initialCodeCommands = lsRecord(LS_CODE_COMMANDS);
+  /** Show the memory disclosure when arming a checkout. Ticking "don't ask
+   *  again" is what makes the second checkout a single click. */
+  const initialConfirmCodeNav = lsGetBool(LS_CONFIRM_CODE_NAV, true);
+  const initialShowAllFonts = lsGetBool(LS_SHOW_ALL_FONTS, APPEARANCE_DEFAULTS.showAllInstalledFonts);
+  const initialTheme        = parseThemeMode(lsGet(LS_THEME, "claude"));
+  const initialDesktopNotif = lsGetBool(LS_DESKTOPNOTIF, false);
+  const initialCompletionSound = readCompletionSoundEnabled();
+  const initialCompletionSoundId = readCompletionSoundId();
+  // WIP feature - the "agent has settled" heuristic produces false
+  // positives often enough that the highlight is noise more than
+  // Default ON. Claude Code's title classifier (Braille spinner glyph
+  // while working, "✳" brand prefix when idle — see TerminalPane.tsx
+  // classifyTitle) gives us a reliable busy→idle edge for Claude;
+  // Codex/Gemini have explicit "Ready"/"Working" title states. Existing
+  // users who toggled it OFF keep their setting (lsGetBool returns the
+  // stored value when present).
+  const initialSettledHighlight = lsGetBool(LS_SETTLED_HIGHLIGHT, true);
+  const initialConfirmCloseAgentTab = lsGetBool(LS_CONFIRM_CLOSE_AGENT_TAB, true);
+  const initialConfirmArchiveTask = lsGetBool(LS_CONFIRM_ARCHIVE_TASK, true);
+  const initialOfferTouchIdForSudo = lsGetBool(LS_OFFER_TOUCH_ID_SUDO, true);
+  const initialConfirmAccountRestart = lsGetBool(LS_CONFIRM_ACCOUNT_RESTART, true);
+  const initialArchiveDeleteBranch = lsGetBool(LS_ARCHIVE_DELETE_BRANCH, false);
+  // OFF by default — experimental re-introduction of the work-in-progress
+  // spinner. Opt in via Settings → General.
+  const initialWorkingIndicator = lsGetBool(LS_WORKING_INDICATOR, true);
+  const initialPartialDoneIndicator = lsGetBool(LS_PARTIAL_DONE_INDICATOR, true);
+  // Seeded from `settledHighlight` when this key is absent, which is every
+  // install that predates the switch. Attention used to ride that pref, so
+  // somebody who had turned the work-done UI off to stop being interrupted
+  // would otherwise get bells back on upgrade: a preference silently reversed
+  // is worse than one that was never offered.
+  const initialAttentionIndicator = lsGetBool(
+    LS_ATTENTION_INDICATOR,
+    lsGetBool(LS_SETTLED_HIGHLIGHT, true),
+  );
+  // OFF by default (issue #69): closing the remote-image sandbox gap must not
+  // silently start firing image requests for existing users.
+  const initialLoadRemoteImages = lsGetBool(LS_LOAD_REMOTE_IMAGES, false);
+  const initialSidebarHoverReveal = lsGetBool(LS_SIDEBAR_HOVER_REVEAL, false);
+  const initialProfileSidebarWash = lsGetBool(LS_PROFILE_SIDEBAR_WASH, false);
+  const initialFindInFilesRegex = lsGetBool(LS_FIND_IN_FILES_REGEX, false);
+  const initialFindInFilesMatchCase = lsGetBool(LS_FIND_IN_FILES_MATCH_CASE, false);
+  const initialDefaultSandboxKind = readInitialDefaultSandboxKind();
+  // ON by default — sandboxed agents bypass their own permission prompts
+  // because the seatbelt is the real boundary. Users can opt out.
+  const initialSandboxBypass = lsGetBool(LS_SANDBOX_BYPASS, true);
+  const initialDefaultYolo = lsGetBool(LS_DEFAULT_YOLO, false);
+  const initialAllowScope: "agent" | "project" | "repo" | null = (() => {
+    const raw = lsGet(LS_ALLOW_SCOPE, "");
+    return raw === "agent" || raw === "project" || raw === "repo" ? raw : null;
+  })();
+  const initialTaskExpandMode: "chevron" | "click" | "always" = (() => {
+    const raw = lsGet(LS_TASK_EXPAND_MODE, "chevron");
+    return raw === "click" || raw === "always" ? raw : "chevron";
+  })();
+  const initialHideInactiveProjects = lsGet(LS_HIDE_INACTIVE_PROJECTS, "") === "1";
+  const initialBoardArchiveLimitMode = parseBoardArchiveLimitMode(lsGet(LS_BOARD_ARCHIVE_LIMIT_MODE, "default"));
+  const initialBoardArchiveLimit = (() => {
+    const n = lsGetNum(LS_BOARD_ARCHIVE_LIMIT, BOARD_ARCHIVE_LIMIT_DEFAULT);
+    return Number.isFinite(n) ? n : BOARD_ARCHIVE_LIMIT_DEFAULT;
+  })();
+  const initialBoardPinnedColumns = parseBoardPinnedColumns(lsGet(LS_BOARD_PINNED_COLUMNS, ""));
+  const initialShowStatusSection = lsGet(LS_SHOW_STATUS_SECTION, "") === "1";
+  const initialShowBoard = lsGet(LS_SHOW_BOARD, "") !== "0";
+  const initialScheduledNav = parseScheduledNav(lsGet(LS_SCHEDULED_NAV, ""));
+  const initialStatusBucketCollapsed = parseStatusBucketCollapsed(lsGet(LS_STATUS_BUCKET_COLLAPSED, ""));
+  const initialStatusTaskExpanded = parseIdFlags(lsGet(LS_STATUS_TASK_EXPANDED, ""));
+  const initialStatusGroupCollapsed = parseIdFlags(lsGet(LS_STATUS_GROUP_COLLAPSED, ""));
+  const initialUseBranchAsTaskName = lsGet(LS_BRANCH_AS_TASK_NAME, "") === "1";
+  // Absent means never set, and the gesture ships on, left-Shift only.
+  const initialDoubleShiftMode: DoubleShiftMode = (() => {
+    const raw = lsGet(LS_DOUBLE_SHIFT_MODE, "left");
+    return raw === "off" || raw === "any" || raw === "outside-terminal" ? raw : "left";
+  })();
+  // Absent means never set, and the gesture ships on.
+  const initialCtrlTabMode: CtrlTabMode = lsGet(LS_CTRL_TAB_MODE, "on") === "off" ? "off" : "on";
+  const initialMarkdownView: MarkdownView = (() => {
+    const raw = lsGet(LS_MD_VIEW, "source");
+    return raw === "preview" || raw === "split" ? raw : "source";
+  })();
+  const initialSvgView: MarkdownView = (() => {
+    const raw = lsGet(LS_SVG_VIEW, "preview");
+    return raw === "source" || raw === "split" ? raw : "preview";
+  })();
+  const initialBranchPrefix = lsGet(LS_BRANCH_PREFIX, "feature");
+  // Decoded here rather than in a selector: parsing per read would mint a fresh
+  // object on every store notification and re-render the title bar on writes
+  // that have nothing to do with it (bear trap 5). A bad value degrades to the
+  // file manager, never throws — this runs before first paint.
+  const initialOpenWith = parseOpenWithPick(lsGet(LS_OPEN_WITH, ""));
+  // Clamp 0–120s. Default 10s — fast loops (or false "done" oscillation)
+  // shouldn't fire prompts at the agent faster than this.
+  const initialQueueMinInterval = Math.max(0, Math.min(120000, Math.round(lsGetNum(LS_QUEUE_MIN_INTERVAL, 10000))));
+  // Clamp 0 (off) or 30s–60min. Default 4 minutes: long enough that an agent
+  // thinking quietly is not interrupted, short enough that a handoff from another
+  // agent is not lost for the rest of the session.
+  const initialQueueStall = (() => {
+    const raw = Math.round(lsGetNum(LS_QUEUE_STALL_MS, 240000));
+    if (raw <= 0) return 0;
+    return Math.max(30000, Math.min(3600000, raw));
+  })();
+  return {
+    language: parseLanguagePref(lsGet(LS_LANGUAGE, "system")),
+    themeMode: initialTheme,
+    desktopNotifications: initialDesktopNotif,
+    completionSound: initialCompletionSound,
+    completionSoundId: initialCompletionSoundId,
+    settledHighlight: initialSettledHighlight,
+    confirmBeforeCloseAgentTab: initialConfirmCloseAgentTab,
+    confirmBeforeArchiveTask: initialConfirmArchiveTask,
+    offerTouchIdForSudo: initialOfferTouchIdForSudo,
+    confirmBeforeAccountRestart: initialConfirmAccountRestart,
+    archiveDeleteBranch: initialArchiveDeleteBranch,
+    workingIndicator: initialWorkingIndicator,
+    partialDoneIndicator: initialPartialDoneIndicator,
+    attentionIndicator: initialAttentionIndicator,
+    loadRemoteImages: initialLoadRemoteImages,
+    sidebarHoverReveal: initialSidebarHoverReveal,
+    profileSidebarWash: initialProfileSidebarWash,
+    findInFilesRegex: initialFindInFilesRegex,
+    findInFilesMatchCase: initialFindInFilesMatchCase,
+    globalDefaultSandboxKind: initialDefaultSandboxKind,
+    sandboxBypassPermissions: initialSandboxBypass,
+    defaultYolo: initialDefaultYolo,
+    allowScope: initialAllowScope,
+    editorFontId: initialEditorFont,
+    editorThemeIdDark: initialEditorThemeDark,
+    editorThemeIdLight: initialEditorThemeLight,
+    terminalFontId: initialTerminalFont,
+    terminalFontSize: initialTerminalSize,
+    terminalLetterSpacing: initialTerminalLetterSpacing,
+    terminalScrollback: initialTerminalScrollback,
+    terminalOptionAsMeta: initialTerminalOptionAsMeta,
+    terminalGpuEnabled: initialTerminalGpuEnabled,
+    terminalRenderer: initialTerminalRenderer,
+    terminalCopyOnSelect: initialTerminalCopyOnSelect,
+    editorFontSize: initialEditorSize,
+    uiScale: initialUiScale,
+    codeLigatures: initialLigatures,
+    inlineBlame: initialInlineBlame,
+    editorWordWrap: initialWordWrap,
+    codeIntelligence: initialCodeNav,
+    codeIntelDiagnostics: initialCodeDiags,
+    codeIntelServers: initialCodeServers,
+    codeIntelCommands: initialCodeCommands,
+    agentFooterHidden: readFooterHidden(),
+    confirmBeforeCodeIntel: initialConfirmCodeNav,
+    showAllInstalledFonts: initialShowAllFonts,
+    taskExpandMode: initialTaskExpandMode,
+    hideInactiveProjects: initialHideInactiveProjects,
+    boardArchiveLimitMode: initialBoardArchiveLimitMode,
+    boardArchiveLimit: initialBoardArchiveLimit,
+    boardPinnedColumns: initialBoardPinnedColumns,
+    showStatusSection: initialShowStatusSection,
+    showBoard: initialShowBoard,
+    scheduledNav: initialScheduledNav,
+    statusBucketCollapsed: initialStatusBucketCollapsed,
+    statusTaskExpanded: initialStatusTaskExpanded,
+    statusGroupCollapsed: initialStatusGroupCollapsed,
+    useBranchAsTaskName: initialUseBranchAsTaskName,
+    doubleShiftMode: initialDoubleShiftMode,
+    ctrlTabMode: initialCtrlTabMode,
+    markdownDefaultView: initialMarkdownView,
+    svgDefaultView: initialSvgView,
+    branchPrefix: initialBranchPrefix,
+    openWithApp: initialOpenWith,
+    queueMinIntervalMs: initialQueueMinInterval,
+    queueStallMs: initialQueueStall,
+    shortcuts: loadShortcuts(),
+    splitPaneDim: lsGetBool(LS_PANE_DIM, true),
+    splitPaneDimAmount: Math.max(0, Math.min(100, Math.round(lsGetNum(LS_PANE_DIM_AMT, 10)))),
+  };
+}
+
+const stored = readStoredPrefs();
+setDiagnosticsEnabled(stored.codeIntelDiagnostics);
+// Same mirror, for the server choice: read once at load, then on every change.
+setChosenServers(stored.codeIntelServers);
+setChosenCommands(stored.codeIntelCommands);
 
 export const usePrefs = create<PrefsState>(set => ({
-  language: parseLanguagePref(lsGet(LS_LANGUAGE, "system")),
-  themeMode: initialTheme,
+  ...stored,
   customThemes: [],
   customThemeRev: 0,
   systemScheme: readSystemScheme(),
-  desktopNotifications: initialDesktopNotif,
-  completionSound: initialCompletionSound,
-  completionSoundId: initialCompletionSoundId,
-  settledHighlight: initialSettledHighlight,
-  confirmBeforeCloseAgentTab: initialConfirmCloseAgentTab,
-  confirmBeforeArchiveTask: initialConfirmArchiveTask,
-  offerTouchIdForSudo: initialOfferTouchIdForSudo,
-  confirmBeforeAccountRestart: initialConfirmAccountRestart,
-  archiveDeleteBranch: initialArchiveDeleteBranch,
-  workingIndicator: initialWorkingIndicator,
-  partialDoneIndicator: initialPartialDoneIndicator,
-  attentionIndicator: initialAttentionIndicator,
-  loadRemoteImages: initialLoadRemoteImages,
-  sidebarHoverReveal: initialSidebarHoverReveal,
-  profileSidebarWash: initialProfileSidebarWash,
-  findInFilesRegex: initialFindInFilesRegex,
-  findInFilesMatchCase: initialFindInFilesMatchCase,
-  globalDefaultSandboxKind: initialDefaultSandboxKind,
-  sandboxBypassPermissions: initialSandboxBypass,
-  defaultYolo: initialDefaultYolo,
-  allowScope: initialAllowScope,
-  editorFontId: initialEditorFont,
-  editorThemeIdDark: initialEditorThemeDark,
-  editorThemeIdLight: initialEditorThemeLight,
-  terminalFontId: initialTerminalFont,
-  terminalFontSize: initialTerminalSize,
-  terminalLetterSpacing: initialTerminalLetterSpacing,
-  terminalScrollback: initialTerminalScrollback,
-  terminalOptionAsMeta: initialTerminalOptionAsMeta,
-  terminalGpuEnabled: initialTerminalGpuEnabled,
-  terminalRenderer: initialTerminalRenderer,
-  terminalCopyOnSelect: initialTerminalCopyOnSelect,
-  editorFontSize: initialEditorSize,
-  uiScale: initialUiScale,
-  codeLigatures: initialLigatures,
-  inlineBlame: initialInlineBlame,
-  editorWordWrap: initialWordWrap,
-  codeIntelligence: initialCodeNav,
-  codeIntelDiagnostics: initialCodeDiags,
-  codeIntelServers: initialCodeServers,
-  codeIntelCommands: initialCodeCommands,
-  agentFooterHidden: readFooterHidden(),
-  confirmBeforeCodeIntel: initialConfirmCodeNav,
-  showAllInstalledFonts: initialShowAllFonts,
-  taskExpandMode: initialTaskExpandMode,
-  hideInactiveProjects: initialHideInactiveProjects,
-  boardArchiveLimitMode: initialBoardArchiveLimitMode,
-  boardArchiveLimit: initialBoardArchiveLimit,
-  boardPinnedColumns: initialBoardPinnedColumns,
-  showStatusSection: initialShowStatusSection,
-  showBoard: initialShowBoard,
-  scheduledNav: initialScheduledNav,
-  statusBucketCollapsed: initialStatusBucketCollapsed,
-  statusTaskExpanded: initialStatusTaskExpanded,
-  statusGroupCollapsed: initialStatusGroupCollapsed,
-  useBranchAsTaskName: initialUseBranchAsTaskName,
-  doubleShiftMode: initialDoubleShiftMode,
-  ctrlTabMode: initialCtrlTabMode,
-  markdownDefaultView: initialMarkdownView,
-  svgDefaultView: initialSvgView,
-  branchPrefix: initialBranchPrefix,
-  openWithApp: initialOpenWith,
-  queueMinIntervalMs: initialQueueMinInterval,
-  queueStallMs: initialQueueStall,
-  shortcuts: loadShortcuts(),
-  splitPaneDim: lsGetBool(LS_PANE_DIM, true),
-  splitPaneDimAmount: Math.max(0, Math.min(100, Math.round(lsGetNum(LS_PANE_DIM_AMT, 10)))),
 
   setEditorFontId: (id) => {
     try { localStorage.setItem(LS_EDITOR_FONT, id); } catch {}
@@ -1796,6 +1810,48 @@ export const usePrefs = create<PrefsState>(set => ({
   },
 }));
 
+/** Re-read every stored field and publish only the ones whose value moved,
+ *  in ONE `set`. For config sync, which writes localStorage behind the
+ *  store's back (another machine's prefs, or another window's apply): a pull
+ *  that changed nothing must re-render nothing (docs/performance.md, bear
+ *  trap 8), which routing through the per-key setters would not give, since
+ *  most of them write unconditionally. Runs the side effects the setters own
+ *  for exactly the fields that changed. Returns their names. */
+export function reloadPrefsFromStorage(): string[] {
+  const fresh = readStoredPrefs();
+  const cur = usePrefs.getState();
+  const patch: Record<string, unknown> = {};
+  for (const k of Object.keys(fresh) as (keyof typeof fresh)[]) {
+    if (!samePref(cur[k], fresh[k])) patch[k] = fresh[k];
+  }
+  const changed = Object.keys(patch);
+  if (!changed.length) return changed;
+  if ("themeMode" in patch) {
+    if (isCustomId(fresh.themeMode)) {
+      const theme = cur.customThemes.find(t => t.id === fresh.themeMode);
+      if (theme) writeThemeCache(theme);
+    }
+    applyTheme(fresh.themeMode);
+  }
+  if ("editorFontId" in patch) applyEditorFont(fresh.editorFontId);
+  if ("uiScale" in patch) applyUiScale(fresh.uiScale);
+  if ("language" in patch) applyLanguage(fresh.language);
+  if ("codeIntelDiagnostics" in patch) setDiagnosticsEnabled(fresh.codeIntelDiagnostics);
+  if ("codeIntelServers" in patch) setChosenServers(fresh.codeIntelServers);
+  if ("codeIntelCommands" in patch) setChosenCommands(fresh.codeIntelCommands);
+  usePrefs.setState(patch as Partial<PrefsState>);
+  return changed;
+}
+
+/** Value equality for a parsed pref: objects and arrays (shortcuts, the
+ *  footer map, pinned columns) are rebuilt on every read, so identity would
+ *  call every one of them changed. */
+function samePref(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 /** Legacy resolver kept for callers that only care about light-vs-dark
  *  (toolbar icon swap, editor auto, COLORFGBG, system colorScheme hint).
  *  Espresso + Solarized both collapse to "dark"; a custom theme collapses
@@ -1876,7 +1932,7 @@ export function applyTheme(mode: ThemeMode) {
 }
 
 // Apply at module load so the first paint matches the user's preference.
-applyTheme(initialTheme);
+applyTheme(stored.themeMode);
 
 // Live-track system-theme changes. The store write is unconditional (see
 // `systemScheme`); only the CSS-class swap is gated on being in auto mode.
@@ -1926,10 +1982,10 @@ export const currentTerminalStack = () => {
 };
 
 // Apply editor font at module load so the first paint uses the right font.
-applyEditorFont(initialEditorFont);
+applyEditorFont(stored.editorFontId);
 
 // Apply saved zoom at module load so the first paint is already scaled.
-applyUiScale(initialUiScale);
+applyUiScale(stored.uiScale);
 
 // Warm the system font enumeration at startup so the Settings font pickers
 // have the full list by the time one first mounts. Without this the first

@@ -191,6 +191,9 @@ interface PromptStore {
   reorderPrompts: (from: number, to: number) => void;
   /** Re-add any built-ins the user deleted. */
   restoreBuiltins: () => void;
+  /** Re-read the stored library after config sync wrote it behind the
+   *  store's back. Publishes (and re-renders) only when it changed. */
+  reloadFromStorage: () => boolean;
 }
 
 export const usePromptLibrary = create<PromptStore>((set) => {
@@ -213,6 +216,14 @@ export const usePromptLibrary = create<PromptStore>((set) => {
   return {
     prompts: computePrompts(p),
     deletedBuiltins: p.deletedBuiltins,
+
+    reloadFromStorage: () => {
+      const next = load();
+      if (JSON.stringify(next) === JSON.stringify(p)) return false;
+      p = next;
+      set({ prompts: computePrompts(next), deletedBuiltins: next.deletedBuiltins });
+      return true;
+    },
 
     addPrompt: (init) => {
       const id = crypto.randomUUID();

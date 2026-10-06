@@ -351,7 +351,8 @@ merge across windows for exactly this reason.
 They are webviews on the same origin. Anything keyed by task UUID is safe
 (UUIDs are disjoint); anything keyed by a name, a project id, or nothing is
 silently global. `src/lib/profileScope.ts#scoped()` namespaces the keys a
-profile owns.
+profile owns. `src/lib/prefsRegistry.ts` records which keys those are, and its
+test fails on a new key until it is listed there, scoped or not.
 
 Two things about it are load-bearing. It reads the window label
 SYNCHRONOUSLY, because stores read their keys at module-init and an async

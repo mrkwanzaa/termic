@@ -2,10 +2,11 @@
 // Custom command dialog. "Quick" = create straight from a name (and, for
 // worktrees, an auto-generated branch) without the full New Task modal.
 //
-// The mode ("worktree" vs "repo_root" / main checkout) is remembered
-// app-wide in one localStorage key — the SAME key the New Task dialog reads
+// The mode ("worktree" vs "repo_root" / main checkout) is remembered per
+// profile in one localStorage key, the SAME key the New Task dialog reads
 // and writes, so the toggle, the dialog, and "Advanced…" all agree on the
-// last choice.
+// last choice. It has to go through `scoped()` like the dialog's: read bare,
+// a non-root profile window remembered one mode here and another there.
 
 import { taskCreate, taskOpenRepo, taskImportWorktree, settingsLoad } from "@/lib/ipc";
 import { projectSandboxDefault, projectYoloDefault, yoloForCreate, mergeLists } from "@/lib/projectSandboxDefault";
@@ -15,13 +16,14 @@ import { useApp } from "@/store/app";
 import { launchSetupTab } from "@/lib/runTabs";
 import { withCreateLock } from "@/lib/createLock";
 import { slugify, branchify } from "@/lib/utils";
+import { scoped } from "@/lib/profileScope";
 import type { SandboxMode, Task } from "@/lib/types";
 
 export type NewTaskMode = "worktree" | "repo_root";
 
-const LS_LAST_MODE = "newTaskLastMode";
+const LS_LAST_MODE = scoped("newTaskLastMode");
 
-/** Read the app-wide remembered new-task mode. Defaults to "repo_root" (the
+/** Read the profile's remembered new-task mode. Defaults to "repo_root" (the
  *  main checkout) when nothing is stored: most people start in their main
  *  checkout and reach for worktrees later, so that's the gentler default. */
 export function readNewTaskMode(): NewTaskMode {
@@ -33,7 +35,7 @@ export function readNewTaskMode(): NewTaskMode {
   }
 }
 
-/** Persist the app-wide new-task mode. Shared with NewTaskDialog. */
+/** Persist the profile's new-task mode. Shared with NewTaskDialog. */
 export function writeNewTaskMode(mode: NewTaskMode) {
   try { localStorage.setItem(LS_LAST_MODE, mode); } catch {}
 }

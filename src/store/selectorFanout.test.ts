@@ -128,6 +128,18 @@ describe("selector fan-out budget (bear trap 5)", () => {
     expect(r.msPerWrite).toBeLessThan(MAX_MS_PER_WRITE);
   });
 
+  it("a config-sync pull that changed nothing notifies nobody (bear trap 8)", () => {
+    // Config sync (src/lib/configSync.ts) reloads the stores from storage
+    // after every pull, including the common one that brought nothing. The
+    // folder colors live in this store, so a reload that publishes an equal
+    // value would re-run every mounted selector here on every sync.
+    const seeded = Array.from({ length: SUBSCRIBERS }, (_, i) => `task-${i}`);
+    useApp.setState({ tabs: Object.fromEntries(seeded.map(id => [id, [tab(`${id}-a`)]])) });
+    const subs = seeded.map(id => selectTaskTabs(id));
+    const r = measureFanout(subs, WRITES, () => useApp.getState().reloadGroupColors());
+    expect(r.selectorRuns).toBe(0);
+  });
+
   it("detects fan-out when a selector is not tight (positive control)", () => {
     // Proves the harness can fail. A selector that reads the whole `tabs`
     // record is stable here, but one that derives a fresh array is not — this

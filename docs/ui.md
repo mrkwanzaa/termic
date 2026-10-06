@@ -17,7 +17,7 @@
 Left rail + one content pane (`components/settings/Settings.tsx`). Three bands, hairline-separated, then the per-project list:
 
 1. **Opened by choice** (General, Appearance, Agents & Terminals)
-2. **Set once** (Tasks, Notifications, Prompts, Shortcuts)
+2. **Set once** (Tasks, Notifications, Prompts, Shortcuts, Profiles, Sync)
 3. **The perimeter**, what the app is allowed to do (Sandbox, Termic CLI)
 4. `PROJECTS`, the only band with a label, because it is a dynamic list needing an empty state
 
@@ -94,6 +94,22 @@ makes that page disagree with the twelve beside it.
 A feature is Experimental when it is off by default **because we are not yet confident in it**, with a stated way out. Off for safety (remote images), off for taste (copy on select), and off as policy (sandbox permission bypass) are none of them experimental: those defaults are permanent, and labelling them experimental makes the label meaningless.
 
 It shows as a badge, on the rail item and next to the page title, not as a separate Labs page. The badge is dropped when the feature graduates: it survived a release with no bug reports against it and has e2e coverage. Graduating drops the badge and gets a changelog line; it does not move the page, because a settings page that moves twice is worse than one labelled honestly. A dedicated Experimental page only earns its place when several features qualify at once, which today they do not (there are no residents: the CLI graduated in 0.26.0, dropping the badge and flipping `cli_enabled` to default ON in the same change, since a badge that says "still settling" alongside a setting we ship enabled reads as a contradiction).
+
+## Settings > Sync (config sync, phase 1)
+
+`components/settings/SyncSection.tsx`, loaded with `React.lazy` from `Settings.tsx` so the prefs registry and `lib/configSync.ts` stay off the app-start path. Experimental badge: nothing happens until a repo is connected, and Disconnect is the way out. The design is [ideas/config-sync.md](ideas/config-sync.md); the commands are in [ipc.md](ipc.md) "Config sync".
+
+The page has three states, top to bottom:
+
+1. **No repo on this machine**: a URL field and Connect. An EMPTY repo binds this profile to a new folder and pushes at once, since there is nothing to apply here.
+2. **A repo, this profile not bound**: one radio per folder already in the repo that no other profile on this machine follows (by profile name, its `profiles/<sync-id>` beside it; `sync_bind` refuses a taken one too, or two profiles would overwrite each other's folder) plus "Start a new one for this profile". Preview runs `sync_preview`, a dry run that writes nothing, and lists every change the first connect would make here. Lines that change a YOLO or sandbox default (`SAFETY_PROJECT` / `SAFETY_PREFS` in `config_sync.rs`) sort first and are highlighted in `--color-warn`. Nothing applies until "Apply and connect"; Cancel applies nothing.
+3. **Bound**: repo and folder (one grid, so both values share a left edge in either language), Sync now, the last sync time, the last error, and the last run's report. The report names only what the sections below it do not: projects waiting for a folder are one count ("2 projects wait for a folder"), since that section lists them and nothing was applied, and a YOLO or sandbox change is counted as applied but carries no line of its own, since the notices panel and the toast already show it. A safety line always names the change ("Start new tasks in YOLO changed from Default to On"): "YOLO, Default to On" read as if the setting were called that.
+
+Below that, only when there is something to answer: **Sync changed these settings** (what a pull applied that must not pass silently, persisted in `sync-state.json` until Got it, and announced once per set as a sticky toast with Review: a YOLO or sandbox default, or a custom agent deleted on another machine. That removal is applied and announced, not asked, because it deletes no files, unlike `project_remove`, which archives tasks and deletes worktrees; the line says tasks here that use the agent can no longer start it), **Changed on both machines** (one row per conflicting file, "Keep this machine's" / "Take the other one"; once every file has a choice the sync carries on. A conflict is per FILE: git merges by line and keys are sorted, so two machines changing adjacent fields of one project, `default_sandbox` and `default_sandbox_mode` say, conflict although the fields differ. Field-level resolution from the three versions is future work), **Waiting for a folder** (Locate opens a folder picker, Skip moves the row to **Skipped on this machine** with Show again), and **Removed on another machine** (Remove here asks with the same counts as Settings > project > Remove, because `project_remove` archives tasks and deletes worktrees; Keep republishes the project). **Stays on this machine** is always shown: agent env and Docker env never sync, nor do paths, port ranges, logins and tokens.
+
+The launch pull runs from `App.tsx` after `loadAll`, through a dynamic import of `lib/configSync.ts`: one `sync_status` read when sync is not set up, nothing else. A run's prefs come back as keys to write; only keys whose stored value differs are written, then `reloadPrefsFromStorage`, the prompt library and the folder colors each publish only what moved (`selectorFanout.test.ts` pins the no-op case). Other windows hear `termic://sync-changed` (reload projects and themes) and `termic://sync-prefs-written` (reload prefs).
+
+Test ids: `sync-url`, `sync-connect`, `sync-folder-option-<id|new>`, `sync-preview`, `sync-preview-panel`, `sync-preview-list`, `sync-apply`, `sync-preview-cancel`, `sync-now`, `sync-last`, `sync-error`, `sync-result`, `sync-change-safety`, `sync-notices`, `sync-notices-dismiss`, `sync-conflict-<i>`, `sync-waiting-<id>`, `sync-locate-<id>`, `sync-skip-<id>`, `sync-skipped-<id>`, `sync-unskip-<id>`, `sync-removal-<id>`, `sync-remove-<id>`, `sync-keep-<id>`, `sync-never`, `sync-disconnect`. Spec: `e2e/specs/sync.e2e.ts`.
 
 ## The new-task launcher's CLI order
 
