@@ -2124,7 +2124,6 @@ pub(crate) fn status(clone: &Path, id: &ProfileId) -> SyncStatus {
     let settings = crate::load_settings_in(id);
     let mut st = SyncStatus {
         connected: is_connected(clone),
-        machine: machine_name(),
         last_sync_at: state.last_sync_at.clone(),
         last_error: state.last_error.clone(),
         ns: profile_ns(id),
@@ -2134,6 +2133,9 @@ pub(crate) fn status(clone: &Path, id: &ProfileId) -> SyncStatus {
     if !st.connected {
         return st;
     }
+    // Only once connected: on macOS the name is a process spawn, and status
+    // runs at every launch whether or not sync is set up.
+    st.machine = machine_name();
     st.repo_url = origin_url(clone);
     st.bound = bound_profiles().into_iter().map(|(p, s)| BoundView { ns: profile_ns(&p), sync_id: s }).collect();
     st.notices = state

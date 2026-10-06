@@ -9,19 +9,22 @@
 // machine, and so does UI state (collapse, sizes, recents, the last-used
 // mode of a control). Everything else follows the user.
 //
-// Nothing syncs today. This module exists so the question has one answer per
-// key, and so prefsRegistry.test.ts can fail when a key is added that nobody
-// classified, or one is removed and left listed here.
+// Config sync (src/lib/configSync.ts) reads this list: the "sync" keys are
+// exactly what a window snapshots for export and what it accepts back from a
+// pull, so classifying a key here IS deciding whether it syncs.
+// prefsRegistry.test.ts fails when a key is added that nobody classified, or
+// one is removed and left listed here.
 //
-// Static data, imported by its test and nothing else. It must stay that way
-// until something needs it: no store or terminal path reads it.
+// Static data, kept off the app-start path: configSync.ts is imported
+// dynamically after first paint and by the lazily loaded Settings > Sync
+// section, and nothing on a store or terminal path may import this list.
 //
 // Adding a key: add an entry in the section it belongs to. Renaming one is a
 // different job: it loses every user's stored value unless
 // src/lib/lsMigration.ts carries it across, and the old name then stays here
 // as `legacy`.
 
-/** Where a key would go if termic synced its setup. */
+/** Whether a key follows the user to another machine through config sync. */
 export type PrefClass =
   | { class: "sync" }
   | { class: "local"; /** What ties it to this machine. */ reason: string };

@@ -84,7 +84,7 @@ interface View {
    *  and panel state all stay intact while it's open. */
   settingsOpen?: boolean;
   /** When the Settings overlay is open, which section is selected. */
-  settingsTab?: "general" | "tasks" | "notifications" | "sandbox" | "docker" | "cli" | "appearance" | "agents" | "prompts" | "repositories" | "shortcuts" | "profiles";
+  settingsTab?: "general" | "tasks" | "notifications" | "sandbox" | "docker" | "cli" | "appearance" | "agents" | "prompts" | "repositories" | "shortcuts" | "profiles" | "sync";
   /** When viewing a repository's settings, which project id is active. */
   settingsRepoId?: string;
   /** DOM id to scroll into view + briefly highlight once the settings
@@ -276,6 +276,9 @@ export interface AppState {
    *  default). Keys are palette names ("red"…); the sidebar maps them to
    *  --color-palette-* tokens and ignores unknown keys. */
   setGroupColor: (group: string, color: string | null) => void;
+  /** Re-read folder colors after config sync wrote them behind the store's
+   *  back. Publishes only when they changed (bear trap 8). */
+  reloadGroupColors: () => boolean;
   /** Move a group's stored UI state (collapse + color) from an old name
    *  in one write, used by the sidebar's group-rename flow. Renaming onto
    *  an existing group merges; the destination's state wins. */
@@ -1283,6 +1286,13 @@ export const useApp = create<AppState>((set, get) => ({
     try { localStorage.setItem(LS_GROUP_COLORS, JSON.stringify(next)); } catch {}
     return { groupColors: next };
   }),
+  reloadGroupColors: () => {
+    let next: Record<string, string> = {};
+    try { next = JSON.parse(localStorage.getItem(LS_GROUP_COLORS) || "{}"); } catch {}
+    if (JSON.stringify(next) === JSON.stringify(get().groupColors)) return false;
+    set({ groupColors: next });
+    return true;
+  },
   renameGroupState: (from, to) => set(s => {
     // Object.hasOwn (not `in`): the records round-trip through JSON.parse,
     // so a group named "toString"/"constructor" would otherwise hit the

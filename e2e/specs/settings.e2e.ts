@@ -208,6 +208,9 @@ describe("settings rail", () => {
     // this page has to be reachable in (the sidebar footer lands here, and it
     // is where the first profile is made).
     ["profiles", "Profiles", "You have one setup, and no profiles yet."],
+    // Config sync. Its marker is the never-synced note, which every state of
+    // the page shows (the fixture profile is not connected).
+    ["sync", "Sync", "Stays on this machine"],
     ["sandbox", "Sandbox", "Global sandbox defaults"],
     // Marker has to be above the master toggle: everything else on this
     // page renders only once Docker sandboxing is enabled, and the fixture

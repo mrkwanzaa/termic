@@ -105,6 +105,12 @@ export function App() {
     // greets you at every launch. After loadAll so it does not compete with
     // the first paint.
     void loaded.then(() => maybePromptDesktopEntry());
+    // Config sync (docs/ideas/config-sync.md): the pull on launch, and the
+    // listeners that reload this window when another one syncs. After
+    // loadAll, so it never competes with first paint; imported dynamically,
+    // so the module and the prefs registry stay off the app-start path. One
+    // status read when sync is not set up, and nothing else.
+    void loaded.then(() => import("@/lib/configSync").then(m => m.initConfigSync())).catch(() => {});
     // CLI install detection runs at startup + when Settings → Agent CLIs
     // opens (AgentsSection drives the latter). Deliberately NOT on every
     // window focus — `loadAll` re-runs on focus, detection does not.
