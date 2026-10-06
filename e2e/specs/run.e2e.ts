@@ -38,6 +38,20 @@ describe("run tabs", () => {
       { timeout: 15_000, timeoutMsg: "run tab was not created" },
     );
 
+    // Titled as a run, with the command's label after it: the label alone
+    // read as an ordinary terminal that happened to be called "e2e-run".
+    const title = await browser.execute(
+      (id, member) => {
+        const t = (window.__termic!.useApp.getState().tabs[id] ?? []).find((x: any) => x.runTab?.member === member);
+        const pill = t ? document.querySelector(`[data-tab-id="${t.id}"]`) : null;
+        return { stored: t?.title as string | undefined, shown: pill?.textContent ?? null };
+      },
+      taskId,
+      MEMBER,
+    );
+    expect(title.stored).toBe("Run · e2e-run");
+    if (title.shown !== null) expect(title.shown).toContain("Run · e2e-run");
+
     // NOTE: the run tab's PTY spawn is rAF-gated in TerminalPane, so on an
     // occluded/offscreen window (CI) it can lag past any reasonable timeout.
     // The launch wiring (a run tab created for the command) is the regression
@@ -69,14 +83,15 @@ describe("run tabs", () => {
     );
 
     await ensureActiveTask(taskId!);
-    // The tab strip shows the command, clipped to 40 chars with an ellipsis.
+    // The tab strip shows "Run", then the command clipped to 40 chars with
+    // an ellipsis.
     await browser.waitUntil(
       async () =>
         (await browser.execute(
           (id, tab) =>
             document
               .querySelector(`[data-task-id="${id}"] [data-tab-id="${tab}"]`)
-              ?.textContent?.includes("echo unlabeled-run-command-with-a-very-…") ?? false,
+              ?.textContent?.includes("Run · echo unlabeled-run-command-with-a-very-…") ?? false,
           taskId,
           tabId,
         )) === true,

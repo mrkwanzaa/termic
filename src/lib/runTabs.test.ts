@@ -11,7 +11,7 @@ vi.mock("@/lib/ipc", () => ({
 vi.mock("@/store/app", () => ({ useApp: { getState: () => ({ projects: [], tabs: {} }) } }));
 vi.mock("@/store/ui", () => ({ useUI: { getState: () => ({}) } }));
 
-import { customRunMember, expandPreviewUrl, isCustomRunMember } from "@/lib/runTabs";
+import { customRunMember, customRunTitle, expandPreviewUrl, isCustomRunMember } from "@/lib/runTabs";
 import type { Project, Task } from "@/lib/types";
 
 describe("customRunMember", () => {
@@ -34,6 +34,18 @@ describe("customRunMember", () => {
     const a = { label: "", command: "npm run build -- --mode production --target one" };
     const b = { label: "", command: "npm run build -- --mode production --target two" };
     expect(customRunMember(a)).not.toBe(customRunMember(b));
+  });
+});
+
+describe("customRunTitle", () => {
+  it("puts the label after Run, the way a member's run tab reads", () => {
+    expect(customRunTitle({ label: "Check", command: "make check-all" })).toBe("Run · Check");
+  });
+
+  it("falls back to the command, clipped like everywhere else it is shown", () => {
+    expect(customRunTitle({ label: "", command: "make check-all" })).toBe("Run · make check-all");
+    const long = customRunTitle({ label: "", command: "echo unlabeled-run-command-with-a-very-long-tail" });
+    expect(long).toBe("Run · echo unlabeled-run-command-with-a-very-…");
   });
 });
 

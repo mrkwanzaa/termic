@@ -123,6 +123,7 @@ export default {
     run: "Run",
     setup: "Setup",
     runMember: "Run · {{member}}",
+    runCustom: "Run · {{label}}",
   },
 
   accountSwitching: {

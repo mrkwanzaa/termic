@@ -119,6 +119,7 @@ export default {
     run: "运行",
     setup: "安装环境",
     runMember: "运行 · {{member}}",
+    runCustom: "运行 · {{label}}",
   },
 
   accountSwitching: {

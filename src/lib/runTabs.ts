@@ -194,6 +194,15 @@ export function isCustomRunMember(member: string | undefined | null): boolean {
  *  persistence round-trip (restore otherwise rebuilds run-tab titles from
  *  `member`). Runs in the task's worktree — the PTY's spawn cwd; no
  *  spotlight repo-root redirect (that's host-only). */
+/** A custom run command's tab title: "Run · <label>", the shape a multi-repo
+ *  member's run tab already has ("Run · api"). The label alone left the tab
+ *  reading as an ordinary terminal called "build", with nothing but its pill
+ *  controls to say it was a run. `runCommandLabel` supplies the label, so an
+ *  unlabeled command shows its (clipped) command here too. */
+export function customRunTitle(cmd: RunCommand): string {
+  return i18n.t("backend:runTabs.runCustom", { label: runCommandLabel(cmd) });
+}
+
 export function launchCustomRun(taskId: string, cmd: RunCommand): void {
   const member = customRunMember(cmd);
   const existing = (useApp.getState().tabs[taskId] ?? []).find(
@@ -206,7 +215,7 @@ export function launchCustomRun(taskId: string, cmd: RunCommand): void {
   useApp.getState().addTabToActivePane(taskId, {
     id: crypto.randomUUID(),
     type: "terminal",
-    title: runCommandLabel(cmd),
+    title: customRunTitle(cmd),
     customTitle: true,
     cli: "custom",
     command: cmd.command,
