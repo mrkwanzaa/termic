@@ -37,6 +37,24 @@ pub fn hook_emit(target: Option<&std::path::Path>) -> i32 {
     i32::from(write_report(target, &body).is_err())
 }
 
+/// `termic mcp-headers <token-file>`: print the MCP endpoint's credential
+/// headers as the one JSON object a client's headers helper must emit.
+///
+/// Exists for Windows, where claude runs its `headersHelper` through
+/// cmd.exe (measured on 2.1.291), so the POSIX `printf ... "$(cat ...)"`
+/// the app registers elsewhere prints no token there. A program and two
+/// arguments parse the same in every shell. The header names are
+/// `MCP_TOKEN_HEADER` / `MCP_TASK_HEADER` in src-tauri/src/mcp_server.rs:
+/// keep the two in step. The task id comes from this process's
+/// environment, which is the agent's, and is empty outside Termic (the
+/// server ignores empty). Exit 0 when printed, 1 otherwise.
+pub fn mcp_headers(token_file: Option<&std::path::Path>) -> i32 {
+    let Some(token) = token_file.and_then(|f| std::fs::read_to_string(f).ok()) else { return 1 };
+    let task = std::env::var("TERMIC_TASK_ID").unwrap_or_default();
+    println!("{}", serde_json::json!({ "X-Termic-Token": token.trim(), "X-Termic-Task": task }));
+    0
+}
+
 /// Write one hook report to `target`. A named pipe reports "all instances
 /// busy" (ERROR_PIPE_BUSY, 231) for the moment between the server accepting
 /// one hook and listening for the next, so two hooks firing together would

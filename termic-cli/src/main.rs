@@ -16,6 +16,11 @@ fn main() {
     if args.get(1).is_some_and(|a| a == "hook-emit") {
         std::process::exit(termic_cli::hook_emit(args.get(2).map(std::path::Path::new)));
     }
+    // `termic mcp-headers <token-file>`: the MCP client's headers helper
+    // on Windows, likewise written by the app and run on every connect.
+    if args.get(1).is_some_and(|a| a == "mcp-headers") {
+        std::process::exit(termic_cli::mcp_headers(args.get(2).map(std::path::Path::new)));
+    }
     // On a thread with an 8 MB stack, the size macOS and Linux give the main
     // thread. Windows gives it 1 MB, and building the clap command tree for
     // `help --json` already sat at that edge: a debug CLI on main overflowed

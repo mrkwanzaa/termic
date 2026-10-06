@@ -1,7 +1,8 @@
 // termic CLI control plane. ON by default: the socket always binds and
 // answers hello, and the verbs are live unless this is switched off.
 // Enabling auto-installs the command (no prompt) into ~/.local/bin; the
-// button upgrades it to a system-wide /usr/local/bin install.
+// button upgrades it to a system-wide /usr/local/bin install. On Windows
+// those are <data dir>\bin and %ProgramFiles%\Termic\bin (cli_server.rs).
 //
 // Graduated out of EXPERIMENTAL. Per the rule in docs/ui.md the badge marks a
 // surface that is still settling and is therefore off by default, and it
@@ -102,6 +103,10 @@ export function CliSection() {
   }
 
   const name = cliInstall?.name ?? "termic";
+  // Where the command goes and how PATH is edited differ on Windows (a copy
+  // in Termic's own folder, PATH in the registry), so the four strings that
+  // name a location have a Windows twin.
+  const os = IS_WINDOWS ? "Windows" : "";
 
   return (
     <div className="flex flex-col gap-7">
@@ -114,15 +119,6 @@ export function CliSection() {
           value={cliEnabled}
           onChange={saveCliEnabled}
         />
-        {IS_WINDOWS ? (
-          // No install-onto-PATH on Windows yet (cli_server.rs,
-          // windows_unsupported): say so instead of offering buttons that fail.
-          <p className={cn("mt-3 text-[12.5px] text-[var(--color-fg-dim)]", !cliEnabled && "opacity-50")}>
-            Installing <code className="font-mono">{name}</code> onto your PATH is not available on Windows yet.
-            Agents running inside Termic already have it: their terminals get the command on PATH and in{" "}
-            <code className="font-mono">TERMIC_CLI</code>.
-          </p>
-        ) : (
         <div className={cn("mt-3", !cliEnabled && "pointer-events-none opacity-50 select-none")}>
           {cliInstall?.path ? (
             <p className="text-[12.5px] text-[var(--color-fg-dim)]">
@@ -145,7 +141,7 @@ export function CliSection() {
             <p className="text-[12.5px] text-[var(--color-fg-dim)]">
               <Trans
                 t={t}
-                i18nKey="cli.autoInstall"
+                i18nKey={`cli.autoInstall${os}`}
                 values={{ name }}
                 components={{ 1: <code className="font-mono" />, 3: <code className="font-mono" /> }}
               />
@@ -162,7 +158,7 @@ export function CliSection() {
               onClick={() => installCli(true)}
               className="mt-2 text-[12px] text-[var(--color-fg-faint)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-fg-dim)] disabled:opacity-50"
             >
-              {cliInstalling ? t("cli.installing") : t("cli.installSystemWideOptional")}
+              {cliInstalling ? t("cli.installing") : t(`cli.installSystemWideOptional${os}`)}
             </button>
           ) : (
             <div className="mt-2 flex flex-col gap-2">
@@ -177,7 +173,7 @@ export function CliSection() {
                 <span className="text-[12px] text-[var(--color-fg-faint)]">
                   <Trans
                     t={t}
-                    i18nKey="cli.addToPathHint"
+                    i18nKey={`cli.addToPathHint${os}`}
                     components={{ 1: <code className="font-mono" /> }}
                   />
                 </span>
@@ -189,7 +185,7 @@ export function CliSection() {
                 <span className="text-[12px] text-[var(--color-fg-faint)]">
                   <Trans
                     t={t}
-                    i18nKey="cli.systemWideHint"
+                    i18nKey={`cli.systemWideHint${os}`}
                     components={{ 1: <code className="font-mono" /> }}
                   />
                 </span>
@@ -200,7 +196,6 @@ export function CliSection() {
             <p className="mt-2 text-[12px] text-[var(--color-fg-faint)]">{cliInstallMsg}</p>
           )}
         </div>
-        )}
       </Block>
 
       <Block>

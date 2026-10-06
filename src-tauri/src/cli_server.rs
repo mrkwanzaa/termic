@@ -4950,13 +4950,40 @@ fn prune_legacy_links() {
 }
 
 fn user_bin() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".local/bin"))
+    // Windows: a directory of our own under the data dir. Never the app's
+    // install dir, where `termic` would resolve to Termic.exe, and not a
+    // shared one, because the command is a copy there and a copy carries
+    // nothing that says whose it is (see `replaceable`).
+    #[cfg(windows)]
+    return crate::global_dir().ok().map(|d| d.join("bin"));
+    #[cfg(not(windows))]
+    {
+        dirs::home_dir().map(|h| h.join(".local/bin"))
+    }
+}
+
+/// The all-users location. On Windows it is ours alone, for the reason
+/// `user_bin` gives.
+fn system_bin() -> PathBuf {
+    #[cfg(windows)]
+    return PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_else(|| r"C:\Program Files".into()))
+        .join("Termic")
+        .join("bin");
+    #[cfg(not(windows))]
+    {
+        PathBuf::from("/usr/local/bin")
+    }
+}
+
+/// The file a command name is installed as: `termic.exe` on Windows.
+fn command_file(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
 fn install_targets(name: &str) -> Vec<PathBuf> {
-    let mut v = vec![PathBuf::from(format!("/usr/local/bin/{name}"))];
+    let mut v = vec![system_bin().join(command_file(name))];
     if let Some(bin) = user_bin() {
-        v.push(bin.join(name));
+        v.push(bin.join(command_file(name)));
     }
     v
 }
@@ -4967,7 +4994,15 @@ fn install_targets(name: &str) -> Vec<PathBuf> {
 /// PTY spawn uses (shell_env), so the answer matches the real shell.
 fn dir_on_login_path(dir: &Path) -> bool {
     let path = crate::shell_env::resolved_path();
-    std::env::split_paths(&path).any(|p| p == dir)
+    // Windows paths compare without case, and a trailing `\` is the same dir.
+    #[cfg(windows)]
+    let same = |p: &Path| {
+        let norm = |p: &Path| p.to_string_lossy().trim_end_matches(['\\', '/']).to_ascii_lowercase();
+        norm(p) == norm(dir)
+    };
+    #[cfg(not(windows))]
+    let same = |p: &Path| p == dir;
+    std::env::split_paths(&path).any(|p| same(&p))
 }
 
 /// A symlink we may replace: anything whose target basename is
@@ -4980,33 +5015,53 @@ fn replaceable(link: &Path) -> Result<bool, String> {
             let target = std::fs::read_link(link).map_err(|e| e.to_string())?;
             Ok(target.file_name().is_some_and(|n| n == "termic-cli"))
         }
+        // Windows installs a copy, into directories nothing else writes to
+        // (`user_bin`, `system_bin`), so a file there is ours.
+        Ok(md) if cfg!(windows) && md.is_file() => Ok(true),
         Ok(_) => Ok(false),
     }
 }
 
-/// Installing `termic` onto PATH is unix-only for now: on Windows the
-/// right shape is a copy in a per-user bin dir plus an HKCU PATH entry,
-/// not a link (docs/ideas/windows.md, "Installing the CLI onto PATH").
-/// Agent terminals still get the CLI: pty_spawn puts the bundled binary's
-/// directory on their PATH and exports TERMIC_CLI.
+/// Is the installed command already this app's sidecar? A link is when it
+/// points at it. A Windows copy is when size and modified time match: the
+/// copy keeps the source's time, so an updated app's sidecar differs.
+fn up_to_date(link: &Path, src: &Path) -> bool {
+    #[cfg(unix)]
+    return std::fs::read_link(link).ok().as_deref() == Some(src);
+    #[cfg(not(unix))]
+    {
+        let stamp = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok()));
+        stamp(link).is_some() && stamp(link) == stamp(src)
+    }
+}
+
+/// Windows has no symlink an unprivileged process may create, so the
+/// command is a COPY of the sidecar, refreshed by `reconcile_link` when an
+/// update changes it. A running exe (an agent parked in `termic wait`)
+/// cannot be overwritten or deleted, but it can be renamed, so the old one
+/// is moved aside and the new one renamed into place.
 #[cfg(not(unix))]
-fn windows_unsupported() -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "installing the termic command onto PATH is not supported on Windows yet",
-    )
+fn copy_replacing(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let (tmp, old) = (dst.with_extension("new"), dst.with_extension("old"));
+    std::fs::copy(src, &tmp)?;
+    let _ = std::fs::remove_file(&old);
+    let _ = std::fs::rename(dst, &old);
+    std::fs::rename(&tmp, dst).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
+    let _ = std::fs::remove_file(&old);
+    Ok(())
 }
 
 fn symlink_replacing(src: &Path, link: &Path) -> std::io::Result<()> {
-    if std::fs::symlink_metadata(link).is_ok() {
-        std::fs::remove_file(link)?;
-    }
-    #[cfg(unix)]
-    return std::os::unix::fs::symlink(src, link);
     #[cfg(not(unix))]
+    return copy_replacing(src, link);
+    #[cfg(unix)]
     {
-        let _ = src;
-        Err(windows_unsupported())
+        if std::fs::symlink_metadata(link).is_ok() {
+            std::fs::remove_file(link)?;
+        }
+        std::os::unix::fs::symlink(src, link)
     }
 }
 
@@ -5020,19 +5075,18 @@ fn symlink_replacing(src: &Path, link: &Path) -> std::io::Result<()> {
 /// the error. It is not tolerable on the silent launch reconcile, which
 /// would delete a working `termic` and say nothing.
 fn symlink_atomic(src: &Path, link: &Path) -> std::io::Result<()> {
-    let base = link.file_name().and_then(|n| n.to_str()).unwrap_or("termic");
-    let tmp = link.with_file_name(format!(".{base}.{}.tmp", std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(src, &tmp)?;
     #[cfg(not(unix))]
+    return copy_replacing(src, link);
+    #[cfg(unix)]
     {
-        let _ = src;
-        return Err(windows_unsupported());
-    }
-    std::fs::rename(&tmp, link).inspect_err(|_| {
+        let base = link.file_name().and_then(|n| n.to_str()).unwrap_or("termic");
+        let tmp = link.with_file_name(format!(".{base}.{}.tmp", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
-    })
+        std::os::unix::fs::symlink(src, &tmp)?;
+        std::fs::rename(&tmp, link).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
+    }
 }
 
 /// Find the links of OURS that exist right now, under the current name
@@ -5175,7 +5229,7 @@ pub fn reconcile_link() {
         return;
     }
 
-    if std::fs::read_link(&target).ok().as_deref() != Some(src.as_path()) {
+    if !up_to_date(&target, &src) {
         if let Err(e) = symlink_atomic(&src, &target) {
             // An unwritable /usr/local/bin is the expected failure. Say so
             // in the log and change nothing else: pruning the legacy link
@@ -5202,6 +5256,7 @@ pub fn reconcile_link() {
 /// macOS runs Terminal.app sessions as LOGIN shells, which is why bash gets
 /// `.bash_profile` rather than `.bashrc`: bash reads only the former for a
 /// login shell, so the usual Linux answer silently does nothing here.
+#[cfg_attr(windows, allow(dead_code))]
 fn shell_rc_and_line(shell: &str, dir: &Path) -> (PathBuf, String) {
     let home = dirs::home_dir().unwrap_or_default();
     let d = dir.display();
@@ -5227,12 +5282,14 @@ fn shell_rc_and_line(shell: &str, dir: &Path) -> (PathBuf, String) {
 
 /// Marker written above our line, so a reader knows who put it there and a
 /// user can find and delete it. Also what makes the append IDEMPOTENT.
+#[cfg_attr(windows, allow(dead_code))]
 const PATH_MARKER: &str = "# Added by Termic: put the termic command on PATH";
 
 /// Is this dir already handled by `rc`? Checks for OUR marker and, more
 /// importantly, for any mention of the directory at all: a user who added it
 /// by hand, in their own wording, must not get a duplicate line appended
 /// underneath theirs.
+#[cfg_attr(windows, allow(dead_code))]
 fn rc_already_has(existing: &str, dir: &Path) -> bool {
     let d = dir.display().to_string();
     let home = dirs::home_dir().unwrap_or_default().display().to_string();
@@ -5265,14 +5322,109 @@ pub async fn cli_add_to_path() -> Result<String, String> {
 }
 
 fn add_to_path_inner() -> Result<String, String> {
-    #[cfg(not(unix))]
-    return Err(windows_unsupported().to_string());
-    #[allow(unreachable_code)]
     let dir = user_bin().ok_or("no home directory")?;
-    let shell = crate::shell_env::login_shell();
-    let (rc, line) = shell_rc_and_line(&shell, &dir);
+    // Windows keeps PATH in the registry, not in a shell startup file.
+    #[cfg(windows)]
+    {
+        if !dir_on_login_path(&dir) {
+            run_powershell(&add_to_path_script("CurrentUser", "Environment", &dir))?;
+        }
+        Ok(format!(
+            "{} is on your user PATH. Open a new terminal for it to take effect.",
+            dir.display()
+        ))
+    }
+    #[cfg(not(windows))]
+    {
+        let shell = crate::shell_env::login_shell();
+        let (rc, line) = shell_rc_and_line(&shell, &dir);
+        append_path_line(&rc, &line, &dir)
+    }
+}
 
-    append_path_line(&rc, &line, &dir)
+/// A PowerShell single-quoted literal.
+#[cfg(windows)]
+fn ps_quote(p: &Path) -> String {
+    format!("'{}'", p.to_string_lossy().replace('\'', "''"))
+}
+
+/// PowerShell that appends `dir` to the `Path` value of one registry hive
+/// (`CurrentUser` + `Environment`, or `LocalMachine` + the session
+/// manager's key) unless it is already listed.
+///
+/// Read WITHOUT expanding and written back as an expandable string, so an
+/// existing `%USERPROFILE%\...` entry stays a reference:
+/// `[Environment]::SetEnvironmentVariable` would flatten every one of them,
+/// and `setx` truncates at 1024 characters. A raw registry write tells
+/// nobody, so the last statement is there for its side effect only:
+/// clearing a variable that does not exist still broadcasts
+/// `WM_SETTINGCHANGE`, which is what makes the next terminal see the entry.
+#[cfg(windows)]
+fn add_to_path_script(hive: &str, key: &str, dir: &Path) -> String {
+    let dir = ps_quote(dir);
+    format!(
+        "$ErrorActionPreference='Stop'; \
+         $k=[Microsoft.Win32.Registry]::{hive}.OpenSubKey('{key}',$true); \
+         $p=[string]$k.GetValue('Path','','DoNotExpandEnvironmentNames'); \
+         if(($p -split ';' | ForEach-Object {{ $_.TrimEnd('\\') }}) -notcontains {dir}) \
+         {{ $k.SetValue('Path',($p.TrimEnd(';')+';'+{dir}).TrimStart(';'),'ExpandString') }}; \
+         [Environment]::SetEnvironmentVariable('TERMIC_PATH_CHANGED',$null,'User')"
+    )
+}
+
+/// Run a script in Windows PowerShell. Encoded, so no layer of quoting
+/// between here and the interpreter gets a say in what it means.
+#[cfg(windows)]
+fn run_powershell(script: &str) -> Result<(), String> {
+    let out = crate::proc_ctl::command("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &ps_encoded(script)])
+        .output()
+        .map_err(|e| format!("could not run powershell: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+/// `-EncodedCommand` takes base64 of the script as UTF-16LE.
+#[cfg(windows)]
+fn ps_encoded(script: &str) -> String {
+    use base64::Engine as _;
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Copy the sidecar into `%ProgramFiles%` and put that directory on the
+/// machine PATH, through one UAC prompt. The elevated half is a second
+/// PowerShell because elevation is per process; declining the prompt makes
+/// `Start-Process` throw, which is the error returned here.
+#[cfg(windows)]
+fn admin_install(src: &Path, dst: &Path) -> Result<(), String> {
+    let dir = dst.parent().ok_or("no install directory")?;
+    let (d, s, t) = (ps_quote(dir), ps_quote(src), ps_quote(dst));
+    let old = ps_quote(&dst.with_extension("old"));
+    // Same move-aside as `copy_replacing`: a running exe renames, it does
+    // not overwrite.
+    let elevated = format!(
+        "$ErrorActionPreference='Stop'; \
+         New-Item -ItemType Directory -Force -Path {d} | Out-Null; \
+         Move-Item -LiteralPath {t} -Destination {old} -Force -ErrorAction SilentlyContinue; \
+         Copy-Item -LiteralPath {s} -Destination {t} -Force; \
+         Remove-Item -LiteralPath {old} -Force -ErrorAction SilentlyContinue; \
+         {}",
+        add_to_path_script(
+            "LocalMachine",
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+            dir
+        )
+    );
+    run_powershell(&format!(
+        "$p = Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait -PassThru \
+         -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{}'; exit $p.ExitCode",
+        ps_encoded(&elevated)
+    ))?;
+    if up_to_date(dst, src) { Ok(()) } else { Err("the system-wide copy was not written".into()) }
 }
 
 /// The file half, split out so it can be tested against real files rather
@@ -5281,6 +5433,7 @@ fn add_to_path_inner() -> Result<String, String> {
 ///
 /// Returns the message shown in Settings either way, because "already there"
 /// is a success the user needs to read, not an error.
+#[cfg_attr(windows, allow(dead_code))]
 fn append_path_line(rc: &Path, line: &str, dir: &Path) -> Result<String, String> {
     let existing = match std::fs::read_to_string(rc) {
         Ok(s) => s,
@@ -5335,7 +5488,7 @@ pub async fn cli_install_symlink(_app: tauri::AppHandle, system: bool) -> Result
 fn install_user(src: &Path, name: &str) -> Result<PathBuf, String> {
     let bin = user_bin().ok_or("no home directory")?;
     std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
-    let link = bin.join(name);
+    let link = bin.join(command_file(name));
     if !replaceable(&link)? {
         return Err(format!(
             "{} exists and was not installed by Termic, refusing to replace it",
@@ -5364,14 +5517,25 @@ fn install_at(name: &str, system: bool) -> Result<String, String> {
     let src = bundled_cli_path()?;
 
     if system {
-        let primary = PathBuf::from(format!("/usr/local/bin/{name}"));
+        let primary = system_bin().join(command_file(name));
         if !replaceable(&primary)? {
             return Err(format!(
                 "{} exists and was not installed by Termic, refusing to replace it",
                 primary.display()
             ));
         }
-        let already = std::fs::read_link(&primary).ok().as_deref() == Some(src.as_path());
+        let already = up_to_date(&primary, &src);
+        // Windows always goes through the prompt: the copy AND the machine
+        // PATH entry both need it, and a current copy in a directory that
+        // is not on PATH is not an install.
+        #[cfg(windows)]
+        if (already && dir_on_login_path(&system_bin())) || admin_install(&src, &primary).is_ok() {
+            return Ok(format!(
+                "installed at {} for every user. Open a new terminal to use it.",
+                primary.display()
+            ));
+        }
+        #[cfg(not(windows))]
         if already || symlink_replacing(&src, &primary).is_ok() {
             return Ok(format!("installed at {}", primary.display()));
         }
@@ -5427,12 +5591,10 @@ pub struct CliInstallStatus {
 pub fn cli_install_status(_app: tauri::AppHandle) -> CliInstallStatus {
     let name = install_name();
     for link in install_targets(name) {
-        if let Ok(md) = std::fs::symlink_metadata(&link) {
-            let ours = md.file_type().is_symlink()
-                && std::fs::read_link(&link)
-                    .ok()
-                    .is_some_and(|t| t.file_name().is_some_and(|n| n == "termic-cli"))
-                && link.exists();
+        if std::fs::symlink_metadata(&link).is_ok() {
+            // `replaceable` is what says it is ours; `exists` that a link
+            // still resolves.
+            let ours = replaceable(&link).unwrap_or(false) && link.exists();
             if ours {
                 let on_path = link.parent().is_some_and(dir_on_login_path);
                 return CliInstallStatus {
@@ -8157,11 +8319,104 @@ mod tests {
         assert!(!replaceable(&link).unwrap());
     }
 
+    #[cfg(unix)]
     #[test]
     fn install_targets_use_the_name() {
         let t = install_targets("termic-dev");
         assert_eq!(t[0], PathBuf::from("/usr/local/bin/termic-dev"));
         assert!(t.iter().any(|p| p.ends_with(".local/bin/termic-dev")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_install_targets_are_exes_in_directories_of_our_own() {
+        // `replaceable` treats any file at a target as ours, which only
+        // holds while no target sits in a directory other tools install to.
+        let t = install_targets("termic-dev");
+        assert!(t.len() == 2, "{t:?}");
+        assert!(t[0].ends_with(r"Termic\bin\termic-dev.exe"), "{t:?}");
+        assert!(t[1].ends_with(r"bin\termic-dev.exe"), "{t:?}");
+        assert!(!t[1].to_string_lossy().contains(".local"), "{t:?}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_copy_is_replaced_in_place_and_knows_when_it_is_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("termic-cli.exe");
+        let dst = tmp.path().join("termic.exe");
+        std::fs::write(&src, b"v1").unwrap();
+        assert!(!up_to_date(&dst, &src), "an absent command is not current");
+        symlink_replacing(&src, &dst).unwrap();
+        assert!(up_to_date(&dst, &src));
+        assert!(replaceable(&dst).unwrap());
+
+        // An app update: a different sidecar. The launch reconcile must see
+        // it and put the new one in place of the old.
+        std::fs::write(&src, b"version two").unwrap();
+        assert!(!up_to_date(&dst, &src));
+        symlink_atomic(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), b"version two");
+        assert!(up_to_date(&dst, &src));
+
+        let mut left: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["termic-cli.exe", "termic.exe"], "no .new / .old droppings");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_running_windows_command_is_still_replaced() {
+        // An agent parked in `termic wait` holds the exe open. Windows
+        // refuses to overwrite it, which is why the old one is renamed aside.
+        let tmp = tempfile::tempdir().unwrap();
+        let dst = tmp.path().join("termic.exe");
+        std::fs::copy(std::env::var("ComSpec").unwrap(), &dst).unwrap();
+        let mut child = std::process::Command::new(&dst)
+            .args(["/c", "pause"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let src = tmp.path().join("termic-cli.exe");
+        std::fs::write(&src, b"new").unwrap();
+        let replaced = symlink_atomic(&src, &dst);
+        let _ = child.kill();
+        let _ = child.wait();
+        replaced.unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), b"new");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_path_script_appends_once_and_keeps_references_unexpanded() {
+        // Against a scratch key, never the real environment. The two things
+        // that go wrong quietly: a second click adding a second entry, and
+        // an existing `%USERPROFILE%` entry being flattened into a literal.
+        let key = format!(r"Software\termic-test-{}", std::process::id());
+        let full = format!(r"HKCU\{key}");
+        let reg = |args: &[&str]| {
+            let out = std::process::Command::new("reg").args(args).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        reg(&["add", &full, "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", r"%USERPROFILE%\tools;C:\Other\", "/f"]);
+        let dir = Path::new(r"C:\Users\O'Brien\AppData\Local\termic\bin");
+        let script = add_to_path_script("CurrentUser", &key, dir);
+        run_powershell(&script).unwrap();
+        run_powershell(&script).unwrap();
+        // Already listed, under another case and with a trailing slash.
+        run_powershell(&add_to_path_script("CurrentUser", &key, Path::new(r"c:\other"))).unwrap();
+        let got = reg(&["query", &full, "/v", "Path"]);
+        reg(&["delete", &full, "/f"]);
+        assert!(got.contains("REG_EXPAND_SZ"), "{got}");
+        assert!(
+            got.contains(r"%USERPROFILE%\tools;C:\Other\;C:\Users\O'Brien\AppData\Local\termic\bin"),
+            "{got}"
+        );
+        assert_eq!(got.matches("termic").count(), 2, "the key name and ONE entry: {got}");
     }
 
     #[test]

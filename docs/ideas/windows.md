@@ -112,17 +112,13 @@ spawn of `termic hook-emit`.
 - **Token file ACL.** The token files inherit the data dir's ACL (user,
   SYSTEM, Administrators). An explicit protected user-only DACL at creation
   (`cli_server::write_token_file`) would match the unix 0600.
-- **Installing `termic` onto PATH** (`cli_server.rs`, `windows_unsupported`):
-  keep a copy at `%LOCALAPPDATA%\termic\bin\termic.exe`, refreshed at launch
-  when its version differs (rename the running one aside, then copy);
-  "Add to PATH" appends that dir to `HKCU\Environment\Path` and broadcasts
-  `WM_SETTINGCHANGE`. Never put the app's install dir on PATH (`termic`
-  would resolve to `Termic.exe`). No `.cmd` wrapper: cmd re-parses `%*`.
-  CLI auto-launch (`termic-cli/src/client.rs`) needs the app's path recorded
-  somewhere it can read.
-- **MCP headers helper** (`mcp_server.rs`, `helper_command`) is a POSIX
-  `printf ... "$(cat ...)"`. Replace with a shell-free `termic-cli.exe
-  mcp-headers` if M3 says an agent runs it outside bash.
+- **CLI auto-launch** (`termic-cli/src/client.rs`) needs the app's path
+  recorded somewhere it can read: the installed command is a copy outside
+  the app's directory (docs/windows.md, "`termic` on PATH"), so it cannot
+  find the app relative to itself.
+- **Refreshing the all-users CLI copy** after an update needs elevation,
+  so it goes stale until reinstalled. Either say so in Settings when it
+  differs from the sidecar, or have the installer own that copy.
 
 ## 5. Language servers
 

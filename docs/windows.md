@@ -118,6 +118,31 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
   weaker than unix (no kernel peer-identity check): another local account
   can reach the unauthenticated `hello`, `raise` and `open_url` verbs.
   `termic attach` uses console VT mode, with the window size polled.
+- **`termic` on PATH.** A copy of the sidecar, not a link (creating a
+  symlink needs elevation or developer mode): `bin\termic.exe` under the
+  data dir for the user, `%ProgramFiles%\Termic\bin\termic.exe` for every
+  user. Both directories are Termic's own, which is what lets a file found
+  there be treated as ours. Never the install dir itself, where `termic`
+  would resolve to `Termic.exe`. "Add to PATH" appends the directory to
+  `HKCU\Environment\Path`; the all-users install copies and appends to the
+  machine `Path` behind one UAC prompt. Both edits read the value
+  unexpanded and write it back expandable, so an existing
+  `%USERPROFILE%\...` entry stays a reference
+  (`cli_server::add_to_path_script`). The user copy is refreshed at launch
+  when an update changed the sidecar, by renaming the old exe aside (a
+  running exe renames, it does not overwrite). The all-users copy cannot be
+  refreshed without a prompt, so it stays at the version it was installed
+  from until "Install system-wide" is clicked again, and the machine `Path`
+  comes before the user one.
+- **MCP headers helper.** Claude runs a server's `headersHelper` through
+  cmd.exe (measured on 2.1.291, with Git Bash installed), where the POSIX
+  `printf ... "$(cat ...)"` registered on unix prints no token. The request
+  then goes out bare, the 401 sends claude into its OAuth probe, and the
+  failure reads "Dynamic Client Registration rejected (HTTP 404)". Windows
+  registers `"<termic-cli.exe>" mcp-headers "<token file>"` instead
+  (`mcp_server::helper_command`). A registration made by an older build
+  keeps the old helper until "Add to Claude" is clicked again. Which shell
+  codex runs its helper in on Windows is unmeasured.
 - **Paths in the UI.** `src/lib/osPath.ts` holds the platform rules:
   segment-safe `relUnder`, `baseName`, standard `file:///C:/...` URIs for
   the language servers (mirrored by `lsp_path_to_uri`), and quoting rather
@@ -200,8 +225,8 @@ install.
 - **Agent hooks for agents other than claude.** Claude's hooks work (they
   run in Git Bash). Which shell codex, gemini and the rest run hooks in on
   Windows is unmeasured, so theirs are not offered yet.
-- **Installing `termic` onto PATH** from Settings. Agents inside Termic
-  still get it.
+- **CLI auto-launch.** With the app closed, `termic` says so instead of
+  starting it (`termic-cli/src/client.rs` launches on macOS only).
 - **PDF preview** (needs a CSP change) and **code signing** (updates work;
   the installer is not Authenticode-signed, so SmartScreen warns on the
   first install).

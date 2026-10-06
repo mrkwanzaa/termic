@@ -1997,6 +1997,26 @@ pub(crate) fn mcp_token() -> Option<String> {
 /// The shell command both clients run to fetch the credential. Single
 /// source, so the two configs cannot drift apart.
 fn helper_command(token_path: &Path) -> String {
+    // Windows: claude runs the helper through cmd.exe (measured on
+    // 2.1.291), where the POSIX line below prints no token, the request
+    // goes out bare, and the 401 surfaces as "Dynamic Client Registration
+    // rejected (HTTP 404)". The sidecar is shell-free instead.
+    #[cfg(windows)]
+    if let Ok(cli) = crate::cli_server::bundled_cli_path() {
+        return windows_helper_command(&cli, token_path);
+    }
+    sh_helper_command(token_path)
+}
+
+/// `"<termic-cli.exe>" mcp-headers "<token file>"`: a program and one
+/// argument, which cmd.exe and sh parse the same way. A Windows path
+/// cannot contain a double quote.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_helper_command(cli: &Path, token_path: &Path) -> String {
+    format!("\"{}\" mcp-headers \"{}\"", cli.display(), token_path.display())
+}
+
+fn sh_helper_command(token_path: &Path) -> String {
     // Single-quoted for the shell, with any embedded apostrophe closed,
     // escaped and reopened, so a path like /Users/O'Brien still parses.
     let quoted = format!("'{}'", token_path.to_string_lossy().replace('\'', "'\\''"));
@@ -2148,6 +2168,17 @@ fn install_client_inner(client: &str) -> Result<String, String> {
             .to_string();
             // Passed as one argv entry, so no shell quoting is involved
             // here; claude_command() renders the copy-paste form.
+            //
+            // Remove first: add-json refuses a name that is already there
+            // ("MCP server termic already exists in user config", measured
+            // on 2.1.291), and a second click is exactly how a stale entry
+            // (a new port, a helper an older build wrote) gets replaced.
+            // Nothing to remove is the first-click case, so its failure is
+            // not one.
+            let _ = crate::proc_ctl::command("claude")
+                .args(["mcp", "remove", "termic", "-s", "user"])
+                .env("PATH", crate::shell_env::resolved_path())
+                .output();
             let out = crate::proc_ctl::command("claude")
                 .args(["mcp", "add-json", "termic", &json, "-s", "user"])
                 .env("PATH", crate::shell_env::resolved_path())
@@ -3818,17 +3849,40 @@ command = \"/bin/true\"\n";
 
     #[test]
     fn the_helper_command_survives_an_apostrophe_in_the_path() {
-        let cmd = helper_command(Path::new("/Users/O'Brien/mcp-token"));
+        let cmd = sh_helper_command(Path::new("/Users/O'Brien/mcp-token"));
         // Closed, escaped, reopened: the shell must see one argument.
         assert!(cmd.contains(r"'/Users/O'\''Brien/mcp-token'"), "{cmd}");
         assert!(cmd.contains(MCP_TOKEN_HEADER));
+    }
+
+    #[test]
+    fn the_windows_helper_is_the_sidecar_and_survives_both_config_formats() {
+        // No `$(...)`, no `printf`, nothing cmd.exe would have to
+        // understand: claude runs the helper there, and the POSIX line
+        // printed no token. Backslashes and a space are the hard case for
+        // the two formats it is written into.
+        let helper = windows_helper_command(
+            Path::new(r"C:\Users\bob smith\AppData\Local\Termic\termic-cli.exe"),
+            Path::new(r"C:\Users\bob smith\AppData\Local\termic\mcp-token"),
+        );
+        assert_eq!(
+            helper,
+            r#""C:\Users\bob smith\AppData\Local\Termic\termic-cli.exe" mcp-headers "C:\Users\bob smith\AppData\Local\termic\mcp-token""#
+        );
+        assert!(!helper.contains('$') && !helper.contains("printf"));
+        let block = codex_block("http://127.0.0.1:1/mcp", &helper);
+        let doc = toml_edit::DocumentMut::from_str(&block).expect("codex block parses");
+        assert_eq!(doc["mcp_servers"]["termic"]["http_headers_helper"].as_str().unwrap(), helper);
+        let json = serde_json::json!({ "headersHelper": helper }).to_string();
+        let back: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(back["headersHelper"].as_str().unwrap(), helper);
     }
 
     /// Run the helper the way a client does (through sh, in the agent's
     /// environment) and parse what it prints.
     fn run_helper(token_file: &Path, task: Option<&str>) -> serde_json::Value {
         let mut cmd = std::process::Command::new("sh");
-        cmd.arg("-c").arg(helper_command(token_file)).env_remove("TERMIC_TASK_ID");
+        cmd.arg("-c").arg(sh_helper_command(token_file)).env_remove("TERMIC_TASK_ID");
         if let Some(t) = task {
             cmd.env("TERMIC_TASK_ID", t);
         }
