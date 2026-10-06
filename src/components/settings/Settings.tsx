@@ -105,14 +105,13 @@ export function Settings() {
           active={tab === "prompts"} onClick={() => openSettings("prompts")} />
         <RailItem icon={<Keyboard className="h-4 w-4" />} label={t("rail.shortcuts")} tabId="shortcuts"
           active={tab === "shortcuts"} onClick={() => openSettings("shortcuts")} />
-        {/* Experimental in the sense docs/ui.md defines: off by default because
-            we are not yet confident in it, with a stated way out (Profiles
-            can be turned off, keeping every byte of data). Both halves of
-            this release qualify, and both are dormant until you opt in. */}
-        <RailItem icon={<UsersRound className="h-4 w-4" />} label={t("rail.profiles")} badge={t("rail.badgeExp")} tabId="profiles"
+        {/* No Experimental badge: Profiles graduated (docs/ui.md "Experimental
+            features"). Still dormant until you create one, and still able to
+            be turned off keeping every byte of data. */}
+        <RailItem icon={<UsersRound className="h-4 w-4" />} label={t("rail.profiles")} tabId="profiles"
           active={tab === "profiles"} onClick={() => openSettings("profiles")} />
-        {/* Experimental for the same reason as Profiles: off until you connect
-            a repo, and Disconnect is the stated way out (docs/ui.md). */}
+        {/* Experimental in the sense docs/ui.md defines: off until you connect
+            a repo, and Disconnect is the stated way out. */}
         <RailItem icon={<RefreshCw className="h-4 w-4" />} label={t("rail.sync")} badge={t("rail.badgeExp")} tabId="sync"
           active={tab === "sync"} onClick={() => openSettings("sync")} />
 

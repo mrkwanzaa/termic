@@ -36,15 +36,7 @@ export function ProfilesSection() {
   return (
     <div className="flex flex-col gap-5">
       <div>
-        <div className="flex items-center gap-2.5">
-          <h2 className="text-[15px] font-semibold">{t("rail.profiles")}</h2>
-          {/* Same badge as the rail item, same meaning: off by default because
-              we are not confident in it yet, and it can be turned off keeping
-              every byte of data. See docs/ui.md. */}
-          <span className="rounded bg-[var(--color-accent)]/15 px-1.5 py-0.5 text-[11px] uppercase tracking-wider text-[var(--color-accent)]">
-            {t("shared.experimental")}
-          </span>
-        </div>
+        <h2 className="text-[15px] font-semibold">{t("rail.profiles")}</h2>
         {/* Two paragraphs, not one block. Three sentences run together read as
             a wall at this size, and the second one answers a different
             question (what is shared) than the first (what a profile is). */}
