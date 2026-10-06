@@ -1,11 +1,106 @@
 # Future work: config sync through a git repo
 
-Not built, not approved. Everything a user sets up in termic (projects,
-project folders and their colors, per-project overrides, custom agents,
-prompts, shortcuts, prefs) lives on one machine. A second laptop, or a
-reinstall, starts from nothing. This file proposes syncing that setup
-through a private git repo the user owns, and lists what has to be
-decided before anyone builds it.
+Not approved. Phase 1 is built (`src-tauri/src/config_sync.rs`,
+`src/lib/configSync.ts`, Settings > Sync, behind an Experimental
+badge), but the maintainer has not approved the design, so this file
+stays an idea. "Phase 1 as built" below records the answers that build
+chose; everything after it is the proposal as written.
+
+Everything a user sets up in termic (projects, project folders and
+their colors, per-project overrides, custom agents, prompts, shortcuts,
+prefs) lives on one machine. A second laptop, or a reinstall, starts
+from nothing. This file proposes syncing that setup through a private
+git repo the user owns, and lists what has to be decided before anyone
+builds it.
+
+## Phase 1 as built
+
+The open questions at the end, answered:
+
+1. **Profiles.** One repo for the whole machine, a folder per profile
+   (`profiles/<sync-id>/`). A profile is bound to its folder by a
+   `sync_id` kept locally in that profile (`Settings.sync`). At first
+   connect, a repo that already holds folders lists them by profile
+   name: the user picks the one this profile follows, or starts a new
+   one.
+2. **Safety defaults** sync: the app-wide prefs (`defaultYolo`,
+   `globalDefaultSandboxKind`, `sandboxBypassPermissions`,
+   `sandboxAllowScope`) and a project's `default_yolo`,
+   `default_sandbox`, `default_sandbox_mode`, `default_docker`. A change
+   to one is never silent: it is highlighted in the first-connect
+   preview, and a later pull lists it in the report, keeps it as a
+   notice in Settings > Sync until dismissed (per profile, so a profile
+   whose window was closed sees it when it opens), and announces it once
+   as a toast.
+3. **Agent `env`** and `docker_env` never sync, and Settings > Sync
+   says so, with what else stays on the machine.
+4. **Agent `command`** syncs. There is no fallback to a local value
+   when the synced one is not on `PATH`.
+5. **Pull cadence.** Manual: one pull on launch (after first paint,
+   once per process, whichever window asks first) and "Sync now", which
+   exports, commits, fetches, rebases, applies and pushes. No timer, no
+   push on change: that is phase 2.
+6. **Transport** is git, not a file export.
+
+Decided while building, not by the questions above:
+
+- **Prefs split by scope.** Keys every window shares (not `scoped()`)
+  are machine-wide, so they live in a root `prefs.json`; profile-scoped
+  ones live in the profile's folder. Windows share one origin, so the
+  window that syncs snapshots, and writes, every bound profile's keys.
+  Every sync key reloads live (prefs, prompt library, folder colors);
+  of the settings, only `auto_install_hooks` waits for the next launch.
+- **Unnamed fields, classified.** Local: `created`,
+  `docker_sandbox_enabled` (follows whether Docker is installed here),
+  `docker_agent_persist_enabled`, `docker_shared_config_dirs`,
+  `cli_enabled`, `mcp_enabled` and the migration markers, an agent's
+  `builtin`. Sync: `spotlight_enabled`, `code_intel_auto` (the table's
+  "code-intel toggles", though its field comment calls it machine-local
+  with respect to `.termic.yaml`), `non_git`, `type`, `members`,
+  `worktree_symlink_paths` (repo-relative), an agent's `display_name`,
+  `work_done`, `kind`, `extends`, `post_launch_capture` and
+  `auto_switch_account`. The `*_SYNC` / `*_LOCAL` lists in
+  `config_sync.rs` are the answer per field, and a test fails on a field
+  in neither.
+- **The order is export, commit, fetch, rebase, apply, push**, the one
+  "The loop" describes, for the launch pull too (which commits locally
+  and does not push). Committing first is what turns an edit to one
+  field on two machines into a conflict instead of a silent overwrite.
+  Apply is three-way per field: only fields that changed upstream since
+  the last sync are written.
+- **Conflicts** are settled without finishing the rebase (where
+  `--ours` is upstream): once every conflicting file has a choice,
+  upstream's changes are applied to local records, skipping each file
+  answered "keep this machine's" entirely, then the clone is reset to
+  upstream, re-exported, committed and pushed.
+- **A pulled project whose repo is already a project here** under its
+  own id is aliased (`Settings.sync.aliases`), never registered twice.
+  Matching is: the id, then a registered project with the same remote
+  URL and subdir, then a repo under `repos_dir`, else the waiting list.
+  Clone into `repos_dir` from that list is not built.
+- **Remote URL spelling** in a project file is kept when this machine's
+  remote normalizes to the same repo, or two machines with `git@` and
+  `https://` remotes rewrite each other's line on every sync.
+- **Positions** keep the number a file already holds while it still
+  sorts after its predecessor, so removing a project rewrites no other
+  file.
+- **Multi-repo members** are matched by name (their folder in the task
+  wrapper); one that arrives with no local match is placed by remote URL
+  under `repos_dir`, or left out.
+- **A pulled agent that `extends` a local one** borrows that agent's
+  `sandbox_allowed_paths`, which are local, or it could not run caged.
+  A custom agent deleted on another machine is deleted here.
+- **Commit identity** is fixed in the clone's own config (`termic
+  <sync@termic.dev>`), with hooks and signing off there too.
+- **Disconnect** unbinds the profile and, once no profile is bound,
+  deletes the clone. Nothing is deleted from the repo.
+- **Not built:** the public-repo warning through `gh` / `glab`, and
+  creating the repo from termic.
+- **Known limit:** git merges by line, and sorted keys put related
+  fields next to each other (`default_sandbox`, `default_sandbox_mode`),
+  so two machines changing ADJACENT fields of one record conflict even
+  though the fields differ. The per-file choice handles it; a
+  field-level merge from the three versions is the phase 3 idea below.
 
 ## The request
 
