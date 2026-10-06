@@ -26,7 +26,7 @@ import { useCodeIntel, checkoutRoot, grantKey } from "@/store/codeIntel";
 import { lspServerFor } from "@/lib/lsp/languages";
 import { classifyEditorLoadError, isUnviewable, type EditorLoadError } from "@/lib/editorError";
 import { FILE_MANAGER, openInDefaultApp } from "@/lib/openExternal";
-import { joinPath } from "@/lib/clipboard";
+import { absUnder } from "@/lib/osPath";
 import { Button } from "@/components/ui/Button";
 import { ExternalLink, FolderOpen } from "lucide-react";
 import { attachHiddenScrollRestore } from "@/lib/hiddenScrollRestore";
@@ -970,7 +970,7 @@ export function EditorPane({ task, tab, active, onContent }: {
   // to open something that does not exist. `external` tabs are already
   // absolute; `edit` paths are task-relative.
   const unviewableAbs =
-    tab.type === "external" ? tab.path : tab.type === "edit" ? joinPath(task.path, tab.path) : null;
+    tab.type === "external" ? tab.path : tab.type === "edit" ? absUnder(task.path, tab.path) : null;
 
   return (
     // No chrome bar: the tab already shows the filename, and the old

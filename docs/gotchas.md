@@ -543,6 +543,33 @@ resume, then no `pty-exit` and no respawn. The waiter now does what
 halves (EOF or not with the pseudoconsole open, then once it is closed),
 with macOS as the control.
 
+## A Windows path that mixes separators opens Documents, and reports success
+
+`explorer.exe` does not reject a path it cannot parse. It opens the user's
+Documents folder instead, and exits zero, so the caller cannot tell a
+malformed path from a good one and nothing anywhere logs or throws. Every
+"open in File Explorer" on a folder landed in Documents, which is what made it
+look like a menu wired to the wrong argument rather than a path bug.
+
+Measured by reading `Shell.Application`'s `Windows()` back after each spawn,
+with the Windows folder as the control:
+
+    explorer "I:\repo/docs"   ->  file:///C:/Users/<u>/Documents   (mixed)
+    explorer "I:\repo\docs"   ->  file:///I:/repo/docs            (native)
+
+The mixed spelling was ours, and it is structural rather than a typo: the
+app's task-relative paths are `/`-joined by convention (`FileTree` keys its
+directory cache on them, `relUnder` produces them), while the root comes back
+from Rust with `\`. A hand-rolled `${root}/${rel}` at each call site therefore
+produced `I:\repo/src` on Windows and `I:\repo/src` never on macOS, where `/`
+IS the separator, which is exactly the "mac fine, Windows broken" shape.
+
+Build native paths through `absUnder` (`joinPath` in `lib/osPath.ts` is the
+single-segment form) and never by concatenation. It normalizes the WHOLE
+string, not just the character it inserts, because either half can arrive in
+either spelling. `pathToFileUri` rewrites to `/` and so tolerates both, which
+is why the LSP path never showed this.
+
 ## Docker is a SECOND REALM, and it does not inherit host fixes
 
 Three separate bugs in one feature, all the same shape: a rule implemented for

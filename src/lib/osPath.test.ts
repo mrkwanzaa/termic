@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toContainerPath, quoteWindowsPath, terminalPathText, relUnder, baseName, joinPath, pathToFileUri, fileUriToPath } from "./osPath";
+import { toContainerPath, quoteWindowsPath, terminalPathText, relUnder, absUnder, baseName, joinPath, pathToFileUri, fileUriToPath } from "./osPath";
 
 describe("toContainerPath", () => {
   it("is the identity off Windows", () => {
@@ -59,12 +59,42 @@ describe("file URIs", () => {
   });
 });
 
+describe("absUnder", () => {
+  it("resolves a task-relative path against a native root", () => {
+    expect(absUnder("/Users/u/src", "a/b.ts", false)).toBe("/Users/u/src/a/b.ts");
+    expect(absUnder("C:\\Users\\u\\src", "a\\b.ts", true)).toBe("C:\\Users\\u\\src\\a\\b.ts");
+  });
+  it("drops a trailing separator on the root, and survives a bare root", () => {
+    expect(absUnder("/Users/u/src/", "a", false)).toBe("/Users/u/src/a");
+    expect(absUnder("/", "a", false)).toBe("/a");
+    expect(absUnder("C:\\", "a", true)).toBe("C:\\a");
+  });
+  it("returns the root itself for an empty relative path", () => {
+    expect(absUnder("/Users/u/src", "", false)).toBe("/Users/u/src");
+    expect(absUnder("C:\\Users\\u\\src\\", "", true)).toBe("C:\\Users\\u\\src");
+  });
+  it("leaves forward slashes alone off Windows", () => {
+    expect(absUnder("/Users/u/src", "a/b", false)).toBe("/Users/u/src/a/b");
+  });
+  // The regression. The app joins with `/` and Rust hands the root back with
+  // `\`, so the two halves of this disagree on Windows. explorer does not
+  // reject the mixed result, it silently opens the user's Documents folder,
+  // so no error and no other test catches it: assert the whole string.
+  it("normalizes BOTH halves to backslashes on Windows", () => {
+    expect(absUnder("I:\\repo", "src/components", true)).toBe("I:\\repo\\src\\components");
+    expect(absUnder("C:/Users/u/src/", "a/b", true)).toBe("C:\\Users\\u\\src\\a\\b");
+  });
+});
+
 describe("joinPath", () => {
   it("joins with the platform's separator, dropping a trailing one", () => {
     expect(joinPath("/Users/u/src/", "repo", false)).toBe("/Users/u/src/repo");
     expect(joinPath("/", "repo", false)).toBe("/repo");
     expect(joinPath("C:\\Users\\u\\src\\", "repo", true)).toBe("C:\\Users\\u\\src\\repo");
     expect(joinPath("C:\\", "repo", true)).toBe("C:\\repo");
-    expect(joinPath("C:/Users/u/src/", "repo", true)).toBe("C:/Users/u/src\\repo");
+    // A forward-slashed dir is normalized, not merely appended to. This used
+    // to be pinned as `C:/Users/u/src\repo`, which is the same mixed path
+    // explorer silently redirects (see absUnder's spec above).
+    expect(joinPath("C:/Users/u/src/", "repo", true)).toBe("C:\\Users\\u\\src\\repo");
   });
 });

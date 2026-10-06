@@ -18,7 +18,7 @@ import { explainDirError } from "@/lib/explorer/dirError";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/ContextMenu";
 import { CopyPathItems } from "./CopyPathItems";
 import { startPathDrag } from "@/lib/terminalDrop";
-import { joinPath } from "@/lib/clipboard";
+import { absUnder } from "@/lib/osPath";
 import { launchCustomRun } from "@/lib/runTabs";
 import { resolveCustomCommands, removeCommandByCommand, defaultCommandFor } from "@/lib/runCommands";
 
@@ -495,7 +495,7 @@ function TreeNode({ taskId, entry, depth, rel, root, expanded, children_, toggle
         // Drag a row onto a terminal to type its path at the prompt (GH #136),
         // the same affordance as dragging a file in from Finder. Pointer-based,
         // not HTML5 DnD — see the note in lib/terminalDrop.
-        onPointerDown={e => startPathDrag(e, { taskId, rel, abs: joinPath(root, rel) }, entry.name)}
+        onPointerDown={e => startPathDrag(e, { taskId, rel, abs: absUnder(root, rel) }, entry.name)}
         title={rel}
         data-path={rel}
         className={cn(
