@@ -148,6 +148,13 @@ describe("boardTaskMatches", () => {
     expect(matches("-agent:claude")).toBe(false);
   });
 
+  it("a negated multi-value clause excludes a card matching any one of its values", () => {
+    const q = "-status:settled,archived";
+    expect(matches(q, task({ archived: true }), ctx({ column: "archived" }))).toBe(false);
+    expect(matches(q, task(), ctx({ column: "settled" }))).toBe(false);
+    expect(matches(q, task(), ctx({ column: "working" }))).toBe(true);
+  });
+
   it("group:, status:, branch:, base:", () => {
     const c = ctx({ project: project({ group: "Work" }), column: "working" });
     expect(matches("group:work", task(), c)).toBe(true);
