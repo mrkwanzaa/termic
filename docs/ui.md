@@ -333,11 +333,16 @@ laid out as a standard kanban: six full-height fixed-width columns (Not
 started, Needs attention, Working, In review, Settled, Archived), each with
 its own surface
 one step above the page background, a header (semantic dot + title + count
-badge) and an independently scrolling card stack. The row sizes to its
-columns (`w-max`), LEFT aligned, so a narrow window scrolls; never
-`justify-center` + overflow, which clips the left columns permanently. It
-centered with `mx-auto` until empty columns started hiding, at which point two
-columns floated mid-window with a screenful of nothing beside them.
+badge) and an independently scrolling card stack. Columns have a 280px floor
+and GROW to share the pane (`COLUMN_SIZE`: `flex-[1_0_280px]`, capped at
+520px), in a row that is `w-max min-w-full`, LEFT aligned: a narrow window
+scrolls, a wide one is filled edge to edge. Never `justify-center` +
+overflow, which clips the left columns permanently. It centered with
+`mx-auto` until empty columns started hiding, at which point two columns
+floated mid-window with a screenful of nothing beside them; fixed 280px
+columns after that left the same slab of nothing on the right instead. The
+Inactive rail stays a fixed 200px, and the filter bar above spans the full
+width so the toolbar and the columns share both edges.
 
 **An EMPTY state column is not rendered**, because columns of nothing push the
 ones with cards off screen (reported with a screenshot of exactly that). The
@@ -467,6 +472,110 @@ badge always shows the full count, and History still lists everything.
 `recentArchived()` in
 [src/lib/taskBoardState.ts](../src/lib/taskBoardState.ts) is the one sort +
 cap; the badge reads the uncapped filter.
+
+### Filtering
+
+A filter bar above the columns takes a GitHub Projects style query, parsed
+and matched in [src/lib/boardFilter.ts](../src/lib/boardFilter.ts):
+
+```
+login bug                    free text: every word must match
+project:acme agent:claude    qualifiers AND together
+agent:claude,codex           comma ORs inside one qualifier
+-status:settled              a leading - excludes
+project:"my repo"            quotes keep spaces
+```
+
+Free text matches the task name and branch, plus whatever the sidebar's
+per-project filter matches (`taskMatchesText`: stable tab titles and tab
+property values), so anything the sidebar filter finds, the board finds
+too; the board additionally matches the branch.
+Qualifiers: `project:` (alias `repo:`, exact name, also a multi-repo
+member's directory), `group:` (the project's sidebar folder, normalized by
+`groupOf` like the sidebar), `agent:` (id or
+display name), `status:` (alias `column:`, the column ids), `branch:` and
+`base:` (substring), `pr:` (open, draft, merged, closed, none; behind the
+review column's `hasPrIdentity` gate, so a main checkout is always none, and
+an unpolled identity reads open, like the review column, except on an
+archived task, which is never polled and reads unknown, matching no `pr:`
+value), `checks:` (passing, failing, pending, none), `is:` (main,
+worktree, yolo, docker, sandboxed, multi, archived), `has:` / `no:` (pr,
+changes). An unmeasured diff, or a value `has:`/`no:` does not know, matches
+neither. An unknown `key:` matches as free text and the bar says so, once per
+key; text whose "value" starts with `/` or `\` (`https://...`, `C:\...`) is
+not reported. A negation still being typed (`-`, `-ag` on the way to
+`-agent:`, `-re` on the way to `-repo:`) filters nothing until a colon or a
+trailing space settles it, and a menu or header click drops it rather than
+pushing it mid-query, where it would become a real exclusion. `project:` is
+name-based, so two projects with the same name are one chip in the menu.
+
+Rules that are not obvious from the code:
+
+- **The query never decides the board's structure.** Column visibility
+  (and the pinned column's X) reads the UNFILTERED counts, and lanes come
+  from the unfiltered live tasks, so typing never folds a column into
+  Inactive or drops a lane divider mid-keystroke. A column the query emptied
+  stays put and reads 0, and a lane divider survives its own `agent:`
+  filter, so clicking it again takes the filter back out. A keystroke that
+  matches the same cards keeps the same arrays (`useSameItems`), so the
+  memoized columns do not re-render for it.
+- **Archived filters before the cap**, so a search can surface an old
+  archived task the cap would otherwise hide. The bar's "N of M" and the
+  menu's chip counts count every matching archived task, cap or not, the
+  same number the Archived badge shows, so with a large archive they can
+  exceed the cards on screen.
+- **The text lives in the ui store** (`boardQuery`), not BoardView state,
+  for the reason the pin became a pref: the board unmounts when left. It is
+  NOT persisted, because a forgotten filter hiding cards on launch is the
+  board hiding cards.
+- **Subscriptions widen only while the query reads them.** Free text holds
+  `createBoardFilterFactsSelector` (titles and property values only, so
+  streaming and work-state flips do not move it); with no free text the
+  board selects a constant. `checks:` folds check state into the PR trigger
+  key and `has:changes` adds a diffStat key, each only while used.
+  `has:changes` also asks the diffStat store for every live task, since a
+  card filtered out from the start never mounts to ask for itself. It asks
+  on a 2s tick (`CHANGES_POLL_MS`) while the clause or the menu is up,
+  because `requestMany` measures at most `MAX_PER_FLUSH` stale tasks per call:
+  one call on mount left everything past the first six unmeasured, and a
+  hidden task that gained changes later stayed stale. Fresh tasks make the
+  tick a no-op. An open filter menu holds both, because it counts those
+  facets too.
+- **Reorder still works while filtered.** The drag group is the rendered
+  cards, and `mergeReorderedGroup` keeps hidden siblings in their relative
+  order, the same as cards in other lanes and columns already are. That
+  means a hidden same-project sibling is persisted after the dragged group,
+  which the user does not see happen; it is the existing contract for
+  off-screen cards, applied to filtered ones.
+- **Clicking a lane divider or a project sub-header** toggles `agent:` /
+  `project:` in the query TEXT, so the bar stays the one source of truth and
+  shows the syntax it just used.
+
+**The funnel icon opens the filter menu** (`BoardFilterMenu` in
+`BoardFilterBar.tsx`), a popover listing every facet as chips: status
+(column dots), project, project group, agent (brand icons), pull request,
+checks and task flags. A chip cycles off -> include -> exclude -> off
+(`cycleBoardClause`) by editing the query TEXT, merging into an existing
+token of the same key and sign (`project:a,b`), so the menu writes queries
+rather than holding a second filter state, and the bar shows the syntax
+each click produced. Each chip's count is the current query with that
+chip included (`setBoardClause`, the same edit the click makes) run through
+`boardTaskMatches`, so an off chip reads exactly what clicking it leaves.
+The sections are built only while the menu is open (BoardView holds the
+open state), so a closed menu costs the board nothing per render. An
+excluded chip shows the same "with this included" number, not what its next
+click (back to off) leaves. Closing the menu hands focus back to the input,
+unless the close came from clicking another control (the sidebar filter),
+which keeps the focus that click gave it.
+
+Keys: `/` (when nothing editable has focus) or ⌘F focuses the bar; Esc
+peels one layer per press (completions, then the text, then focus), and
+ArrowDown reopens the completions Esc closed. Enter or Tab accepts. An IME
+composition owns those keys until it commits. Autocomplete completes the
+token at the end of the input: qualifier keys (aliases included) for a bare
+word, values for `key:`, ranked by the palettes' `fuzzyMatch`. A key or a
+value typed in full stays in the list, first, so Enter keeps what was typed
+instead of picking a longer neighbour.
 
 ## The sidebar's status section
 

@@ -93,6 +93,16 @@ export function taskBoardColumn(
   return boardColumnFromFacts(task, boardTaskFacts(tabs), pr, prefs);
 }
 
+/** Whether the task carries a PR identity the board trusts: persisted on
+ *  the task, and never for a main checkout (nothing polls those, so a stale
+ *  pr_url there would pin the card in review forever). `pollableTasks` in
+ *  store/pr.ts polls exactly these, minus archived tasks, which the board
+ *  answers for itself (`archived` column, `pr:` reads unknown). The filter
+ *  bar's `pr:` reads it too. */
+export function hasPrIdentity(task: Task): boolean {
+  return !task.is_main_checkout && (!!task.pr_url || task.pr_number != null);
+}
+
 /** The precedence itself, over pre-computed facts. The board reaches it
  *  through taskBoardColumn and the sidebar's status section directly; there
  *  is no second copy. The pref gates match taskNeedsAttention (attention
@@ -106,10 +116,7 @@ export function boardColumnFromFacts(
   if (task.archived) return "archived";
   if ((prefs.attentionIndicator ?? true) && facts.attention) return "attention";
   if (!!prefs.workingIndicator && facts.working) return "working";
-  // Same gate as `pollableTasks` in store/pr.ts: identity persisted on the
-  // task, and never for a main checkout (nothing polls those, so a stale
-  // pr_url there would pin the card in review forever).
-  if (!task.is_main_checkout && (task.pr_url || task.pr_number != null)) {
+  if (hasPrIdentity(task)) {
     const state = pr?.pr?.state ?? null;
     if (state === null || state === "open" || state === "draft") return "review";
   }

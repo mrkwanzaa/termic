@@ -40,6 +40,18 @@ import { useDiffStat } from "@/store/diffStat";
 import { prBadgeAppearance } from "@/lib/prBadgeAppearance";
 import { openPath } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
+import { createBoardFilterFactsSelector, EMPTY_BOARD_FILTER_FACTS, type BoardFilterFacts } from "@/store/sidebarTabs";
+import { BoardFilterBar, type FilterFacetOption, type FilterFacetSection } from "@/components/views/BoardFilterBar";
+import {
+  boardQueryUses,
+  boardTaskMatches,
+  isBoardQueryActive,
+  parseBoardQuery,
+  setBoardClause,
+  toggleBoardClause,
+  type BoardMatchCtx,
+  type BoardQualifier,
+} from "@/lib/boardFilter";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
@@ -125,6 +137,15 @@ const SETTLE_TARGET: DragTarget = { kind: "settle" };
 const CREATE_PR_TARGET: DragTarget = { kind: "createPr" };
 const REORDER_TARGET: DragTarget = { kind: "reorder" };
 
+/** State and Archived columns: a 280px floor that never shrinks (so a
+ *  narrow window scrolls), growing to share the free width, capped so one
+ *  column on an ultrawide does not turn into a 1000px card. Inactive stays
+ *  a fixed narrow rail: it holds names, not cards. `contain:inline-size`
+ *  keeps a column's intrinsic width at that floor: the row is `w-max`,
+ *  which sizes from each column's max-content, and a long nowrap card
+ *  title would otherwise widen its own column past the rest. */
+const COLUMN_SIZE = "min-w-[280px] max-w-[520px] flex-[1_0_280px] [contain:inline-size]";
+
 const COL_LABEL: Record<BoardStateColumn, string> = {
   backlog: "board.colBacklog",
   attention: "board.colAttention",
@@ -146,6 +167,22 @@ const COL_ACCENT: Record<BoardStateColumn, string> = {
   review: "var(--color-pr-open)",
   settled: "var(--color-info)",
 };
+
+/** How often a `has:changes` query asks for its hidden tasks' diffstats.
+ *  Each tick measures up to MAX_PER_FLUSH stale ones (DIFF_STALE_MS), so a
+ *  big board cycles through in a few ticks and then idles on no-ops. */
+const CHANGES_POLL_MS = 2_000;
+
+/** The facts selector a query without free text holds instead: a constant,
+ *  so an unfiltered board subscribes to nothing new. */
+const selectNoFilterFacts = (): BoardFilterFacts => EMPTY_BOARD_FILTER_FACTS;
+
+/** The menu's sections while it is closed: a constant, so the memoized bar
+ *  sees no new prop while the board re-renders under a drag. */
+const NO_SECTIONS: FilterFacetSection[] = [];
+
+/** Click-to-filter callback: toggles `key:value` in the query text. */
+type OnFilter = (key: BoardQualifier, value: string) => void;
 
 function ageLabel(created: string, t: TFunction): string {
   const mins = Math.max(1, Math.floor((Date.now() - new Date(created).getTime()) / 60000));
@@ -179,12 +216,39 @@ export function BoardView() {
     [settledHighlight, workingIndicator, attentionIndicator],
   );
 
-  // Re-render trigger for PR polls, nothing more. The pr store lives outside
-  // useApp precisely so its 60s tick re-renders nobody by default; the board
-  // opts back in because an open -> merged transition moves a card. The value
-  // itself is unused: selectBoardColumnKey reads the snapshot, and
-  // useSyncExternalStore re-reads it during the render this triggers.
-  usePr(s => Object.values(s.byTask).map(e => e.lookup?.pr?.state ?? "?").join("|"));
+  // The filter bar (docs/ui.md "Kanban view" > Filtering). Parsed once per
+  // query change; everything below that reads it is a no-op while inactive.
+  const boardQuery = useUI(s => s.boardQuery);
+  const query = useMemo(() => parseBoardQuery(boardQuery), [boardQuery]);
+  const filtering = isBoardQueryActive(query);
+  // The funnel menu counts every facet, `checks:` and `has:changes`
+  // included, so while it is open the board holds the same subscriptions a
+  // query using them would. Closed, it costs nothing.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const usesChecks = menuOpen || boardQueryUses(query, "checks");
+  const usesChanges = menuOpen || boardQueryUses(query, "has", "changes") || boardQueryUses(query, "no", "changes");
+
+  // Re-render trigger for PR polls. The pr store lives outside useApp
+  // precisely so its 60s tick re-renders nobody by default; the board opts
+  // back in because an open -> merged transition moves a card.
+  // selectBoardColumnKey reads the snapshot, and useSyncExternalStore
+  // re-reads it during the render this triggers. The value itself is only a
+  // memo dep for the filter's non-reactive pr read. `checks:` folds the check
+  // state in, and only while the query reads it: otherwise every check tick
+  // of every PR would re-render the whole board for nothing it draws.
+  const prKey = usePr(s => Object.values(s.byTask)
+    .map(e => `${e.lookup?.pr?.state ?? "?"}${usesChecks ? e.lookup?.pr?.checks ?? "" : ""}`)
+    .join("|"));
+  // Same trick for `has:changes`: a re-render trigger keyed on "has changes"
+  // per task, read from the diffStat store, held only while the query asks.
+  const changesKey = useDiffStat(s => usesChanges
+    ? Object.entries(s.byTask).map(([id, e]) => `${id}:${e.stat ? e.stat.files_changed > 0 : "?"}`).join("|")
+    : "");
+  // Free text reads tab titles and property values; the facts record keeps
+  // its identity while agents stream (bear trap 5). A query with no free
+  // text holds a constant instead, so it subscribes to nothing.
+  const [selectFilterFacts] = useState(createBoardFilterFactsSelector);
+  const filterFacts = useApp(query.terms.length > 0 ? selectFilterFacts : selectNoFilterFacts);
 
   const columnKey = useApp(selectBoardColumnKey(workPrefs));
   const columnOf = useMemo(() => {
@@ -219,15 +283,68 @@ export function BoardView() {
     (w: Task) => projectById.has(w.project_id),
     [projectById],
   );
-  const liveTasks = useMemo(() => tasks.filter(w => !w.archived && known(w)), [tasks, known]);
-  // Lanes are about VISIBLE cards, so boardLanes gets liveTasks, not tasks:
-  // a lane kept alive only by a task whose project left the profile (the
-  // filter above, the same invisibility every other surface applies) once
-  // forced agent dividers onto columns whose visible cards were one agent.
-  const lanes = useMemo(() => boardLanes(liveTasks, agents), [liveTasks, agents]);
+  const allLiveTasks = useMemo(() => tasks.filter(w => !w.archived && known(w)), [tasks, known]);
+  const allArchived = useMemo(() => tasks.filter(w => w.archived && known(w)), [tasks, known]);
+
+  // The query applies here, where the data enters, so cells, counts and
+  // drag groups derive from the filtered lists. STRUCTURE does not: which
+  // columns and lanes exist comes from the unfiltered lists below, so typing
+  // never reflows the board and a lane divider survives its own filter.
+  // Archived filters too, BEFORE the cap, so a search can surface an old
+  // archived task the cap would otherwise hide.
+  const matchCtx = useCallback((w: Task): BoardMatchCtx => {
+    const stat = useDiffStat.getState().byTask[w.id]?.stat;
+    return {
+      project: projectById.get(w.project_id),
+      column: columnOf.get(w.id),
+      pr: usePr.getState().byTask[w.id]?.lookup ?? null,
+      changed: stat ? stat.files_changed > 0 : null,
+      facts: filterFacts[w.id],
+      agents,
+    };
+    // prKey / changesKey are the re-run triggers for the non-reactive pr and
+    // diffStat reads above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectById, columnOf, filterFacts, agents, prKey, changesKey]);
+  const matchesQuery = useCallback(
+    (w: Task): boolean => boardTaskMatches(w, matchCtx(w), query),
+    [matchCtx, query],
+  );
+  // useSameItems: a keystroke that matches the same cards keeps the same
+  // array, so the memoized columns below skip the render.
+  const liveTasks = useSameItems(useMemo(
+    () => (filtering ? allLiveTasks.filter(matchesQuery) : allLiveTasks),
+    [filtering, allLiveTasks, matchesQuery],
+  ));
+  // `has:changes` on a card the board never drew: cards ask for their own
+  // diffstat when they mount, so a task filtered out from the start would
+  // stay unmeasured (or, measured once, go stale) and never match. Ask for
+  // all of them while the query (or the menu's count) reads it, on a tick:
+  // `requestMany` measures at most MAX_PER_FLUSH stale tasks per call, oldest
+  // first, so one call on mount left everything past the first batch
+  // unmeasured. A fresh task is a no-op, and the timer only exists while
+  // a `has:`/`no:changes` clause or the menu does.
+  useEffect(() => {
+    if (!usesChanges) return;
+    const ids = allLiveTasks.map(w => w.id);
+    const ask = () => useDiffStat.getState().requestMany(ids);
+    ask();
+    const timer = setInterval(ask, CHANGES_POLL_MS);
+    return () => clearInterval(timer);
+  }, [usesChanges, allLiveTasks]);
+  // Lanes come from the profile's live tasks, not `tasks`: a lane kept alive
+  // only by a task whose project left the profile (the `known` filter, the
+  // same invisibility every other surface applies) once forced agent
+  // dividers onto columns whose visible cards were one agent. Not from the
+  // QUERY's result either: `agent:x` would leave one lane, drop the divider
+  // that wrote it, and with it the click that takes it back out.
+  const lanes = useMemo(() => boardLanes(allLiveTasks, agents), [allLiveTasks, agents]);
   // The full archived list feeds the badge and the empty state; the column
   // renders the capped, most-recent-first slice (Tasks > archive limit).
-  const archivedAll = useMemo(() => tasks.filter(w => w.archived && known(w)), [tasks, known]);
+  const archivedAll = useSameItems(useMemo(
+    () => (filtering ? allArchived.filter(matchesQuery) : allArchived),
+    [filtering, allArchived, matchesQuery],
+  ));
   const archivedTasks = useMemo(
     () => recentArchived(archivedAll, resolveBoardArchiveLimit(boardArchiveLimitMode, boardArchiveLimitCustom)),
     [archivedAll, boardArchiveLimitMode, boardArchiveLimitCustom],
@@ -256,6 +373,132 @@ export function BoardView() {
     }
     return cols;
   }, [liveTasks, columnOf]);
+  /** Per-column counts with NO query. Which columns are on the board is
+   *  decided from these, so typing never folds a column into Inactive and
+   *  reflows the board under the user mid-keystroke: a column the query
+   *  emptied stays put and reads 0. */
+  const unfilteredCounts = useMemo(() => {
+    const n: Record<BoardStateColumn, number> = { backlog: 0, attention: 0, working: 0, review: 0, settled: 0 };
+    for (const w of allLiveTasks) {
+      const c = columnOf.get(w.id);
+      if (c && c !== "archived") n[c]++;
+    }
+    return n;
+  }, [allLiveTasks, columnOf]);
+
+  const onFilter: OnFilter = useCallback(
+    (key, value) => {
+      const ui = useUI.getState();
+      ui.setBoardQuery(toggleBoardClause(ui.boardQuery, key, value));
+    },
+    [],
+  );
+  // Autocomplete values for the keys with open-ended values, from what is
+  // on the board right now (a project with no tasks is not a useful pick).
+  const valuesFor = useCallback((key: BoardQualifier): readonly string[] => {
+    const known = [...allLiveTasks, ...allArchived];
+    switch (key) {
+      case "project": return [...new Set(known.flatMap(w => [
+        projectById.get(w.project_id)?.name ?? "",
+        ...(w.composition ?? []).map(m => m.dir_name),
+      ]).filter(Boolean))];
+      case "group": return [...new Set(known.map(w => {
+        const p = projectById.get(w.project_id);
+        return p ? groupOf(p) : "";
+      }).filter(Boolean))];
+      case "agent": return [...new Set(known.map(w => w.cli))];
+      case "branch": return [...new Set(allLiveTasks.map(w => w.branch).filter(Boolean))];
+      case "base": return [...new Set(known.map(w => w.base_branch).filter(Boolean))];
+      default: return [];
+    }
+  }, [allLiveTasks, allArchived, projectById]);
+
+  // The filter menu's chips, built only while the menu is open. Each count
+  // is the current query with that chip INCLUDED (`setBoardClause`, the
+  // edit the click makes), run through the real matcher, so an off chip
+  // reads exactly what clicking it leaves and an included one reads what
+  // the board shows. O(chips x cards), never while closed.
+  const filterSections = useMemo((): FilterFacetSection[] => {
+    if (!menuOpen) return NO_SECTIONS;
+    const all = [...allLiveTasks, ...allArchived];
+    const ctxs = new Map(all.map(w => [w.id, matchCtx(w)]));
+    const count = (key: BoardQualifier, value: string) => {
+      const q = parseBoardQuery(setBoardClause(boardQuery, key, value, "include"));
+      let n = 0;
+      for (const w of all) if (boardTaskMatches(w, ctxs.get(w.id)!, q)) n++;
+      return n;
+    };
+    const opt = (key: BoardQualifier, value: string, label: string, extra: Partial<FilterFacetOption> = {}): FilterFacetOption =>
+      ({ key, value, label, count: count(key, value), ...extra });
+
+    const projectByName = new Map<string, Project>();
+    for (const p of projects) if (!projectByName.has(p.name)) projectByName.set(p.name, p);
+    const statusCols = [...BOARD_STATE_COLUMNS, "archived"] as const;
+    const projectNames = valuesFor("project");
+    const groups = valuesFor("group");
+    const prStates = ["open", "draft", "merged", "closed"] as const;
+    return [
+      {
+        id: "status",
+        title: t("board.filterSecStatus"),
+        options: statusCols.map(c => opt("status", c, t(c === "archived" ? "board.colArchived" : COL_LABEL[c]), {
+          swatch: c === "archived" ? "var(--color-fg-faint)" : COL_ACCENT[c],
+        })),
+      },
+      {
+        id: "project",
+        title: t("board.filterSecProject"),
+        options: projectNames.map(name => {
+          // First project of that name: `project:` is name-based, so two
+          // same-named projects are one chip (docs/ui.md).
+          const p = projectByName.get(name);
+          return opt("project", name, name, { swatch: projectAccent(p) ?? "var(--color-fg-faint)" });
+        }),
+      },
+      { id: "group", title: t("board.filterSecGroup"), options: groups.map(g => opt("group", g, g)) },
+      {
+        id: "agent",
+        title: t("board.filterSecAgent"),
+        options: valuesFor("agent").map(cli => opt("agent", cli, agentDisplayName(cli, agents), {
+          icon: (
+            <span className={cn(CLI_BRAND_COLOR[resolveIconId(cli, agents)] || "text-[var(--color-fg-faint)]")}>
+              <CliIcon cli={resolveIconId(cli, agents)} className="h-3 w-3" />
+            </span>
+          ),
+        })),
+      },
+      {
+        id: "pr",
+        title: t("board.filterSecPr"),
+        options: [
+          ...prStates.map(st => opt("pr", st, t(`board.filterPr_${st}`), { swatch: prBadgeAppearance(st, null).color })),
+          opt("pr", "none", t("board.filterPr_none")),
+        ],
+      },
+      {
+        id: "checks",
+        title: t("board.filterSecChecks"),
+        options: [
+          opt("checks", "passing", t("board.filterChecks_passing"), { swatch: "var(--color-ok)" }),
+          opt("checks", "failing", t("board.filterChecks_failing"), { swatch: "var(--color-err)" }),
+          opt("checks", "pending", t("board.filterChecks_pending"), { swatch: "var(--color-warn)" }),
+        ],
+      },
+      {
+        id: "flags",
+        title: t("board.filterSecFlags"),
+        options: [
+          opt("has", "changes", t("board.filterFlag_changes")),
+          opt("is", "worktree", t("board.filterFlag_worktree")),
+          opt("is", "main", t("board.filterFlag_main")),
+          opt("is", "multi", t("board.filterFlag_multi")),
+          opt("is", "sandboxed", t("board.filterFlag_sandboxed")),
+          opt("is", "docker", t("board.filterFlag_docker")),
+          opt("is", "yolo", t("board.filterFlag_yolo")),
+        ],
+      },
+    ];
+  }, [menuOpen, boardQuery, allLiveTasks, allArchived, matchCtx, valuesFor, projects, projectAccent, agents, t]);
 
   // ── Drag: reorder within a same-project group, or drop-to-archive ─────
   //
@@ -472,14 +715,14 @@ export function BoardView() {
   // Archived is never hidden: it is reached by muscle memory, and its drop is
   // the destructive one.
   const hiddenCols = useMemo(
-    () => BOARD_STATE_COLUMNS.filter(c => colTasks[c].length === 0 && !pinnedCols.includes(c)),
-    [colTasks, pinnedCols],
+    () => BOARD_STATE_COLUMNS.filter(c => unfilteredCounts[c] === 0 && !pinnedCols.includes(c)),
+    [unfilteredCounts, pinnedCols],
   );
   const shownCols = useMemo(
     () => BOARD_STATE_COLUMNS.filter(c => !hiddenCols.includes(c)),
     [hiddenCols],
   );
-  const boardEmpty = liveTasks.length === 0 && archivedAll.length === 0;
+  const boardEmpty = allLiveTasks.length === 0 && allArchived.length === 0;
   const ctx: CardContext = { agents, useBranchAsTaskName, workPrefs };
 
   return (
@@ -490,15 +733,27 @@ export function BoardView() {
           <div className="text-[12.5px] text-[var(--color-fg-dim)]">{t("board.emptyBody")}</div>
         </div>
       ) : (
+        <>
+        <BoardFilterBar
+          shown={liveTasks.length + archivedAll.length}
+          total={allLiveTasks.length + allArchived.length}
+          unknownKeys={query.unknownKeys}
+          valuesFor={valuesFor}
+          sections={filterSections}
+          menuOpen={menuOpen}
+          onMenuOpenChange={setMenuOpen}
+        />
         <div className="min-h-0 flex-1 overflow-x-auto">
-          {/* w-max, LEFT aligned: the row sizes to its columns, so a window
-              too narrow for them all scrolls (justify-center + overflow would
-              clip the left columns permanently). It used to center with
-              `mx-auto`, which looked fine at six columns and wrong the moment
-              empty ones started hiding: two columns floated in the middle of
-              the window with a screenful of nothing to their left. A board
-              reads from the left. */}
-          <div className="flex h-full w-max gap-3 p-3">
+          {/* w-max + min-w-full, LEFT aligned. w-max sizes the row to its
+              columns' 280px floor, so a window too narrow for them all
+              scrolls (justify-center + overflow would clip the left columns
+              permanently). min-w-full stretches it to the pane when there is
+              room, and the columns GROW into that room (COLUMN_SIZE). Fixed
+              280px columns left a slab of empty board on the right of any
+              wide window, and centering them (`mx-auto`, the first shape)
+              floated two columns mid-window with nothing either side. A
+              board reads from the left and ends at the right edge. */}
+          <div className="flex h-full w-max min-w-full gap-3 p-3">
             {shownCols.map(col => (
               <BoardColumnView
                 key={col}
@@ -513,7 +768,8 @@ export function BoardView() {
                 dragTarget={drag?.target ?? null}
                 dragSourceId={drag?.taskId ?? null}
                 dragHint={col === "settled" ? !!drag?.canSettle : col === "review" ? !!drag?.canCreatePr : false}
-                onHide={boardColumnCanHide(col, pinnedCols, colTasks[col].length) ? unpinColumn : null}
+                onHide={boardColumnCanHide(col, pinnedCols, unfilteredCounts[col]) ? unpinColumn : null}
+                onFilter={onFilter}
                 onCardPointerDown={onCardPointerDown}
                 onCardClick={onCardClick}
               />
@@ -525,7 +781,7 @@ export function BoardView() {
               data-board-archive
               data-testid="board-archive"
               className={cn(
-                "flex w-[280px] shrink-0 flex-col rounded-[10px] bg-[var(--color-bg-1)]",
+                "flex flex-col rounded-[10px] bg-[var(--color-bg-1)]", COLUMN_SIZE,
                 drag?.target?.kind === "archive" && "ring-1 ring-inset ring-[var(--color-accent-soft)]",
               )}
             >
@@ -629,6 +885,7 @@ export function BoardView() {
             )}
           </div>
         </div>
+        </>
       )}
 
       {/* Drag ghost: follows the pointer while the source card dims in place.
@@ -669,6 +926,16 @@ export function BoardView() {
   );
 }
 
+/** `list`, or the previous render's array when it holds the same items in
+ *  the same order. Element identity, not ids: a task edited in place is a
+ *  new object and must reach the cards. */
+function useSameItems<T>(list: T[]): T[] {
+  const ref = useRef(list);
+  const prev = ref.current;
+  if (prev !== list && (prev.length !== list.length || prev.some((x, i) => x !== list[i]))) ref.current = list;
+  return ref.current;
+}
+
 /** Split a column's tasks into lanes, in `laneIds` order, dropping empty
  *  lanes. */
 function groupByLane(tasks: Task[], laneIds: string[]): { lane: string; tasks: Task[] }[] {
@@ -686,7 +953,7 @@ function groupByLane(tasks: Task[], laneIds: string[]): { lane: string; tasks: T
 // render stops at BoardView itself. Before the memo, a drag over a 50-card
 // board reconciled every column, group and card at input frequency.
 
-const BoardColumnView = memo(function BoardColumnView({ column, laneIds, cellTasks, projectOrder, projectById, projectAccent, ctx, preview, dragTarget, dragSourceId, dragHint, onHide, onCardPointerDown, onCardClick }: {
+const BoardColumnView = memo(function BoardColumnView({ column, laneIds, cellTasks, projectOrder, projectById, projectAccent, ctx, preview, dragTarget, dragSourceId, dragHint, onHide, onFilter, onCardPointerDown, onCardClick }: {
   column: BoardStateColumn;
   laneIds: string[];
   /** The column's cards, straight from the memoized colTasks map. Split
@@ -708,6 +975,7 @@ const BoardColumnView = memo(function BoardColumnView({ column, laneIds, cellTas
    *  cards out of sight, and null on an unpinned one, which is not showing at
    *  all. `boardColumnCanHide` owns that rule. */
   onHide: ((c: BoardStateColumn) => void) | null;
+  onFilter: OnFilter;
   onCardPointerDown: (e: React.PointerEvent, w: Task, lane: string, column: BoardStateColumn) => void;
   onCardClick: (w: Task) => void;
 }) {
@@ -724,7 +992,7 @@ const BoardColumnView = memo(function BoardColumnView({ column, laneIds, cellTas
       data-board-cell
       data-column={column}
       className={cn(
-        "flex w-[280px] shrink-0 flex-col rounded-[10px] bg-[var(--color-bg-1)]",
+        "flex flex-col rounded-[10px] bg-[var(--color-bg-1)]", COLUMN_SIZE,
         isCommandTarget && "ring-1 ring-inset ring-[var(--color-accent-soft)]",
       )}
     >
@@ -765,14 +1033,18 @@ const BoardColumnView = memo(function BoardColumnView({ column, laneIds, cellTas
                 agent's cards is not labelled with the obvious. Sticky so a
                 long column keeps its grouping while scrolling. */}
             {laneIds.length > 1 && (
-              <div
-                className="sticky top-0 z-10 -mx-0.5 flex items-center gap-1.5 bg-[var(--color-bg-1)] px-0.5 py-1 text-[11px] font-medium text-[var(--color-fg-faint)]"
+              <button
+                type="button"
+                data-board-lane-filter={lane}
+                title={t("board.filterBy", { value: `agent:${lane}` })}
+                onClick={() => onFilter("agent", lane)}
+                className="sticky top-0 z-10 -mx-0.5 flex items-center gap-1.5 bg-[var(--color-bg-1)] px-0.5 py-1 text-left text-[11px] font-medium text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]"
               >
                 <span className={cn("shrink-0", CLI_BRAND_COLOR[resolveIconId(lane, ctx.agents)] || "text-[var(--color-fg-faint)]")}>
                   <CliIcon cli={resolveIconId(lane, ctx.agents)} className="h-3 w-3" />
                 </span>
                 <span className="truncate">{agentDisplayName(lane, ctx.agents)}</span>
-              </div>
+              </button>
             )}
             <LaneGroups
               lane={lane}
@@ -784,6 +1056,7 @@ const BoardColumnView = memo(function BoardColumnView({ column, laneIds, cellTas
               ctx={ctx}
               preview={preview}
               dragSourceId={dragSourceId}
+              onFilter={onFilter}
               onCardPointerDown={onCardPointerDown}
               onCardClick={onCardClick}
             />
@@ -796,7 +1069,7 @@ const BoardColumnView = memo(function BoardColumnView({ column, laneIds, cellTas
 
 // ─── Project groups inside one lane ──────────────────────────────────────
 
-const LaneGroups = memo(function LaneGroups({ lane, column, tasks, projectOrder, projectById, projectAccent, ctx, preview, dragSourceId, onCardPointerDown, onCardClick }: {
+const LaneGroups = memo(function LaneGroups({ lane, column, tasks, projectOrder, projectById, projectAccent, ctx, preview, dragSourceId, onFilter, onCardPointerDown, onCardClick }: {
   lane: string;
   column: BoardStateColumn;
   tasks: Task[];
@@ -806,6 +1079,7 @@ const LaneGroups = memo(function LaneGroups({ lane, column, tasks, projectOrder,
   ctx: CardContext;
   preview: ReorderPreview | null;
   dragSourceId: string | null;
+  onFilter: OnFilter;
   onCardPointerDown: (e: React.PointerEvent, w: Task, lane: string, column: BoardStateColumn) => void;
   onCardClick: (w: Task) => void;
 }) {
@@ -828,7 +1102,16 @@ const LaneGroups = memo(function LaneGroups({ lane, column, tasks, projectOrder,
             {/* Always on (GH #318 feedback): on a one-project board nothing
                 else names the project, and the header is how a card from
                 another project reads at a glance when one appears. */}
-            <div className="flex items-center gap-1.5 px-1 pb-1 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-[var(--color-fg-faint)]">
+            {/* Clicking the name toggles `project:<name>` in the filter bar;
+                the bar's text is what changes, so the syntax teaches itself. */}
+            <button
+              type="button"
+              data-board-project-filter={g.projectId}
+              disabled={!project}
+              title={project ? t("board.filterBy", { value: `project:${project.name}` }) : undefined}
+              onClick={() => project && onFilter("project", project.name)}
+              className="flex items-center gap-1.5 px-1 pb-1 text-left text-[10.5px] font-semibold uppercase tracking-[0.05em] text-[var(--color-fg-faint)] enabled:hover:text-[var(--color-fg)]"
+            >
               <span
                 className="h-1.5 w-1.5 shrink-0 rounded-full"
                 style={{ backgroundColor: projectAccent(project) ?? "var(--color-fg-faint)" }}
@@ -837,7 +1120,7 @@ const LaneGroups = memo(function LaneGroups({ lane, column, tasks, projectOrder,
                   BoardView filters out tasks whose project is missing, so this
                   only covers a project removed between the two reads. */}
               <span className="truncate">{project?.name ?? t("board.unknownProject")}</span>
-            </div>
+            </button>
             {/* While the pointer holds cards over this group, the accent ring
                 is the "this is where the drop lands" signal; everywhere else
                 is not a target and stays quiet. */}
