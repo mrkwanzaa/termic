@@ -152,6 +152,15 @@ carries the breadcrumb and the toolbar, and a solid accent behind them fights
 every glyph on it.
 
 The theme picker moved the other way, down to the sidebar footer, to make room.
+
+**The sidebar can carry the colour too, opt-in.** Settings -> Profiles ->
+"Extend profile color to the sidebar" (`profileSidebarWash` in prefs, off by
+default, app-wide rather than per profile) paints `profileSidebarWashCss` on
+the sidebar's `<aside>`: the bar's wash turned to run top to bottom, starting
+weaker than the bar (`SIDEBAR_WASH_ALPHA_PERCENT`) and gone before half way,
+so the nav sits in the colour and the task list does not. Off by default
+because the sidebar is a list of names read all day. The same refusals as the
+bar: nothing without profiles, nothing for a profile with no colour.
 It is a set-once preference and belongs with the other set-once affordances
 rather than on the bar you drive agents from.
 

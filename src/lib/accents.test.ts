@@ -93,3 +93,26 @@ describe("no colour", () => {
     expect(profileWashCss(ACCENT_NONE, true)).toBeUndefined();
   });
 });
+
+describe("profileSidebarWashCss", () => {
+  it("paints nothing without profiles, or for a profile with no colour", async () => {
+    const { profileSidebarWashCss, ACCENT_NONE } = await import("@/lib/accents");
+    expect(profileSidebarWashCss("teal", false)).toBeUndefined();
+    expect(profileSidebarWashCss(ACCENT_NONE, true)).toBeUndefined();
+  });
+
+  it("runs down from the bar, weaker than the bar, and ends above the task list", async () => {
+    const a = await import("@/lib/accents");
+    const css = a.profileSidebarWashCss("teal", true)!;
+    expect(css).toContain("to bottom");
+    expect(css).toContain(`${a.SIDEBAR_WASH_ALPHA_PERCENT}%, transparent) 0%`);
+    expect(css).toContain(`transparent ${a.SIDEBAR_WASH_END_PERCENT}%`);
+    expect(a.SIDEBAR_WASH_ALPHA_PERCENT).toBeLessThan(a.WASH_ALPHA_PERCENT);
+    expect(a.SIDEBAR_WASH_END_PERCENT).toBeLessThanOrEqual(50);
+  });
+
+  it("takes a custom hex like the bar does", async () => {
+    const { profileSidebarWashCss } = await import("@/lib/accents");
+    expect(profileSidebarWashCss("#ff8800", true)).toContain("#ff8800");
+  });
+});

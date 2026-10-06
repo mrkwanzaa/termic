@@ -466,6 +466,10 @@ export default {
   prompts: {
     desc: "Reusable prompts for the Prompts menu in the top bar. When you fire one, you pick where it goes: an existing agent (queued if it is busy) or a new agent. Drag to reorder. Built-ins can be edited and reset. Open the palette with {{combo}} to search and fire them by keyboard.",
     new: "New prompt",
+    sidebarWash: {
+      label: "Extend profile color to the sidebar",
+      hint: "The title bar always carries this window's profile color. This carries it down the top of the sidebar too. A profile with no color stays plain.",
+    },
     empty: "No prompts. Add one, or restore the built-ins below.",
     dragTip: "Drag to reorder",
     titlePlaceholder: "Prompt title",

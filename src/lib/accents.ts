@@ -99,3 +99,32 @@ export const profileWashCss = (key: string | undefined, hasProfile: boolean): st
     + `color-mix(in srgb, ${c} ${WASH_MID_PERCENT}%, transparent) 25%, `
     + `transparent ${WASH_END_PERCENT}%)`;
 };
+
+/** Where the sidebar's wash starts, at its top edge. Lower than the bar's
+ *  `WASH_ALPHA_PERCENT`: the bar's own wash has already fallen part of the way
+ *  by the sidebar's middle, and this is the value that meets it there instead
+ *  of drawing a brighter band under the bar. */
+export const SIDEBAR_WASH_ALPHA_PERCENT = 16;
+export const SIDEBAR_WASH_MID_PERCENT = 6;
+/** Gone by here, measured down the sidebar. The nav and the first projects sit
+ *  in the colour; the long task list below reads on the plain surface. */
+export const SIDEBAR_WASH_END_PERCENT = 45;
+
+/**
+ * The bar's wash carried DOWN the sidebar, for people who want the profile's
+ * colour on more than a 44px strip. Opt-in (`profileSidebarWash` in prefs):
+ * the sidebar is a list of names read all day, and a tint under it is a taste,
+ * not a default.
+ *
+ * The same shape as `profileWashCss` turned to run top to bottom, and the same
+ * two refusals: nothing without profiles, nothing for a profile that opted out
+ * of a colour.
+ */
+export const profileSidebarWashCss = (key: string | undefined, hasProfile: boolean): string | undefined => {
+  if (!hasProfile || key === ACCENT_NONE) return undefined;
+  const c = profileAccentCss(key);
+  return `linear-gradient(to bottom, `
+    + `color-mix(in srgb, ${c} ${SIDEBAR_WASH_ALPHA_PERCENT}%, transparent) 0%, `
+    + `color-mix(in srgb, ${c} ${SIDEBAR_WASH_MID_PERCENT}%, transparent) 25%, `
+    + `transparent ${SIDEBAR_WASH_END_PERCENT}%)`;
+};

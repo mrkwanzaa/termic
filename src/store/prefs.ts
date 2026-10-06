@@ -116,6 +116,7 @@ const LS_SVG_VIEW      = "svgDefaultView";
 const LS_LOAD_REMOTE_IMAGES = "loadRemoteImages";
 const LS_SIDEBAR_HOVER_REVEAL = "sidebarHoverReveal";
 const LS_FIND_IN_FILES_REGEX = "findInFilesRegex";
+const LS_PROFILE_SIDEBAR_WASH = "profileSidebarWash";
 const LS_FIND_IN_FILES_MATCH_CASE = "findInFilesMatchCase";
 const LS_BRANCH_PREFIX = "branchPrefix";
 const LS_QUEUE_MIN_INTERVAL = "queueMinIntervalMs";
@@ -603,6 +604,11 @@ interface PrefsState {
    *  Appearance > Interface > Sidebar. */
   sidebarHoverReveal: boolean;
   /** Find in files (⇧⌘F) treats the query as a POSIX ERE instead of a
+  /** Carry the profile's accent wash from the title bar down the sidebar
+   *  (`profileSidebarWashCss`). OFF by default. Not profile-scoped: it is a
+   *  taste about how profiles are drawn, not a fact about one of them.
+   *  Settings > Profiles. */
+  profileSidebarWash: boolean;
    *  literal string. Toggled from the search bar itself, persisted so it
    *  survives a relaunch. */
   findInFilesRegex: boolean;
@@ -971,6 +977,7 @@ interface PrefsState {
   setGlobalDefaultSandboxKind: (v: SandboxSelection) => void;
   setSandboxBypassPermissions: (v: boolean) => void;
   setDefaultYolo: (v: boolean) => void;
+  setProfileSidebarWash: (v: boolean) => void;
   setAllowScope: (s: "agent" | "project" | "repo") => void;
   setTaskExpandMode: (m: "chevron" | "click" | "always") => void;
   setHideInactiveProjects: (v: boolean) => void;
@@ -1192,6 +1199,7 @@ const initialDefaultSandboxKind = readInitialDefaultSandboxKind();
 // ON by default — sandboxed agents bypass their own permission prompts
 // because the seatbelt is the real boundary. Users can opt out.
 const initialSandboxBypass = lsGetBool(LS_SANDBOX_BYPASS, true);
+const initialProfileSidebarWash = lsGetBool(LS_PROFILE_SIDEBAR_WASH, false);
 const initialDefaultYolo = lsGetBool(LS_DEFAULT_YOLO, false);
 const initialAllowScope: "agent" | "project" | "repo" | null = (() => {
   const raw = lsGet(LS_ALLOW_SCOPE, "");
@@ -1287,6 +1295,7 @@ export const usePrefs = create<PrefsState>(set => ({
   editorFontSize: initialEditorSize,
   uiScale: initialUiScale,
   codeLigatures: initialLigatures,
+  profileSidebarWash: initialProfileSidebarWash,
   inlineBlame: initialInlineBlame,
   editorWordWrap: initialWordWrap,
   codeIntelligence: initialCodeNav,
@@ -1615,6 +1624,11 @@ export const usePrefs = create<PrefsState>(set => ({
     set({ defaultYolo: v });
   },
   setAllowScope: (s) => {
+  setProfileSidebarWash: (v) => set(s => {
+    if (s.profileSidebarWash === v) return s;
+    try { localStorage.setItem(LS_PROFILE_SIDEBAR_WASH, v ? "1" : "0"); } catch {}
+    return { profileSidebarWash: v };
+  }),
     try { localStorage.setItem(LS_ALLOW_SCOPE, s); } catch {}
     set({ allowScope: s });
   },

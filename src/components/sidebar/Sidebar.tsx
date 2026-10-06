@@ -42,7 +42,8 @@ import { SandboxIcon, sandboxModeText, DockerSandboxIcon } from "@/components/Sa
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { useTaskLabel } from "@/lib/taskLabel";
 import { useProfilesSync } from "@/components/ProfileChip";
-import { accentCss } from "@/lib/accents";
+import { useProfiles } from "@/store/profiles";
+import { accentCss, profileSidebarWashCss } from "@/lib/accents";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
 import { TaskPrBadge } from "@/components/TaskPrBadge";
 import { GroupActionsMenuItems } from "./GroupActionsMenuItems";
@@ -174,6 +175,15 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const setHideInactiveProjects = usePrefs(s => s.setHideInactiveProjects);
   const showStatusSection = usePrefs(s => s.showStatusSection);
   const showBoard = usePrefs(s => s.showBoard);
+  // The profile's accent carried down from the title bar, opt-in. Selected as
+  // the finished CSS string (or undefined) so the sidebar re-renders only when
+  // the colour itself changes, not on every profile-store touch.
+  const sidebarWashOn = usePrefs(s => s.profileSidebarWash);
+  const sidebarWash = useProfiles(s => {
+    if (!sidebarWashOn) return undefined;
+    const me = s.profiles.find(p => p.slug === s.current);
+    return profileSidebarWashCss(me?.accent, s.profiles.length > 0);
+  });
   const setShowStatusSection = usePrefs(s => s.setShowStatusSection);
   // Temporary, non-persisted reveal of the hidden inactive projects. Reset
   // whenever the hide pref flips off so the "Show N inactive" row starts
@@ -1132,7 +1142,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     // The wrapper is the grid cell now; it does not clip, and the 5px that
     // overhang the sidebar land on the main area, a sibling.
     <div className="relative flex h-full min-w-0">
-    <aside ref={asideRef} className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)]">
+    <aside
+      ref={asideRef}
+      data-profile-wash={sidebarWash ? "" : undefined}
+      style={sidebarWash ? { backgroundImage: sidebarWash } : undefined}
+      className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)]"
+    >
       {/* Primary nav: Dashboard / History (no top chrome — that's the unified bar's job now) */}
       <nav className={cn("flex flex-col gap-0.5", compact ? "p-1.5 pt-2" : "p-2 pt-3")}>
         <NavItem icon={<LayoutGrid className={iconSize(compact)} />} label={t("navDashboard")}

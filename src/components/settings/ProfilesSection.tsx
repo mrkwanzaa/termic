@@ -11,6 +11,8 @@ import { useTranslation } from "react-i18next";
 import { Plus, Trash2, Check } from "lucide-react";
 import { useProfiles } from "@/store/profiles";
 import { useUI } from "@/store/ui";
+import { usePrefs } from "@/store/prefs";
+import { Toggle } from "@/components/settings/Controls";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { AccentDots, ProfileDot } from "@/components/ui/AccentDots";
@@ -26,6 +28,8 @@ export function ProfilesSection() {
   const refresh = useProfiles(s => s.refresh);
   const openNewProfile = useUI(s => s.openNewProfile);
   const setDeleteSlug = useUI(s => s.setDeleteProfileSlug);
+  const sidebarWash = usePrefs(s => s.profileSidebarWash);
+  const setSidebarWash = usePrefs(s => s.setProfileSidebarWash);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
@@ -99,6 +103,14 @@ export function ProfilesSection() {
                 {t("profiles.disable")}
               </Button>
             )}
+          </div>
+          <div data-testid="profiles-sidebar-wash">
+            <Toggle
+              label={t("profiles.sidebarWash.label")}
+              hint={t("profiles.sidebarWash.hint")}
+              value={sidebarWash}
+              onChange={setSidebarWash}
+            />
           </div>
         </div>
       )}

@@ -722,6 +722,16 @@ describe("prefs: status section", () => {
     expect(calls).toBe(0);
   });
 
+  it("the profile colour stays off the sidebar until asked for", async () => {
+    const first = await import("./prefs");
+    expect(first.usePrefs.getState().profileSidebarWash).toBe(false);
+    first.usePrefs.getState().setProfileSidebarWash(true);
+    expect(localStorage.getItem("profileSidebarWash")).toBe("1");
+    vi.resetModules();
+    const second = await import("./prefs");
+    expect(second.usePrefs.getState().profileSidebarWash).toBe(true);
+  });
+
   it("the setters persist", async () => {
     const { usePrefs } = await import("./prefs");
     usePrefs.getState().setShowStatusSection(true);

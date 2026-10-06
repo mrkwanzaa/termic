@@ -190,6 +190,33 @@ describe("profiles", () => {
     await snap("profiles-chip");
   });
 
+  // Opt-in, so the default has to be asserted as hard as the effect: a
+  // sidebar that picked up a tint for everyone would be the regression.
+  // Measured on the computed style, since a 16% wash is not something a
+  // screenshot settles either way.
+  it("carries the profile colour down the sidebar only when asked", async () => {
+    const image = () => browser.execute(
+      () => getComputedStyle(document.querySelector("aside")!).backgroundImage,
+    );
+    const setWash = (on: boolean) => browser.execute(
+      (v) => window.__termic!.usePrefs.getState().setProfileSidebarWash(v), on,
+    );
+    expect(await browser.execute(() => window.__termic!.usePrefs.getState().profileSidebarWash)).toBe(false);
+    expect(await image()).toBe("none");
+    try {
+      await setWash(true);
+      await browser.waitUntil(async () => (await image()).includes("linear-gradient"), {
+        timeout: 5_000, timeoutMsg: `the sidebar never took the wash: ${await image()}`,
+      });
+      await snap("profiles-sidebar-wash");
+    } finally {
+      await setWash(false);
+    }
+    await browser.waitUntil(async () => (await image()) === "none", {
+      timeout: 5_000, timeoutMsg: "the sidebar kept the wash with the setting off",
+    });
+  });
+
   it("lists every profile in the chip popover", async () => {
     await clickWhenVisible('[data-testid="profile-chip"]');
     await waitVisible('[data-testid="profile-row-work"]');
