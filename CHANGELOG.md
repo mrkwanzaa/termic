@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.13.0] - 2026-10-06
+## [1.13.1] - 2026-10-06
 
 Scheduled tasks, config sync through your own git repo, and a sidebar status section.
 
@@ -79,6 +79,10 @@ Scheduled tasks, config sync through your own git repo, and a sidebar status sec
 - **Windows: `termic help --json` could crash** with a stack overflow.
 - **The agents strip in Settings** no longer draws a scrollbar under itself;
   it fades at the end that has more.
+- **A queued message could wait forever behind an idle agent.** Pressing
+  Enter on something that starts no turn (a slash command that restarts the
+  session) could leave the tab marked as working with nothing to end it, so
+  messages queued for it, including ones another agent sent, never went out.
 
 ## [1.12.2] - 2026-10-02
 

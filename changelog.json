@@ -1,7 +1,7 @@
 {
   "versions": [
     {
-      "version": "1.13.0",
+      "version": "1.13.1",
       "date": "2026-10-06",
       "summary": "Scheduled tasks, config sync through your own git repo, and a sidebar status section."
     },
