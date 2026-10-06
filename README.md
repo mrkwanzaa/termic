@@ -479,19 +479,12 @@ specs and get an issue at the same time. That is the whole promotion path:
   not shipped. A tip that fires once after an upgrade, next to the thing it
   is about, is the missing rung between a changelog line and a 16px button.
   [docs/ideas/feature-tips.md](docs/ideas/feature-tips.md).
-- **Config sync through a git repo.** Projects, folder colours, per-project
-  overrides, custom agents, prompts and shortcuts live on one machine today, so
-  a second laptop or a reinstall means setting it all up again. Syncing through
-  a private git repo you own needs no OAuth, stores no tokens, and adds no host
-  the app talks to. What must never cross machines is the interesting half:
-  anything naming a path, a binary, a port range, a hardware fact or a
-  credential. [docs/ideas/config-sync.md](docs/ideas/config-sync.md).
-- **Scheduled tasks.** The recurring half of
-  [#300](https://github.com/simion/termic/issues/300), whose one-shot half
-  shipped as scheduled queue messages. A schedule would be a parent task, each
-  run a new task in its group, firing only while Termic runs, with presets
-  rather than cron and a report file per run.
-  [docs/ideas/scheduled-tasks.md](docs/ideas/scheduled-tasks.md).
+- **Config sync, beyond manual.** Syncing your setup through a private git
+  repo you own ships in 1.13.0 as an experimental, manual feature: one pull at
+  launch and a "Sync now" button. What is left: pushing and pulling on its own
+  when something changes, and merging two machines' edits field by field
+  instead of asking you to pick a whole file.
+  [docs/ideas/config-sync.md](docs/ideas/config-sync.md).
 - **The rest of the usage footer.** The chip ships, and the questions it
   left open did not: what to show before an agent has taken its first turn,
   and whether the status line slot is the right thing to occupy at all.
