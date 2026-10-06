@@ -2462,6 +2462,48 @@ describe("settings reorder drags", () => {
       }, original);
     });
 
+    // The strip scrolls with no scrollbar, so the fade is the only sign that
+    // pills are out of sight, and it has to be on the end that has them.
+    it("hides the strip's scrollbar and fades the end with more pills", async () => {
+      const strip = '[data-testid="agents-strip"]';
+      const read = () => browser.execute((sel) => {
+        const el = document.querySelector(sel) as HTMLElement;
+        const cs = getComputedStyle(el);
+        return {
+          overflows: el.scrollWidth > el.clientWidth + 1,
+          scrollbar: cs.scrollbarWidth,
+          mask: cs.webkitMaskImage || cs.maskImage,
+          left: el.hasAttribute("data-more-left"),
+          right: el.hasAttribute("data-more-right"),
+        };
+      }, strip);
+      const scrollTo = (x: number) => browser.execute((sel, left) => {
+        (document.querySelector(sel) as HTMLElement).scrollLeft = left;
+      }, strip, x);
+
+      await scrollTo(0);
+      const start = await read();
+      expect(start.scrollbar).toBe("none");
+      expect(start.left).toBe(false);
+      // A window wide enough for every pill has nothing to fade, and must not.
+      if (!start.overflows) {
+        expect(start.right).toBe(false);
+        expect(start.mask).toBe("none");
+        return;
+      }
+      expect(start.right).toBe(true);
+      expect(start.mask).toContain("linear-gradient");
+
+      await scrollTo(100_000);
+      await browser.waitUntil(async () => {
+        const s = await read();
+        return s.left && !s.right;
+      }, { timeout: 5_000, timeoutMsg: `the fade did not move to the left end: ${JSON.stringify(await read())}` });
+      await scrollTo(0);
+      await browser.waitUntil(async () => !(await read()).left,
+        { timeout: 5_000, timeoutMsg: "the left fade stayed after scrolling back" });
+    });
+
     it("reorders agent pills within their kind", async () => {
       const kindOrder = (await browser.execute(() =>
         [...document.querySelectorAll('[data-agent-id][data-kind="agent"]')].map(

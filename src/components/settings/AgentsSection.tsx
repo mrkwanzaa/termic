@@ -570,6 +570,26 @@ function AgentsTabs({
   // Drag-to-reorder — same pointer-based pattern as TabBar (no HTML5 DnD;
   // WKWebView's native drag is unreliable and Tauri intercepts it).
   const stripRef = useRef<HTMLDivElement>(null);
+  // Which ends of the strip have pills scrolled out of sight. The scrollbar
+  // is hidden, so a fade on that end is the only sign there are more.
+  const [stripMore, setStripMore] = useState({ left: false, right: false });
+  useLayoutEffect(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    const measure = () => {
+      const left = strip.scrollLeft > 1;
+      const right = strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1;
+      setStripMore(m => (m.left === left && m.right === right ? m : { left, right }));
+    };
+    measure();
+    strip.addEventListener("scroll", measure, { passive: true });
+    const ro = new ResizeObserver(measure);
+    ro.observe(strip);
+    return () => { strip.removeEventListener("scroll", measure); ro.disconnect(); };
+  }, [agents.length]);
+  const stripMask = stripMore.left || stripMore.right
+    ? `linear-gradient(to right, ${stripMore.left ? "transparent, black 40px" : "black"}, ${stripMore.right ? "black calc(100% - 56px), transparent" : "black"})`
+    : undefined;
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragTx, setDragTx] = useState(0);
   const dragRef = useRef<{
@@ -723,7 +743,20 @@ function AgentsTabs({
           border under inactive tabs, accent underline beneath the
           active one. Keeps the visual language consistent across
           settings pages. */}
-      <div ref={stripRef} className="flex items-center gap-1 overflow-x-auto overflow-y-hidden border-b border-[var(--color-border-soft)]">
+      {/* The border sits on the wrapper so the fade below takes the pills
+          and leaves the rule under them whole. */}
+      <div className="border-b border-[var(--color-border-soft)]">
+      <div
+        ref={stripRef}
+        data-testid="agents-strip"
+        data-more-left={stripMore.left || undefined}
+        data-more-right={stripMore.right || undefined}
+        // A mask, not a gradient overlay: it fades the pills themselves, so it
+        // needs no knowledge of the surface colour behind them and cannot sit
+        // on top of a pill and eat its click.
+        style={stripMask ? { maskImage: stripMask, WebkitMaskImage: stripMask } : undefined}
+        className="no-scrollbar flex items-center gap-1 overflow-x-auto overflow-y-hidden"
+      >
         {agentEntries.map((a, idx) => pill(a, idx === 0))}
         {termEntries.length > 0 && (
           <span className="ml-4 mr-1 shrink-0 select-none text-[10.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
@@ -731,6 +764,7 @@ function AgentsTabs({
           </span>
         )}
         {termEntries.map(a => pill(a, false))}
+      </div>
       </div>
 
       {/* Active agent card. Mount-keyed by id so internal state
