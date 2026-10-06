@@ -302,6 +302,31 @@ describe("the Scheduled view and dialog", () => {
     }
   });
 
+  // Settings -> Appearance -> Sidebar's three-way. "With schedules" is
+  // asserted against the store rather than a fixed answer, so this holds
+  // whichever schedules the cases above left behind.
+  it("the Scheduled nav entry follows its setting", async () => {
+    const nav = '[data-testid="nav-scheduled"]';
+    const shown = () => browser.execute((s) => !!document.querySelector(s), nav);
+    const setMode = (m: string) => browser.execute(
+      (v) => window.__termic!.usePrefs.getState().setScheduledNav(v as any), m,
+    );
+    const expectShown = (want: boolean, why: string) =>
+      browser.waitUntil(async () => (await shown()) === want, { timeout: 5_000, timeoutMsg: why });
+    await waitVisible(nav);
+    try {
+      await setMode("off");
+      await expectShown(false, "the Scheduled entry stayed with the setting off");
+      await setMode("auto");
+      const has = await browser.execute(() =>
+        window.__termic!.useApp.getState().tasks.some((t: any) => !!t.schedule && !t.archived));
+      await expectShown(has, `"With schedules" disagreed with the store (has a schedule: ${has})`);
+    } finally {
+      await setMode("always");
+    }
+    await expectShown(true, "the Scheduled entry did not come back on Always");
+  });
+
   it("the nav opens the Scheduled view, which states its ceiling", async () => {
     await clickWhenVisible('[data-testid="nav-scheduled"]');
     await waitVisible('[data-testid="scheduled-root"]');

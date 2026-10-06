@@ -4,7 +4,7 @@
 
 import { CodeIntelServers } from "./CodeIntelServers";
 import { useApp } from "@/store/app";
-import { usePrefs, resolveTheme, BUNDLED_FONT_ID, MONO_FONT_OPTIONS, APPEARANCE_DEFAULTS, availableMonoFonts, availableMonoFontsAsync, sortFontOptions, stackFor } from "@/store/prefs";
+import { usePrefs, scheduledNavVisible, resolveTheme, BUNDLED_FONT_ID, MONO_FONT_OPTIONS, APPEARANCE_DEFAULTS, availableMonoFonts, availableMonoFontsAsync, sortFontOptions, stackFor } from "@/store/prefs";
 import type { TerminalRendererKind } from "@/store/prefs";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation, Trans } from "react-i18next";
@@ -444,6 +444,8 @@ function SidebarSection() {
   const setShowStatusSection = usePrefs(s => s.setShowStatusSection);
   const showBoard = usePrefs(s => s.showBoard);
   const setShowBoard = usePrefs(s => s.setShowBoard);
+  const scheduledNav = usePrefs(s => s.scheduledNav);
+  const setScheduledNav = usePrefs(s => s.setScheduledNav);
 
   return (
     <div className="flex flex-col gap-6">
@@ -503,6 +505,43 @@ function SidebarSection() {
           if (!v && app.view.page === "board") app.setView("dashboard");
         }}
       />
+      <div className="flex items-start justify-between gap-6" data-testid="scheduled-nav-setting">
+        <div className="min-w-0 flex-1">
+          <div className="text-[14px] font-medium">{t("appearance.scheduledNav.label")}</div>
+          <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
+            {t("appearance.scheduledNav.hint")}
+          </div>
+        </div>
+        <div className="inline-flex items-stretch rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-[3px]">
+          {([
+            ["off",    t("appearance.scheduledNav.off"),    t("appearance.scheduledNav.offHint")],
+            ["auto",   t("appearance.scheduledNav.auto"),   t("appearance.scheduledNav.autoHint")],
+            ["always", t("appearance.scheduledNav.always"), t("appearance.scheduledNav.alwaysHint")],
+          ] as const).map(([id, label, hint]) => (
+            <Tip key={id} content={hint} side="top">
+              <button
+                type="button"
+                data-value={id}
+                aria-pressed={scheduledNav === id}
+                onClick={() => {
+                  setScheduledNav(id);
+                  // Same reason as the board switch above: do not leave the
+                  // window on a view its nav entry no longer leads to.
+                  const app = useApp.getState();
+                  const has = app.tasks.some(x => !!x.schedule && !x.archived);
+                  if (app.view.page === "scheduled" && !scheduledNavVisible(id, has)) app.setView("dashboard");
+                }}
+                className={cn(
+                  "h-7 rounded-[5px] px-2.5 text-[12px] transition-colors",
+                  scheduledNav === id
+                    ? "bg-[var(--color-accent-deep)] text-white"
+                    : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg)]",
+                )}
+              >{label}</button>
+            </Tip>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

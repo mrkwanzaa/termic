@@ -722,6 +722,21 @@ describe("prefs: status section", () => {
     expect(calls).toBe(0);
   });
 
+  it("the Scheduled nav entry: always by default, and auto follows the schedules", async () => {
+    const first = await import("./prefs");
+    expect(first.usePrefs.getState().scheduledNav).toBe("always");
+    expect(first.parseScheduledNav("junk")).toBe("always");
+    expect(first.scheduledNavVisible("always", false)).toBe(true);
+    expect(first.scheduledNavVisible("auto", false)).toBe(false);
+    expect(first.scheduledNavVisible("auto", true)).toBe(true);
+    expect(first.scheduledNavVisible("off", true)).toBe(false);
+    first.usePrefs.getState().setScheduledNav("auto");
+    expect(localStorage.getItem("scheduledNav")).toBe("auto");
+    vi.resetModules();
+    const second = await import("./prefs");
+    expect(second.usePrefs.getState().scheduledNav).toBe("auto");
+  });
+
   it("the profile colour stays off the sidebar until asked for", async () => {
     const first = await import("./prefs");
     expect(first.usePrefs.getState().profileSidebarWash).toBe(false);

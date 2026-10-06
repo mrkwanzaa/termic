@@ -8,7 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { logWorkState } from "@/lib/workStateLog";
 import { useApp, useActiveTabId } from "@/store/app";
 import { useRowTabs, useSidebarTabFacts } from "@/store/sidebarTabs";
-import { usePrefs } from "@/store/prefs";
+import { usePrefs, scheduledNavVisible } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
@@ -175,6 +175,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const setHideInactiveProjects = usePrefs(s => s.setHideInactiveProjects);
   const showStatusSection = usePrefs(s => s.showStatusSection);
   const showBoard = usePrefs(s => s.showBoard);
+  const scheduledNav = usePrefs(s => s.scheduledNav);
+  // A boolean out of the selector, so a task write that leaves the answer
+  // alone re-renders nothing here.
+  const hasSchedule = useApp(s => s.tasks.some(x => !!x.schedule && !x.archived));
+  const showScheduled = scheduledNavVisible(scheduledNav, hasSchedule);
   // The profile's accent carried down from the title bar, opt-in. Selected as
   // the finished CSS string (or undefined) so the sidebar re-renders only when
   // the colour itself changes, not on every profile-store touch.
@@ -1164,10 +1169,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             onClick={() => setView("board")} testId="nav-board"
           />
         )}
-        <NavItem icon={<CalendarClock className={iconSize(compact)} />} label={t("navScheduled")}
-          active={currentView === "scheduled" && !activeTask} compact={compact}
-          onClick={() => setView("scheduled")} testId="nav-scheduled"
-        />
+        {showScheduled && (
+          <NavItem icon={<CalendarClock className={iconSize(compact)} />} label={t("navScheduled")}
+            active={currentView === "scheduled" && !activeTask} compact={compact}
+            onClick={() => setView("scheduled")} testId="nav-scheduled"
+          />
+        )}
       </nav>
 
       {/* Projects section */}

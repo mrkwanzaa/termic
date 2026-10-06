@@ -382,6 +382,16 @@ export default {
       label: "Kanban board",
       hint: "Show Kanban in the sidebar's navigation. Turn it off if you never use the board.",
     },
+    scheduledNav: {
+      label: "Scheduled",
+      hint: "Show Scheduled in the sidebar's navigation.",
+      off: "Off",
+      offHint: "Never. Schedules keep running, and New schedule stays in the command palette.",
+      auto: "With schedules",
+      autoHint: "Only while this profile has a schedule, paused ones included.",
+      always: "Always",
+      alwaysHint: "Whether or not anything is scheduled.",
+    },
     statusSection: {
       label: "Status section",
       hint: "A section above Projects listing the tasks that need you, are working or are in review, in the Kanban board's columns. Settled and Not started show a count until opened.",
@@ -456,6 +466,10 @@ export default {
     createFirst: "Create a profile",
     newProfile: "New profile",
     disable: "Stop using profiles",
+    sidebarWash: {
+      label: "Extend profile color to the sidebar",
+      hint: "The title bar always carries this window's profile color. This carries it down the top of the sidebar too. A profile with no color stays plain.",
+    },
     disableNote: "\"Stop using profiles\" keeps every project, task and setting exactly where it is. It only stops giving this window a name.",
     thisWindow: "This window",
     focus: "Focus",
@@ -466,10 +480,6 @@ export default {
   prompts: {
     desc: "Reusable prompts for the Prompts menu in the top bar. When you fire one, you pick where it goes: an existing agent (queued if it is busy) or a new agent. Drag to reorder. Built-ins can be edited and reset. Open the palette with {{combo}} to search and fire them by keyboard.",
     new: "New prompt",
-    sidebarWash: {
-      label: "Extend profile color to the sidebar",
-      hint: "The title bar always carries this window's profile color. This carries it down the top of the sidebar too. A profile with no color stays plain.",
-    },
     empty: "No prompts. Add one, or restore the built-ins below.",
     dragTip: "Drag to reorder",
     titlePlaceholder: "Prompt title",

@@ -1655,7 +1655,10 @@ the browser configured for previews, never in the webview, which sits outside
 the sandbox. The Scheduled view's link opens either one on request.
 
 **Surfaces.** A **Scheduled** entry in the primary nav (fourth, after
-Kanban) opens `views/Scheduled.tsx`: each schedule's agent, name, project,
+Kanban; Settings -> Appearance -> Sidebar's "Scheduled" picks Off, With
+schedules or Always, `scheduledNav` in prefs, Always by default, and "With
+schedules" counts a paused schedule because the view is where it is switched
+back on) opens `views/Scheduled.tsx`: each schedule's agent, name, project,
 cadence, next run, last outcome (a fired run reads as its report's title,
 linked), an enabled switch, Run now, edit, delete, and its history. Delete
 asks, with "Also delete its reports" unticked, and leaves the parent and its

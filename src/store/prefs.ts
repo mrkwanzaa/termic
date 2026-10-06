@@ -105,6 +105,7 @@ const LS_BOARD_ARCHIVE_LIMIT = scoped("boardArchiveLimit");
 const LS_BOARD_PINNED_COLUMNS = scoped("boardPinnedColumns");
 const LS_SHOW_STATUS_SECTION = scoped("showStatusSection");
 const LS_SHOW_BOARD = scoped("showBoard");
+const LS_SCHEDULED_NAV = scoped("scheduledNav");
 const LS_STATUS_BUCKET_COLLAPSED = scoped("statusBucketCollapsed");
 const LS_STATUS_TASK_EXPANDED = scoped("statusTaskExpanded");
 const LS_STATUS_GROUP_COLLAPSED = scoped("statusGroupCollapsed");
@@ -115,8 +116,8 @@ const LS_MD_VIEW       = "markdownDefaultView";
 const LS_SVG_VIEW      = "svgDefaultView";
 const LS_LOAD_REMOTE_IMAGES = "loadRemoteImages";
 const LS_SIDEBAR_HOVER_REVEAL = "sidebarHoverReveal";
-const LS_FIND_IN_FILES_REGEX = "findInFilesRegex";
 const LS_PROFILE_SIDEBAR_WASH = "profileSidebarWash";
+const LS_FIND_IN_FILES_REGEX = "findInFilesRegex";
 const LS_FIND_IN_FILES_MATCH_CASE = "findInFilesMatchCase";
 const LS_BRANCH_PREFIX = "branchPrefix";
 const LS_QUEUE_MIN_INTERVAL = "queueMinIntervalMs";
@@ -603,12 +604,12 @@ interface PrefsState {
    *  Tip on hover, so nothing goes unlabeled when this is off. Settings >
    *  Appearance > Interface > Sidebar. */
   sidebarHoverReveal: boolean;
-  /** Find in files (⇧⌘F) treats the query as a POSIX ERE instead of a
   /** Carry the profile's accent wash from the title bar down the sidebar
    *  (`profileSidebarWashCss`). OFF by default. Not profile-scoped: it is a
    *  taste about how profiles are drawn, not a fact about one of them.
    *  Settings > Profiles. */
   profileSidebarWash: boolean;
+  /** Find in files (⇧⌘F) treats the query as a POSIX ERE instead of a
    *  literal string. Toggled from the search bar itself, persisted so it
    *  survives a relaunch. */
   findInFilesRegex: boolean;
@@ -814,6 +815,10 @@ interface PrefsState {
   /** The Kanban entry in the sidebar's primary nav, the only way into the
    *  board. On by default; off hides the entry for people who never use it. */
   showBoard: boolean;
+  /** The Scheduled entry in the sidebar's primary nav: never, only while
+   *  this profile has a schedule ("auto"), or always. Always by default, the
+   *  shape it shipped in. */
+  scheduledNav: ScheduledNavMode;
   /** Per-bucket overrides of the default fold (count-only buckets start
    *  closed). Only buckets the user toggled are stored. */
   statusBucketCollapsed: StatusBucketCollapsed;
@@ -972,12 +977,12 @@ interface PrefsState {
   setAttentionIndicator: (v: boolean) => void;
   setLoadRemoteImages: (v: boolean) => void;
   setSidebarHoverReveal: (v: boolean) => void;
+  setProfileSidebarWash: (v: boolean) => void;
   setFindInFilesRegex: (v: boolean) => void;
   setFindInFilesMatchCase: (v: boolean) => void;
   setGlobalDefaultSandboxKind: (v: SandboxSelection) => void;
   setSandboxBypassPermissions: (v: boolean) => void;
   setDefaultYolo: (v: boolean) => void;
-  setProfileSidebarWash: (v: boolean) => void;
   setAllowScope: (s: "agent" | "project" | "repo") => void;
   setTaskExpandMode: (m: "chevron" | "click" | "always") => void;
   setHideInactiveProjects: (v: boolean) => void;
@@ -986,6 +991,7 @@ interface PrefsState {
   setBoardPinnedColumns: (cols: readonly BoardStateColumn[]) => void;
   setShowStatusSection: (v: boolean) => void;
   setShowBoard: (v: boolean) => void;
+  setScheduledNav: (m: ScheduledNavMode) => void;
   setStatusBucketCollapsed: (bucket: StatusBucket, collapsed: boolean) => void;
   /** `liveIds`: the tasks that still exist, so dead ids are pruned on write. */
   setStatusTaskExpanded: (taskId: string, expanded: boolean, liveIds: readonly string[]) => void;
@@ -1017,6 +1023,19 @@ const lsGetNum = (k: string, fallback: number) => {
   const v = Number(lsGet(k, String(fallback)));
   return Number.isFinite(v) ? v : fallback;
 };
+export type ScheduledNavMode = "off" | "auto" | "always";
+/** Anything unrecognised is the default, so a hand-edited or older value
+ *  never hides the entry. */
+export function parseScheduledNav(raw: string): ScheduledNavMode {
+  return raw === "off" || raw === "auto" ? raw : "always";
+}
+/** Whether the Scheduled nav entry shows. "auto" counts ANY schedule on a
+ *  live task, paused ones included: the view is where a paused schedule is
+ *  switched back on, so pausing the only one must not remove the way to it. */
+export function scheduledNavVisible(mode: ScheduledNavMode, hasSchedule: boolean): boolean {
+  return mode === "always" || (mode === "auto" && hasSchedule);
+}
+
 const lsGetBool = (k: string, fallback: boolean) => lsGet(k, fallback ? "1" : "0") === "1";
 
 /** Resolve the stored keybinding overrides onto the defaults. Merging onto
@@ -1180,6 +1199,7 @@ const initialAttentionIndicator = lsGetBool(
 // silently start firing image requests for existing users.
 const initialLoadRemoteImages = lsGetBool(LS_LOAD_REMOTE_IMAGES, false);
 const initialSidebarHoverReveal = lsGetBool(LS_SIDEBAR_HOVER_REVEAL, false);
+const initialProfileSidebarWash = lsGetBool(LS_PROFILE_SIDEBAR_WASH, false);
 const initialFindInFilesRegex = lsGetBool(LS_FIND_IN_FILES_REGEX, false);
 const initialFindInFilesMatchCase = lsGetBool(LS_FIND_IN_FILES_MATCH_CASE, false);
 // Migrated from the old boolean LS_DEFAULT_SANDBOX (on = "enforce", off =
@@ -1199,7 +1219,6 @@ const initialDefaultSandboxKind = readInitialDefaultSandboxKind();
 // ON by default — sandboxed agents bypass their own permission prompts
 // because the seatbelt is the real boundary. Users can opt out.
 const initialSandboxBypass = lsGetBool(LS_SANDBOX_BYPASS, true);
-const initialProfileSidebarWash = lsGetBool(LS_PROFILE_SIDEBAR_WASH, false);
 const initialDefaultYolo = lsGetBool(LS_DEFAULT_YOLO, false);
 const initialAllowScope: "agent" | "project" | "repo" | null = (() => {
   const raw = lsGet(LS_ALLOW_SCOPE, "");
@@ -1218,6 +1237,7 @@ const initialBoardArchiveLimit = (() => {
 const initialBoardPinnedColumns = parseBoardPinnedColumns(lsGet(LS_BOARD_PINNED_COLUMNS, ""));
 const initialShowStatusSection = lsGet(LS_SHOW_STATUS_SECTION, "") === "1";
 const initialShowBoard = lsGet(LS_SHOW_BOARD, "") !== "0";
+const initialScheduledNav = parseScheduledNav(lsGet(LS_SCHEDULED_NAV, ""));
 const initialStatusBucketCollapsed = parseStatusBucketCollapsed(lsGet(LS_STATUS_BUCKET_COLLAPSED, ""));
 const initialStatusTaskExpanded = parseIdFlags(lsGet(LS_STATUS_TASK_EXPANDED, ""));
 const initialStatusGroupCollapsed = parseIdFlags(lsGet(LS_STATUS_GROUP_COLLAPSED, ""));
@@ -1275,6 +1295,7 @@ export const usePrefs = create<PrefsState>(set => ({
   attentionIndicator: initialAttentionIndicator,
   loadRemoteImages: initialLoadRemoteImages,
   sidebarHoverReveal: initialSidebarHoverReveal,
+  profileSidebarWash: initialProfileSidebarWash,
   findInFilesRegex: initialFindInFilesRegex,
   findInFilesMatchCase: initialFindInFilesMatchCase,
   globalDefaultSandboxKind: initialDefaultSandboxKind,
@@ -1295,7 +1316,6 @@ export const usePrefs = create<PrefsState>(set => ({
   editorFontSize: initialEditorSize,
   uiScale: initialUiScale,
   codeLigatures: initialLigatures,
-  profileSidebarWash: initialProfileSidebarWash,
   inlineBlame: initialInlineBlame,
   editorWordWrap: initialWordWrap,
   codeIntelligence: initialCodeNav,
@@ -1312,6 +1332,7 @@ export const usePrefs = create<PrefsState>(set => ({
   boardPinnedColumns: initialBoardPinnedColumns,
   showStatusSection: initialShowStatusSection,
   showBoard: initialShowBoard,
+  scheduledNav: initialScheduledNav,
   statusBucketCollapsed: initialStatusBucketCollapsed,
   statusTaskExpanded: initialStatusTaskExpanded,
   statusGroupCollapsed: initialStatusGroupCollapsed,
@@ -1603,6 +1624,11 @@ export const usePrefs = create<PrefsState>(set => ({
     try { localStorage.setItem(LS_SIDEBAR_HOVER_REVEAL, v ? "1" : "0"); } catch {}
     set({ sidebarHoverReveal: v });
   },
+  setProfileSidebarWash: (v) => set(s => {
+    if (s.profileSidebarWash === v) return s;
+    try { localStorage.setItem(LS_PROFILE_SIDEBAR_WASH, v ? "1" : "0"); } catch {}
+    return { profileSidebarWash: v };
+  }),
   setFindInFilesRegex: (v) => {
     try { localStorage.setItem(LS_FIND_IN_FILES_REGEX, v ? "1" : "0"); } catch {}
     set({ findInFilesRegex: v });
@@ -1624,11 +1650,6 @@ export const usePrefs = create<PrefsState>(set => ({
     set({ defaultYolo: v });
   },
   setAllowScope: (s) => {
-  setProfileSidebarWash: (v) => set(s => {
-    if (s.profileSidebarWash === v) return s;
-    try { localStorage.setItem(LS_PROFILE_SIDEBAR_WASH, v ? "1" : "0"); } catch {}
-    return { profileSidebarWash: v };
-  }),
     try { localStorage.setItem(LS_ALLOW_SCOPE, s); } catch {}
     set({ allowScope: s });
   },
@@ -1671,6 +1692,11 @@ export const usePrefs = create<PrefsState>(set => ({
     if (s.showBoard === v) return s;
     try { localStorage.setItem(LS_SHOW_BOARD, v ? "1" : "0"); } catch {}
     return { showBoard: v };
+  }),
+  setScheduledNav: (m) => set(s => {
+    if (s.scheduledNav === m) return s;
+    try { localStorage.setItem(LS_SCHEDULED_NAV, m); } catch {}
+    return { scheduledNav: m };
   }),
   setStatusBucketCollapsed: (bucket, collapsed) => set(s => {
     // Effective state, not the stored override: an absent override already
