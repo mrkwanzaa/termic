@@ -184,6 +184,12 @@ pub struct SyncLocal {
     /// the file it syncs through does.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub aliases: BTreeMap<String, String>,
+    /// The user stopped syncing this profile (Disconnect while others stay
+    /// connected). Every other unbound profile is uploaded on the next sync
+    /// (`adopt_profiles`), so the answer has to be remembered or it would be
+    /// undone at the next launch. Cleared when the profile connects again.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub opted_out: bool,
 }
 
 impl SyncLocal {
@@ -230,6 +236,11 @@ pub struct SyncState {
     /// only in the result, so a profile whose window was closed during the
     /// pull still sees them when it opens.
     pub notices: Vec<Change>,
+    /// Repo folders this machine will not create a profile for: the profile
+    /// that followed one was deleted here. Every other unbound folder becomes
+    /// a local profile on the next sync, so without this a deleted profile
+    /// would come straight back. Undone from Settings > Sync.
+    pub ignored_folders: Vec<String>,
 }
 
 // ───────────────────────────── paths ─────────────────────────────
@@ -280,6 +291,41 @@ fn profile_display_name(id: &ProfileId) -> String {
     };
     slug.and_then(|s| reg.get(&s).map(|p| p.name.clone()))
         .unwrap_or_else(|| "Default".to_string())
+}
+
+/// The colour a profile is drawn in, as the registry stores it (an accent key
+/// or a hex). `None` while profiles are dormant: there is no colour to carry.
+fn profile_accent(id: &ProfileId) -> Option<String> {
+    let reg = crate::profiles_registry();
+    let slug = match id {
+        ProfileId::Root => reg.root_slug.clone(),
+        ProfileId::Slug(s) => Some(s.clone()),
+    };
+    slug.and_then(|s| reg.get(&s).map(|p| p.accent.clone()))
+}
+
+/// The folder name a profile gets when it is first uploaded: its SLUG, the
+/// name its data already has on this machine's disk, de-duplicated against
+/// the folders the repo holds. It was 12 random hex characters, which made
+/// the repo unreadable and told nobody which profile `09a90dc7d04e` was.
+///
+/// Only a NAME for a new folder, never the identity: the binding stays in
+/// `SyncLocal::sync_id`, because slugs are minted per machine (the same
+/// profile can be `work` here and `nexttech` there) and the root profile may
+/// have none.
+pub(crate) fn new_folder_id(id: &ProfileId, taken: &BTreeSet<String>) -> String {
+    let reg = crate::profiles_registry();
+    let base = match id {
+        ProfileId::Root => reg.root_slug.clone(),
+        ProfileId::Slug(s) => Some(s.clone()),
+    }
+    .map(|s| safe_file_stem(&s))
+    .filter(|s| !s.is_empty())
+    .unwrap_or_else(|| "default".to_string());
+    if !taken.contains(&base) {
+        return base;
+    }
+    (2..).map(|n| format!("{base}-{n}")).find(|c| !taken.contains(c)).unwrap()
 }
 
 /// Every profile with a sync id, with that id.
@@ -768,11 +814,11 @@ fn safe_file_stem(id: &str) -> String {
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
 pub struct Change {
-    /// "project" | "agent" | "settings" | "pref" | "theme"
+    /// "project" | "agent" | "settings" | "pref" | "theme" | "profile"
     pub kind: String,
     /// What it is about: a project or agent name, a pref key, a theme file.
     pub target: String,
-    /// "update" | "add" | "remove" | "wait"
+    /// "update" | "add" | "remove" | "wait" | "upload" (a profile's only)
     pub action: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
@@ -832,6 +878,9 @@ pub struct SyncRunResult {
     pub changes: Vec<Change>,
     pub conflicts: Vec<String>,
     pub error: Option<String>,
+    /// A profile was created here from the repo: every window's profile list
+    /// and the tray menu are stale until told.
+    pub profiles_changed: bool,
 }
 
 // ───────────────────────────── apply (pure parts) ─────────────────────────────
@@ -1209,8 +1258,22 @@ pub(crate) fn export_profile(
     if let Some(p) = prefs {
         write_if_changed(&dir.join("prefs.json"), &file_bytes(&prefs_doc(p)))?;
     }
-    let name = profile_display_name(id);
-    write_if_changed(&dir.join("profile.json"), &file_bytes(&serde_json::json!({ "name": name })))?;
+    // Name and colour: what another machine needs to create this profile
+    // (`adopt_profiles`). Only a machine that HAS a name for it writes them.
+    // An install with profiles dormant calls its one profile "Default", and
+    // exporting that renamed the folder another machine had named "Personal"
+    // on every sync, so here it only fills in a file that does not exist yet.
+    let meta_path = dir.join("profile.json");
+    match profile_accent(id) {
+        Some(accent) => {
+            let meta = serde_json::json!({ "name": profile_display_name(id), "accent": accent });
+            write_if_changed(&meta_path, &file_bytes(&meta))?;
+        }
+        None if !meta_path.exists() => {
+            write_if_changed(&meta_path, &file_bytes(&serde_json::json!({ "name": profile_display_name(id) })))?;
+        }
+        None => {}
+    }
     Ok(())
 }
 
@@ -1337,6 +1400,8 @@ struct ApplyOutcome {
     themes_changed: bool,
     changes: Vec<Change>,
     tray: Option<Option<bool>>,
+    /// A profile was renamed or recoloured from the repo.
+    profiles_changed: bool,
 }
 
 /// Merge what the repo holds at `new_rev` into local records, for the files
@@ -1434,7 +1499,46 @@ fn apply_paths(
             let rel = &i.path[prefix.len()..];
             let base = base_of(&i.path);
             let new = new_of(&i.path);
-            if rel == "settings.json" {
+            if rel == "profile.json" {
+                // The profile's name and colour follow the repo like any
+                // other field: only what changed upstream is written, so a
+                // rename here that has not synced yet survives. A dormant
+                // install has no registry entry to rename and is left alone.
+                let Some(new) = new else { continue };
+                let Some(slug) = (match pid {
+                    ProfileId::Root => crate::profiles_registry().root_slug,
+                    ProfileId::Slug(s) => Some(s.clone()),
+                }) else { continue };
+                let keys = changed_keys(base.as_ref(), &new);
+                let want = |k: &str| {
+                    keys.iter().any(|x| x == k).then(|| new.get(k).and_then(Value::as_str)).flatten()
+                        .map(str::trim).filter(|v| !v.is_empty()).map(str::to_string)
+                };
+                let (name, accent) = (want("name"), want("accent"));
+                let reg = crate::profiles_registry();
+                let Some(cur) = reg.get(&slug) else { continue };
+                let name = name.filter(|n| n != &cur.name);
+                let accent = accent.filter(|a| a != &cur.accent);
+                for (field, from, to) in [("name", &cur.name, &name), ("accent", &cur.accent, &accent)] {
+                    if let Some(to) = to {
+                        out.changes.push(Change {
+                            kind: "profile".into(), target: cur.name.clone(), action: "update".into(),
+                            field: Some(field.into()), from: Some(Value::String(from.clone())), to: Some(Value::String(to.clone())),
+                            profile: Some(sid.clone()), ..Default::default()
+                        });
+                    }
+                }
+                if !dry_run && (name.is_some() || accent.is_some()) {
+                    let _ = crate::with_registry(|_g, reg| {
+                        if let Some(p) = reg.profiles.iter_mut().find(|p| p.slug == slug) {
+                            if let Some(n) = &name { p.name = n.clone(); }
+                            if let Some(a) = &accent { p.accent = a.clone(); }
+                        }
+                        Ok(())
+                    });
+                    out.profiles_changed = true;
+                }
+            } else if rel == "settings.json" {
                 let Some(new) = new else { continue };
                 let keys = changed_keys(base.as_ref(), &new);
                 let before = as_obj(serde_json::to_value(&settings).unwrap_or(Value::Null));
@@ -1646,6 +1750,11 @@ static SYNC_LOCK: parking_lot::Mutex<()> = parking_lot::const_mutex(());
 static LAUNCH_PULLED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) struct RunOpts<'a> {
+    /// Create a local profile for every repo folder that has none, and upload
+    /// every local profile that follows none (`adopt_profiles`). Off only for
+    /// the run `bind` makes BEFORE it binds: the folder the user is about to
+    /// pick must not be turned into a new profile first.
+    pub adopt: bool,
     pub push: bool,
     pub machine: &'a str,
     pub prefs: Option<&'a PrefsSnapshot>,
@@ -1675,7 +1784,7 @@ pub(crate) fn run_core(clone: &Path, opts: &RunOpts) -> SyncRunResult {
         res.skipped = true;
         return res;
     }
-    let bound = bound_profiles();
+    let mut bound = bound_profiles();
     let branch = match current_branch(clone) {
         Ok(b) => b,
         Err(e) => return fail(res, state, e),
@@ -1745,6 +1854,24 @@ pub(crate) fn run_core(clone: &Path, opts: &RunOpts) -> SyncRunResult {
         }
         base_up = new_up.clone();
 
+        // Profiles follow the repo both ways, now that HEAD holds everything
+        // upstream has. Before the push, so a profile uploaded here goes out
+        // in this same run.
+        if opts.adopt && !bound.is_empty() {
+            let adopted = adopt_profiles(clone, opts, &state, &bound);
+            if !adopted.bound.is_empty() {
+                bound.extend(adopted.bound);
+                res.profiles_changed |= adopted.created;
+                merge_outcome(&mut res, adopted.outcome);
+                if let Err(e) = export_all(clone, &bound, opts.prefs, opts.locate) {
+                    return fail(res, state, e);
+                }
+                if let Err(e) = commit_if_dirty(clone, opts.machine) {
+                    return fail(res, state, e);
+                }
+            }
+        }
+
         if !opts.push || bound.is_empty() {
             break;
         }
@@ -1790,6 +1917,7 @@ fn merge_outcome(res: &mut SyncRunResult, o: ApplyOutcome) {
         res.prefs.scoped.entry(ns).or_default().extend(v);
     }
     res.themes_changed |= o.themes_changed;
+    res.profiles_changed |= o.profiles_changed;
     res.changes.extend(o.changes);
 }
 
@@ -1822,10 +1950,12 @@ fn clear_outboxes(bound: &[(ProfileId, String)]) {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Default)]
+#[derive(Clone, Debug, Serialize, Default, PartialEq)]
 pub struct FolderView {
     pub sync_id: String,
     pub name: String,
+    /// The profile's colour on the machine that last exported it.
+    pub accent: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Default)]
@@ -1843,10 +1973,10 @@ fn list_folders(clone: &Path, rev: &str) -> Vec<FolderView> {
         .iter()
         .filter_map(|f| {
             let sid = f.strip_prefix("profiles/")?.strip_suffix("/profile.json")?.to_string();
-            let name = parse_obj(read.get(f).and_then(|b| b.as_ref()))
-                .and_then(|m| m.get("name").and_then(Value::as_str).map(str::to_string))
-                .unwrap_or_else(|| sid.clone());
-            Some(FolderView { sync_id: sid, name })
+            let meta = parse_obj(read.get(f).and_then(|b| b.as_ref()));
+            let field = |k: &str| meta.as_ref().and_then(|m| m.get(k).and_then(Value::as_str).map(str::to_string));
+            let name = field("name").unwrap_or_else(|| sid.clone());
+            Some(FolderView { sync_id: sid, name, accent: field("accent") })
         })
         .collect();
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then(a.sync_id.cmp(&b.sync_id)));
@@ -1951,7 +2081,22 @@ pub(crate) fn preview(clone: &Path, id: &ProfileId, folder: Option<&str>, prefs:
         inputs.retain(|i| !i.path.starts_with("profiles/"));
     }
     let bound = vec![(id.clone(), sid.to_string())];
-    Ok(apply_paths(clone, &up, &inputs, &bound, prefs, finder, true).changes)
+    let mut changes = apply_paths(clone, &up, &inputs, &bound, prefs, finder, true).changes;
+    // What connecting does to the OTHER profiles, said before it happens:
+    // which folders become profiles here, and which local profiles go up. The
+    // same rule the sync itself applies, with this profile counted as bound.
+    let folders = list_folders(clone, &up);
+    let mut locals = local_profiles();
+    for l in &mut locals {
+        if &l.id == id {
+            l.sync_id = Some(folder.unwrap_or("\u{0}new").to_string());
+        }
+    }
+    let plan = plan_adoption(&folders, &locals, &load_state().ignored_folders);
+    let mut profile_lines: Vec<Change> = plan.create.iter().map(|f| profile_change(&f.name, "add", &f.sync_id)).collect();
+    profile_lines.extend(plan.upload.iter().map(|p| profile_change(&profile_display_name(p), "upload", "")));
+    profile_lines.extend(std::mem::take(&mut changes));
+    Ok(profile_lines)
 }
 
 /// Bind a profile to a folder (or a new one) and run its first sync.
@@ -1965,14 +2110,15 @@ pub(crate) fn bind(clone: &Path, id: &ProfileId, folder: Option<String>, opts: &
     }
     // Bring the clone up to date for whatever is already bound, without
     // pushing. Nothing bound: just the fetch and fast-forward.
-    let pre = run_core(clone, &RunOpts { push: false, ..*opts });
+    let pre = run_core(clone, &RunOpts { push: false, adopt: false, ..*opts });
     if pre.error.is_some() || !pre.conflicts.is_empty() {
         return pre;
     }
     let machine_wide = bound_profiles().is_empty();
-    let sid = folder.clone().unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()[..12].to_string());
+    let sid = folder.clone().unwrap_or_else(|| new_folder_id(id, &folder_ids(clone)));
     let mut s = crate::load_settings_in(id);
     s.sync.sync_id = Some(sid.clone());
+    s.sync.opted_out = false;
     if let Err(e) = crate::save_settings_in(id, &s) {
         return SyncRunResult { error: Some(e), ..Default::default() };
     }
@@ -2133,6 +2279,170 @@ pub(crate) fn note_project_removed(p: &Project, machine: &str) {
     let _ = crate::save_settings_in(&p.profile, &s);
 }
 
+// ───────────────────────────── profiles follow the repo ─────────────────────────────
+
+/// Every profile folder the clone's HEAD holds.
+fn folder_ids(clone: &Path) -> BTreeSet<String> {
+    list_folders(clone, "HEAD").into_iter().map(|f| f.sync_id).collect()
+}
+
+/// A local profile as adoption sees it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LocalProfile {
+    pub id: ProfileId,
+    pub name: String,
+    /// `None` for a root profile with no registry entry (profiles dormant).
+    pub slug: Option<String>,
+    pub sync_id: Option<String>,
+    pub opted_out: bool,
+}
+
+/// What a sync does about profiles, decided without touching anything.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct AdoptPlan {
+    /// Repo folders to create a local profile for.
+    pub create: Vec<FolderView>,
+    /// Local profiles to upload as a new folder.
+    pub upload: Vec<ProfileId>,
+    /// Repo folders left alone because an unlinked local profile has the same
+    /// name: the user picks, in that profile's Settings > Sync.
+    pub waiting: Vec<FolderView>,
+}
+
+/// The rule, pure so it can be tested on its own.
+///
+/// A folder nobody here follows becomes a profile; a profile that follows
+/// nothing is uploaded. Two things are never guessed:
+///   - a folder and an unlinked local profile that share a NAME (or the
+///     folder is named after the profile's slug) are probably the same
+///     profile, and possibly not. Merging two project lists on a guess is
+///     hard to undo and creating a second "Work" is noise, so both wait;
+///   - a folder ignored here (its profile was deleted on this machine) and a
+///     profile that opted out stay as the user left them.
+pub(crate) fn plan_adoption(folders: &[FolderView], locals: &[LocalProfile], ignored: &[String]) -> AdoptPlan {
+    let bound: BTreeSet<&str> = locals.iter().filter_map(|l| l.sync_id.as_deref()).collect();
+    let free: Vec<&FolderView> = folders
+        .iter()
+        .filter(|f| !bound.contains(f.sync_id.as_str()) && !ignored.contains(&f.sync_id))
+        .collect();
+    let unlinked: Vec<&LocalProfile> = locals.iter().filter(|l| l.sync_id.is_none()).collect();
+    let same = |f: &FolderView, l: &LocalProfile| {
+        f.name.trim().eq_ignore_ascii_case(l.name.trim()) || l.slug.as_deref() == Some(f.sync_id.as_str())
+    };
+    let mut plan = AdoptPlan::default();
+    for f in &free {
+        if unlinked.iter().any(|l| same(f, l)) {
+            plan.waiting.push((*f).clone());
+        } else {
+            plan.create.push((*f).clone());
+        }
+    }
+    for l in &unlinked {
+        if !l.opted_out && !free.iter().any(|f| same(f, l)) {
+            plan.upload.push(l.id.clone());
+        }
+    }
+    plan
+}
+
+fn local_profiles() -> Vec<LocalProfile> {
+    let reg = crate::profiles_registry();
+    reg.ids()
+        .into_iter()
+        .map(|id| {
+            let sync = crate::load_settings_in(&id).sync;
+            let slug = match &id {
+                ProfileId::Root => reg.root_slug.clone(),
+                ProfileId::Slug(s) => Some(s.clone()),
+            };
+            LocalProfile { name: profile_display_name(&id), slug, sync_id: sync.sync_id, opted_out: sync.opted_out, id }
+        })
+        .collect()
+}
+
+#[derive(Default)]
+struct Adopted {
+    /// Newly bound profiles, created or uploaded.
+    bound: Vec<(ProfileId, String)>,
+    /// At least one local profile was created.
+    created: bool,
+    outcome: ApplyOutcome,
+}
+
+fn profile_change(name: &str, action: &str, sync_id: &str) -> Change {
+    Change { kind: "profile".into(), target: name.to_string(), action: action.into(), profile: Some(sync_id.to_string()), ..Default::default() }
+}
+
+/// Make this machine's profiles and the repo's folders agree: create a local
+/// profile for each folder `plan_adoption` says to, and bind each local
+/// profile it says to upload to a new folder (the caller exports and commits).
+///
+/// Uploads happen only on a run that pushes. A new folder is named after the
+/// profile's slug, so two machines can pick the same name; binding it on a
+/// launch pull and leaving it unpushed for hours would widen the window in
+/// which another machine does the same.
+fn adopt_profiles(clone: &Path, opts: &RunOpts, state: &SyncState, bound: &[(ProfileId, String)]) -> Adopted {
+    let mut out = Adopted::default();
+    let folders = list_folders(clone, "HEAD");
+    let plan = plan_adoption(&folders, &local_profiles(), &state.ignored_folders);
+
+    for f in &plan.create {
+        // Creating the FIRST profile turns the dormant install into one, and
+        // it needs a name then: the folder it follows already carries the one
+        // another machine gave it.
+        let root_name = bound
+            .iter()
+            .find(|(p, _)| p.is_root())
+            .and_then(|(_, sid)| folders.iter().find(|x| &x.sync_id == sid))
+            .map(|x| x.name.clone())
+            .filter(|n| !n.trim().is_empty() && !n.trim().eq_ignore_ascii_case(f.name.trim()))
+            .unwrap_or_else(|| "Default".to_string());
+        let accent = f.accent.clone().unwrap_or_else(|| "blue".to_string());
+        let id = match crate::create_profile_data(&f.name, &accent, "", Some(&root_name), None) {
+            Ok((_, id, _)) => id,
+            // Left for the next sync, which tries again. One bad folder name
+            // must not stop the others, or the sync itself.
+            Err(_) => continue,
+        };
+        let mut s = crate::load_settings_in(&id);
+        s.sync.sync_id = Some(f.sync_id.clone());
+        if crate::save_settings_in(&id, &s).is_err() {
+            continue;
+        }
+        let inputs = first_connect_inputs(clone, "HEAD", &f.sync_id, false);
+        let one = vec![(id.clone(), f.sync_id.clone())];
+        let o = apply_paths(clone, "HEAD", &inputs, &one, opts.prefs, opts.finder, false);
+        out.outcome.changes.push(profile_change(&f.name, "add", &f.sync_id));
+        out.outcome.changed_profiles.extend(o.changed_profiles);
+        out.outcome.prefs.shared.extend(o.prefs.shared);
+        for (ns, v) in o.prefs.scoped {
+            out.outcome.prefs.scoped.entry(ns).or_default().extend(v);
+        }
+        out.outcome.themes_changed |= o.themes_changed;
+        // Its own profile.json is where the name it was just created with
+        // came from: nothing to report as a rename.
+        out.outcome.changes.extend(o.changes.into_iter().filter(|c| !(c.kind == "profile" && c.action == "update")));
+        out.bound.push((id, f.sync_id.clone()));
+        out.created = true;
+    }
+
+    if opts.push {
+        let mut taken: BTreeSet<String> = folders.iter().map(|f| f.sync_id.clone()).collect();
+        for id in &plan.upload {
+            let sid = new_folder_id(id, &taken);
+            let mut s = crate::load_settings_in(id);
+            s.sync.sync_id = Some(sid.clone());
+            if crate::save_settings_in(id, &s).is_err() {
+                continue;
+            }
+            taken.insert(sid.clone());
+            out.outcome.changes.push(profile_change(&profile_display_name(id), "upload", &sid));
+            out.bound.push((id.clone(), sid));
+        }
+    }
+    out
+}
+
 // ───────────────────────────── status ─────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Default)]
@@ -2183,6 +2493,15 @@ pub struct SyncStatus {
     pub skipped: Vec<WaitingView>,
     pub removals: Vec<RemovalView>,
     pub notices: Vec<Change>,
+    /// This profile was told to stop syncing while the machine stays
+    /// connected. It is the reason it is not uploaded like the others.
+    pub opted_out: bool,
+    /// For an unlinked profile: the repo folder with its name, the reason it
+    /// was neither uploaded nor matched for it. Preselected in the picker.
+    pub suggested_folder: Option<String>,
+    /// Repo profiles this machine was told not to have (deleted here), with
+    /// a way back.
+    pub ignored: Vec<FolderView>,
 }
 
 pub(crate) fn status(clone: &Path, id: &ProfileId) -> SyncStatus {
@@ -2210,7 +2529,19 @@ pub(crate) fn status(clone: &Path, id: &ProfileId) -> SyncStatus {
         .filter(|n| n.profile.is_none() || n.profile.as_deref() == settings.sync.sync_id.as_deref())
         .cloned()
         .collect();
+    st.opted_out = settings.sync.opted_out;
+    let folders = list_folders(clone, "HEAD");
+    st.ignored = folders.iter().filter(|f| state.ignored_folders.contains(&f.sync_id)).cloned().collect();
     let Some(sid) = settings.sync.sync_id.clone() else {
+        let locals = local_profiles();
+        if let Some(me) = locals.iter().find(|l| &l.id == id) {
+            let one = std::slice::from_ref(me);
+            // Against this profile alone: which free folder is "the same".
+            let bound_elsewhere: Vec<LocalProfile> = locals.iter().filter(|l| l.sync_id.is_some()).cloned().collect();
+            let mut view = bound_elsewhere;
+            view.extend_from_slice(one);
+            st.suggested_folder = plan_adoption(&folders, &view, &state.ignored_folders).waiting.first().map(|f| f.sync_id.clone());
+        }
         return st;
     };
     let dir = clone.join("profiles").join(&sid);
@@ -2366,17 +2697,56 @@ pub(crate) fn disconnect(clone: &Path, id: &ProfileId) -> Result<(), String> {
     let mut s = crate::load_settings_in(id);
     s.sync = SyncLocal::default();
     crate::save_settings_in(id, &s)?;
-    if bound_profiles().is_empty() && clone.exists() {
-        fs::remove_dir_all(clone).map_err(|e| e.to_string())?;
-        let _ = fs::remove_file(state_file()?);
+    if bound_profiles().is_empty() {
+        // The machine no longer syncs at all, so there is nothing left to opt
+        // out of. A later connect starts from every profile, as a first one
+        // does; the ignored folders go with the state file.
+        if clone.exists() {
+            fs::remove_dir_all(clone).map_err(|e| e.to_string())?;
+            let _ = fs::remove_file(state_file()?);
+        }
+        for pid in crate::profiles_registry().ids() {
+            let mut ps = crate::load_settings_in(&pid);
+            if ps.sync.opted_out {
+                ps.sync.opted_out = false;
+                let _ = crate::save_settings_in(&pid, &ps);
+            }
+        }
+    } else {
+        // Others still sync, and every unlinked profile is uploaded on the
+        // next run: this one was just told not to be, so remember it.
+        s.sync.opted_out = true;
+        crate::save_settings_in(id, &s)?;
     }
     Ok(())
+}
+
+/// Called before a profile's data is deleted: the folder it followed must not
+/// become a new profile here on the next sync. Nothing is removed from the
+/// repo, so every other machine keeps the profile.
+pub(crate) fn note_profile_deleted(id: &ProfileId) {
+    let Some(sid) = crate::load_settings_in(id).sync.sync_id else { return };
+    let mut state = load_state();
+    if !state.ignored_folders.contains(&sid) {
+        state.ignored_folders.push(sid);
+        save_state(&state);
+    }
+}
+
+/// Undo an ignore: the folder becomes a profile here on the next sync.
+pub(crate) fn restore_folder(sync_id: &str) {
+    let mut state = load_state();
+    let before = state.ignored_folders.len();
+    state.ignored_folders.retain(|f| f != sync_id);
+    if state.ignored_folders.len() != before {
+        save_state(&state);
+    }
 }
 
 // ───────────────────────────── commands ─────────────────────────────
 
 fn opts<'a>(push: bool, machine: &'a str, prefs: Option<&'a PrefsSnapshot>, finder: &'a Finder<'a>) -> RunOpts<'a> {
-    RunOpts { push, machine, prefs, locate: &default_locate, finder }
+    RunOpts { adopt: true, push, machine, prefs, locate: &default_locate, finder }
 }
 
 fn after_apply(app: &tauri::AppHandle, res: &SyncRunResult) {
@@ -2386,6 +2756,26 @@ fn after_apply(app: &tauri::AppHandle, res: &SyncRunResult) {
     if res.changes.iter().any(|c| c.kind == "settings" && c.field.as_deref() == Some("tray_enabled")) {
         let on = crate::tray_enabled();
         let _ = crate::set_tray_visible(app, on);
+    }
+    if res.profiles_changed {
+        // What `profile_create` and `profile_update` do for a change made by
+        // hand: this one came from the repo. Titles too, for a rename.
+        {
+            use tauri::Manager;
+            let reg = crate::profiles_registry();
+            for p in &reg.profiles {
+                let id = reg.id_for(&p.slug);
+                if id.is_root() {
+                    continue;
+                }
+                if let Some(win) = app.get_webview_window(&id.window_label()) {
+                    let _ = win.set_title(&format!("Termic - {}", p.name));
+                }
+            }
+        }
+        crate::forget_task_window(None);
+        crate::rebuild_tray_menu(app);
+        let _ = app.emit("termic://profiles-changed", ());
     }
     if !res.changed_profiles.is_empty() || res.themes_changed || !res.prefs.is_empty() || !res.changes.is_empty() {
         let _ = app.emit("termic://sync-changed", serde_json::json!({
@@ -2537,6 +2927,23 @@ pub async fn sync_keep(window: tauri::Window, project_id: String) -> Result<(), 
 pub async fn sync_dismiss_notices(window: tauri::Window) -> Result<(), String> {
     let id = crate::window_profile(&window);
     blocking(move || dismiss_notices(&id)).await
+}
+
+/// Bring back a repo profile that was deleted on this machine: it is created
+/// again by the sync this runs.
+#[tauri::command]
+pub async fn sync_restore_folder(app: tauri::AppHandle, folder: String, prefs: Option<PrefsSnapshot>) -> Result<SyncRunResult, String> {
+    let res = blocking(move || {
+        let _g = SYNC_LOCK.lock();
+        restore_folder(&folder);
+        let clone = sync_dir()?;
+        let machine = machine_name();
+        let finder = Finder { find_repo: &default_find_repo };
+        Ok::<_, String>(run_core(&clone, &opts(true, &machine, prefs.as_ref(), &finder)))
+    })
+    .await??;
+    after_apply(&app, &res);
+    Ok(res)
 }
 
 #[tauri::command]
@@ -2993,7 +3400,7 @@ mod tests {
             s.sync.sync_id = Some("shared-folder".into());
             crate::save_settings_in(&ProfileId::Root, &s).unwrap();
             let finder = Finder { find_repo: &|_, _| None };
-            let opts = RunOpts { push: false, machine: "m", prefs: None, locate: &|_, _| None, finder: &finder };
+            let opts = RunOpts { adopt: true, push: false, machine: "m", prefs: None, locate: &|_, _| None, finder: &finder };
             let work = ProfileId::Slug("work".into());
             let r = bind(&dir.join("sync"), &work, Some("shared-folder".into()), &opts);
             assert!(r.error.as_deref().is_some_and(|e| e.contains("already follows")), "{r:?}");
@@ -3069,7 +3476,7 @@ mod tests {
     fn run(m: &Machine, push: bool, prefs: Option<&PrefsSnapshot>) -> SyncRunResult {
         let clone = m.clone_dir();
         let finder = Finder { find_repo: &find };
-        run_core(&clone, &RunOpts { push, machine: m.name, prefs, locate: &default_locate, finder: &finder })
+        run_core(&clone, &RunOpts { adopt: true, push, machine: m.name, prefs, locate: &default_locate, finder: &finder })
     }
 
     fn settings_path(m: &Machine) -> PathBuf {
@@ -3143,7 +3550,7 @@ mod tests {
         let info = connect(&a.clone_dir(), &url).unwrap();
         assert!(info.empty, "a fresh bare repo is empty");
         let finder = Finder { find_repo: &find };
-        let opts = RunOpts { push: true, machine: a.name, prefs: Some(&a_prefs), locate: &default_locate, finder: &finder };
+        let opts = RunOpts { adopt: true, push: true, machine: a.name, prefs: Some(&a_prefs), locate: &default_locate, finder: &finder };
         let r = bind(&a.clone_dir(), &ProfileId::Root, None, &opts);
         assert!(r.ok && r.pushed, "{r:?}");
 
@@ -3183,7 +3590,7 @@ mod tests {
         assert!(pv.iter().any(|c| c.kind == "pref" && c.target == "defaultYolo" && c.safety), "safety highlighted");
         assert!(projects(&b).is_empty(), "a preview writes nothing");
 
-        let opts = RunOpts { push: true, machine: b.name, prefs: Some(&b_prefs), locate: &default_locate, finder: &finder };
+        let opts = RunOpts { adopt: true, push: true, machine: b.name, prefs: Some(&b_prefs), locate: &default_locate, finder: &finder };
         let r = bind(&b.clone_dir(), &ProfileId::Root, Some(a_sid.clone()), &opts);
         assert!(r.ok, "{r:?}");
         let bp = projects(&b);
@@ -3263,7 +3670,7 @@ mod tests {
         state.choices.insert(r.conflicts[0].clone(), "remote".into());
         save_state(&state);
         let finder = Finder { find_repo: &find };
-        let r = resolve(&b.clone_dir(), &RunOpts { push: true, machine: b.name, prefs: Some(&b_after), locate: &default_locate, finder: &finder });
+        let r = resolve(&b.clone_dir(), &RunOpts { adopt: true, push: true, machine: b.name, prefs: Some(&b_after), locate: &default_locate, finder: &finder });
         // Taking theirs leaves nothing of ours to push.
         assert!(r.ok && r.conflicts.is_empty() && !r.pushed, "{r:?}");
         assert_eq!(crate::load_settings_in(&ProfileId::Root).close_action.as_deref(), Some("quit"));
@@ -3279,7 +3686,7 @@ mod tests {
         let mut state = load_state();
         state.choices.insert(r.conflicts[0].clone(), "local".into());
         save_state(&state);
-        let r = resolve(&b.clone_dir(), &RunOpts { push: true, machine: b.name, prefs: Some(&b_after), locate: &default_locate, finder: &finder });
+        let r = resolve(&b.clone_dir(), &RunOpts { adopt: true, push: true, machine: b.name, prefs: Some(&b_after), locate: &default_locate, finder: &finder });
         assert!(r.ok && r.pushed, "{r:?}");
         b.enter();
         assert_eq!(crate::load_settings_in(&ProfileId::Root).fetch_before_create, Some(true));
@@ -3288,5 +3695,296 @@ mod tests {
         assert_eq!(crate::load_settings_in(&ProfileId::Root).fetch_before_create, Some(true), "A gets B's choice");
         assert_eq!(crate::load_settings_in(&ProfileId::Root).close_action.as_deref(), Some("quit"));
         let _ = settings_path(&a);
+    }
+
+    // ── profiles follow the repo ──
+
+    fn folder(id: &str, name: &str) -> FolderView {
+        FolderView { sync_id: id.into(), name: name.into(), accent: None }
+    }
+
+    fn local(slug: &str, name: &str, sync_id: Option<&str>) -> LocalProfile {
+        LocalProfile {
+            id: ProfileId::Slug(slug.into()), name: name.into(), slug: Some(slug.into()),
+            sync_id: sync_id.map(str::to_string), opted_out: false,
+        }
+    }
+
+    #[test]
+    fn a_folder_nobody_follows_is_created_and_an_unlinked_profile_is_uploaded() {
+        let folders = [folder("personal", "Personal"), folder("work", "Work")];
+        let locals = [local("personal", "Personal", Some("personal")), local("side", "Side", None)];
+        let plan = plan_adoption(&folders, &locals, &[]);
+        assert_eq!(plan.create, vec![folder("work", "Work")]);
+        assert_eq!(plan.upload, vec![ProfileId::Slug("side".into())]);
+        assert!(plan.waiting.is_empty());
+    }
+
+    #[test]
+    fn a_shared_name_is_never_matched_or_duplicated_by_a_guess() {
+        // By display name, whatever the case, and by the folder being named
+        // after the local slug: either way it is "probably the same profile",
+        // and probably is not enough to merge two project lists on.
+        for (f, l) in [
+            (folder("abc123", "work"), local("job", "Work", None)),
+            (folder("work", "Client stuff"), local("work", "Work", None)),
+        ] {
+            let plan = plan_adoption(std::slice::from_ref(&f), &[local("me", "Me", Some("me")), l], &[]);
+            assert!(plan.create.is_empty(), "created a second profile for {f:?}");
+            assert!(plan.upload.is_empty(), "uploaded a second folder beside {f:?}");
+            assert_eq!(plan.waiting, vec![f]);
+        }
+    }
+
+    #[test]
+    fn an_ignored_folder_and_an_opted_out_profile_stay_as_they_were_left() {
+        let folders = [folder("me", "Me"), folder("work", "Work")];
+        let mut off = local("side", "Side", None);
+        off.opted_out = true;
+        let plan = plan_adoption(&folders, &[local("me", "Me", Some("me")), off], &["work".to_string()]);
+        assert_eq!(plan, AdoptPlan::default());
+        // An ignored folder does not make a new local profile of that name
+        // wait either: it is not on offer here, so the new one goes up.
+        let plan = plan_adoption(&folders, &[local("me", "Me", Some("me")), local("work", "Work", None)], &["work".to_string()]);
+        assert_eq!(plan.upload, vec![ProfileId::Slug("work".into())]);
+    }
+
+    /// Run `body` with the data dir free to be pointed at one Machine after
+    /// another, and put the environment back whatever it does.
+    fn with_machines(body: fn()) {
+        let _lock = crate::test_support::DATA_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev_data = std::env::var_os("TERMIC_DATA_DIR");
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let out = std::panic::catch_unwind(body);
+        // SAFETY: still under DATA_DIR_LOCK.
+        unsafe {
+            match prev_data { Some(v) => std::env::set_var("TERMIC_DATA_DIR", v), None => std::env::remove_var("TERMIC_DATA_DIR") }
+            match prev_xdg { Some(v) => std::env::set_var("XDG_CONFIG_HOME", v), None => std::env::remove_var("XDG_CONFIG_HOME") }
+        }
+        if let Err(e) = out {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    fn bind_in(m: &Machine, id: &ProfileId, folder: Option<&str>) -> SyncRunResult {
+        let clone = m.clone_dir();
+        let finder = Finder { find_repo: &find };
+        bind(&clone, id, folder.map(str::to_string), &RunOpts { adopt: true, push: true, machine: m.name, prefs: None, locate: &default_locate, finder: &finder })
+    }
+
+    fn slugs(m: &Machine) -> Vec<String> {
+        m.enter();
+        let mut v: Vec<String> = crate::profiles_registry().profiles.iter().map(|p| p.slug.clone()).collect();
+        v.sort();
+        v
+    }
+
+    fn sync_id_of(m: &Machine, id: &ProfileId) -> Option<String> {
+        m.enter();
+        crate::load_settings_in(id).sync.sync_id
+    }
+
+    fn repo_folders(bare: &Path) -> Vec<String> {
+        let mut v: Vec<String> = sh(bare, &["ls-tree", "--name-only", "HEAD:profiles"]).lines().map(str::to_string).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn profiles_follow_the_repo_both_ways() {
+        with_machines(profiles_follow_body);
+    }
+
+    fn profiles_follow_body() {
+        let remote = tempfile::tempdir().unwrap();
+        let bare = remote.path().join("config.git");
+        sh(remote.path(), &["init", "-q", "--bare", bare.to_str().unwrap()]);
+        let url = format!("file://{}", bare.to_string_lossy());
+        let work = ProfileId::Slug("work".into());
+
+        // ── machine A: two profiles, "Personal" owning the root, and "Work"
+        // with a project of its own.
+        let a = Machine::new("machine-a");
+        a.enter();
+        crate::create_profile_data("Work", "orange", "", Some("Personal"), Some("teal")).unwrap();
+        let a_notes = a.data.path().join("work-notes");
+        fs::create_dir_all(&a_notes).unwrap();
+        crate::save_projects_in(&work, &[Project {
+            id: "33333333-cccc".into(), name: "work-notes".into(), root_path: a_notes.to_string_lossy().into(),
+            non_git: true, profile: work.clone(), ..Default::default()
+        }]).unwrap();
+        with_settings(&a, |s| s.close_action = Some("hide".into()));
+
+        // Connecting ONE profile uploads the other too, each under its slug.
+        connect(&a.clone_dir(), &url).unwrap();
+        let r = bind_in(&a, &ProfileId::Root, None);
+        assert!(r.ok && r.pushed, "{r:?}");
+        assert_eq!(repo_folders(&bare), ["personal", "work"], "folders are named after the slugs");
+        assert_eq!(sync_id_of(&a, &ProfileId::Root).as_deref(), Some("personal"));
+        assert_eq!(sync_id_of(&a, &work).as_deref(), Some("work"));
+        assert!(r.changes.iter().any(|c| c.kind == "profile" && c.action == "upload" && c.target == "Work"), "{:?}", r.changes);
+        // Uploading creates no local profile, so no window has anything to learn.
+        assert!(!r.profiles_changed);
+        let meta: Value = serde_json::from_str(&sh(&bare, &["show", "HEAD:profiles/work/profile.json"])).unwrap();
+        assert_eq!(meta, serde_json::json!({ "accent": "orange", "name": "Work" }));
+
+        // ── machine B: a plain install, no profiles at all. It follows
+        // "personal", and the other folder becomes a profile of its own.
+        let b = Machine::new("machine-b");
+        b.enter();
+        let info = connect(&b.clone_dir(), &url).unwrap();
+        assert_eq!(info.folders.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["Personal", "Work"]);
+        let finder = Finder { find_repo: &find };
+        let planned = preview(&b.clone_dir(), &ProfileId::Root, Some("personal"), None, &finder).unwrap();
+        assert!(
+            planned.iter().any(|c| c.kind == "profile" && c.action == "add" && c.target == "Work"),
+            "the preview says a profile will be created before it is: {planned:?}"
+        );
+        assert_eq!(slugs(&b), Vec::<String>::new(), "a preview creates nothing");
+
+        let r = bind_in(&b, &ProfileId::Root, Some("personal"));
+        assert!(r.ok, "{r:?}");
+        assert!(r.profiles_changed, "the windows have to be told a profile appeared");
+        assert_eq!(slugs(&b), ["personal", "work"], "the root took the name its folder carries");
+        b.enter();
+        let reg = crate::profiles_registry();
+        assert_eq!(reg.root_slug.as_deref(), Some("personal"));
+        assert_eq!(reg.get("work").map(|p| (p.name.as_str(), p.accent.as_str())), Some(("Work", "orange")));
+        assert_eq!(sync_id_of(&b, &work).as_deref(), Some("work"));
+        assert_eq!(crate::load_settings_in(&ProfileId::Root).close_action.as_deref(), Some("hide"), "the picked folder applied");
+        // Its project has no folder here, so it waits, in the NEW profile.
+        let st = status(&b.clone_dir(), &work);
+        assert_eq!(st.waiting.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(), ["work-notes"]);
+        assert_eq!(repo_folders(&bare), ["personal", "work"], "nothing was duplicated in the repo");
+
+        // A profile made by hand on a syncing machine starts unlinked: it used
+        // to copy the root's binding with the rest of its settings.
+        b.enter();
+        crate::create_profile_data("Side", "blue", "", None, None).unwrap();
+        let side = ProfileId::Slug("side".into());
+        assert_eq!(sync_id_of(&b, &side), None);
+        // A launch pull (no push) leaves it alone; the next real sync sends it.
+        assert!(run(&b, false, None).ok);
+        assert_eq!(sync_id_of(&b, &side), None, "a pull does not name a folder it cannot push");
+        let r = run(&b, true, None);
+        assert!(r.ok && r.pushed, "{r:?}");
+        assert_eq!(sync_id_of(&b, &side).as_deref(), Some("side"));
+        assert_eq!(repo_folders(&bare), ["personal", "side", "work"]);
+
+        // ...and arrives on A at ITS next pull, created.
+        let r = run(&a, false, None);
+        assert!(r.ok && r.profiles_changed, "{r:?}");
+        assert_eq!(slugs(&a), ["personal", "side", "work"]);
+
+        // ── a rename travels, and the folder does not move with it.
+        a.enter();
+        crate::with_registry(|_g, reg| {
+            let p = reg.profiles.iter_mut().find(|p| p.slug == "work").unwrap();
+            p.name = "Client".into();
+            p.accent = "#ff8800".into();
+            Ok(())
+        }).unwrap();
+        assert!(run(&a, true, None).pushed);
+        let r = run(&b, true, None);
+        assert!(r.ok && r.profiles_changed, "{r:?}");
+        assert!(
+            r.changes.iter().any(|c| c.kind == "profile" && c.action == "update" && c.field.as_deref() == Some("name")),
+            "{:?}", r.changes
+        );
+        b.enter();
+        let reg = crate::profiles_registry();
+        assert_eq!(reg.get("work").map(|p| (p.name.as_str(), p.accent.as_str())), Some(("Client", "#ff8800")));
+        assert_eq!(repo_folders(&bare), ["personal", "side", "work"], "a rename is not a new folder");
+        // B's own export of the same profile does not put the old name back.
+        assert!(!run(&b, true, None).pushed, "B had nothing of its own to send after taking the rename");
+
+        // ── deleting sticks. B deletes Work: gone here, kept in the repo.
+        b.enter();
+        note_profile_deleted(&work);
+        let mut reg = crate::profiles_registry();
+        crate::delete_profile_data(b.data.path(), &mut reg, &work, "work", false).unwrap();
+        let r = run(&b, true, None);
+        assert!(r.ok && !r.profiles_changed, "{r:?}");
+        assert_eq!(slugs(&b), ["personal", "side"], "the deleted profile came back");
+        assert_eq!(repo_folders(&bare), ["personal", "side", "work"], "a local delete removed it for everyone");
+        let st = status(&b.clone_dir(), &ProfileId::Root);
+        assert_eq!(st.ignored.iter().map(|f| f.sync_id.as_str()).collect::<Vec<_>>(), ["work"]);
+        // Until it is asked for again.
+        b.enter();
+        restore_folder("work");
+        let r = run(&b, true, None);
+        assert!(r.ok && r.profiles_changed, "{r:?}");
+        // Created afresh from the folder, so its slug comes from the name the
+        // folder carries NOW. The folder it follows is still `work`.
+        assert_eq!(slugs(&b), ["client", "personal", "side"]);
+        let client = ProfileId::Slug("client".into());
+        assert_eq!(sync_id_of(&b, &client).as_deref(), Some("work"));
+        assert!(status(&b.clone_dir(), &ProfileId::Root).ignored.is_empty());
+
+        // ── opting out sticks. B stops syncing Side: it stays local, is not
+        // re-linked, and is not uploaded again under a second name.
+        b.enter();
+        disconnect(&b.clone_dir(), &side).unwrap();
+        assert!(is_connected(&b.clone_dir()), "other profiles still sync, so the clone stays");
+        let r = run(&b, true, None);
+        assert!(r.ok, "{r:?}");
+        assert_eq!(sync_id_of(&b, &side), None);
+        assert_eq!(repo_folders(&bare), ["personal", "side", "work"]);
+        assert_eq!(slugs(&b), ["client", "personal", "side"], "its own folder was not turned into a second profile");
+        let st = status(&b.clone_dir(), &side);
+        assert!(st.opted_out);
+        assert_eq!(st.suggested_folder.as_deref(), Some("side"), "the picker offers the folder it left");
+        // Connecting it again is the user's call, and clears the answer.
+        let r = bind_in(&b, &side, Some("side"));
+        assert!(r.ok, "{r:?}");
+        assert_eq!(sync_id_of(&b, &side).as_deref(), Some("side"));
+        b.enter();
+        assert!(!crate::load_settings_in(&side).sync.opted_out);
+
+        // ── a shared name is not guessed at. A makes "Docs" and uploads it;
+        // B already has its own unlinked "Docs".
+        a.enter();
+        crate::create_profile_data("Docs", "blue", "", None, None).unwrap();
+        assert!(run(&a, true, None).pushed);
+        assert_eq!(repo_folders(&bare), ["docs", "personal", "side", "work"]);
+        b.enter();
+        crate::create_profile_data("Docs", "blue", "", None, None).unwrap();
+        let docs = ProfileId::Slug("docs".into());
+        let r = run(&b, true, None);
+        assert!(r.ok && !r.profiles_changed, "{r:?}");
+        assert_eq!(sync_id_of(&b, &docs), None, "linked on a guess");
+        assert_eq!(slugs(&b), ["client", "docs", "personal", "side"], "a second Docs was created");
+        assert_eq!(repo_folders(&bare), ["docs", "personal", "side", "work"], "a second folder was uploaded");
+        assert_eq!(status(&b.clone_dir(), &docs).suggested_folder.as_deref(), Some("docs"));
+
+        // ── the last disconnect ends it: clone gone, nothing left opted out.
+        b.enter();
+        disconnect(&b.clone_dir(), &side).unwrap();
+        for id in [ProfileId::Root, client.clone(), side.clone()] {
+            disconnect(&b.clone_dir(), &id).unwrap();
+        }
+        assert!(!b.clone_dir().exists());
+        b.enter();
+        for id in crate::profiles_registry().ids() {
+            assert!(crate::load_settings_in(&id).sync.is_empty(), "{id} kept sync state after the machine disconnected");
+        }
+    }
+
+    #[test]
+    fn a_new_folder_is_named_after_the_slug() {
+        with_machines(|| {
+            let m = Machine::new("machine-n");
+            m.enter();
+            // Dormant: no slug to name it after.
+            let none = BTreeSet::new();
+            assert_eq!(new_folder_id(&ProfileId::Root, &none), "default");
+            crate::create_profile_data("Work Stuff", "orange", "", Some("Personal"), None).unwrap();
+            assert_eq!(new_folder_id(&ProfileId::Root, &none), "personal");
+            let work = ProfileId::Slug("work-stuff".into());
+            assert_eq!(new_folder_id(&work, &none), "work-stuff");
+            // Taken in the repo (another machine's profile of that slug).
+            let taken: BTreeSet<String> = ["work-stuff".to_string(), "work-stuff-2".to_string()].into();
+            assert_eq!(new_folder_id(&work, &taken), "work-stuff-3");
+        });
     }
 }

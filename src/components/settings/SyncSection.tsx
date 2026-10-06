@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Block, SectionTitle } from "./Controls";
 import {
-  projectRemove, syncBind, syncConnect, syncDisconnect, syncDismissNotices, syncKeep, syncLocate,
+  projectRemove, syncBind, syncConnect, syncDisconnect, syncRestoreFolder, syncDismissNotices, syncKeep, syncLocate,
   syncPreview, syncResolve, syncSkip, syncStatus,
 } from "@/lib/ipc";
 import {
@@ -67,9 +67,12 @@ export default function SyncSection() {
     let cancelled = false;
     void syncConnect(st.repo_url).then(info => {
       if (cancelled) return;
-      const free = info.folders.filter(f => !st.bound.some(b => b.sync_id === f.sync_id));
       setFolders(info.folders);
-      setPick(free[0]?.sync_id ?? "");
+      // The folder with this profile's name if there is one (the reason it
+      // is waiting here at all), else a new folder. Never "the first one in
+      // the list": every other folder becomes a profile of its own on the
+      // next sync, so defaulting to one would merge two profiles on a click.
+      setPick(st.suggested_folder ?? "");
     }).catch(e => { if (!cancelled) setErr(String(e)); });
     return () => { cancelled = true; };
   }, [st, folders]);
@@ -100,8 +103,11 @@ export default function SyncSection() {
       return;
     }
     setFolders(info.folders);
-    setPick(info.folders[0]?.sync_id ?? "");
-    await refresh();
+    const cur = await syncStatus();
+    // On a machine that is not syncing yet there is nothing to compare names
+    // with, so the first folder stays the default, as before.
+    setPick(cur.suggested_folder ?? info.folders[0]?.sync_id ?? "");
+    setSt(cur);
   });
 
   const showPreview = () => act("preview", async () => {
@@ -126,6 +132,11 @@ export default function SyncSection() {
     const res = await syncResolve(path, choice, snapshotFor(cur));
     if (res.skipped) await refresh();
     else await finish(res);
+  });
+
+  const restore = (folder: string) => act("sync", async () => {
+    const cur = await syncStatus();
+    await finish(await syncRestoreFolder(folder, snapshotFor(cur)));
   });
 
   const disconnect = () => act("disconnect", async () => {
@@ -214,7 +225,14 @@ export default function SyncSection() {
       {st.connected && !bound && (
         <Block>
           <h3 className="text-[14px] font-semibold">{t("sync.pickTitle")}</h3>
-          <p className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">{t("sync.pickHint")}</p>
+          {/* Why this profile is here at all. Every other profile links
+              itself, so an unlinked one is either waiting on a name it shares
+              with a folder, or was told to stop. */}
+          <p className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]" data-testid="sync-pick-why"
+            data-why={st.opted_out ? "opted-out" : st.suggested_folder ? "same-name" : "first"}>
+            {st.opted_out ? t("sync.pickOptedOut") : st.suggested_folder ? t("sync.pickSameName") : t("sync.pickHint")}
+          </p>
+          <p className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">{t("sync.pickAuto")}</p>
           <div className="mt-3 flex flex-col gap-1.5" role="radiogroup">
             {/* A folder another profile on this machine already follows is
                 not offered: two profiles exporting into one folder would
@@ -355,6 +373,25 @@ export default function SyncSection() {
         </div>
       </Block>
 
+      {st.connected && st.ignored.length > 0 && (
+        <Block>
+          <h3 className="text-[14px] font-semibold">{t("sync.ignoredTitle")}</h3>
+          <p className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">{t("sync.ignoredHint")}</p>
+          <div className="mt-3 flex flex-col gap-2" data-testid="sync-ignored">
+            {st.ignored.map(f => (
+              <div key={f.sync_id} className="flex flex-wrap items-center justify-between gap-2" data-testid={`sync-ignored-${f.sync_id}`}>
+                <span className="text-[13px]">
+                  {f.name} <code className="mono text-[11.5px] text-[var(--color-fg-faint)]">profiles/{f.sync_id}</code>
+                </span>
+                <Button size="sm" onClick={() => void restore(f.sync_id)} disabled={busy !== null || !bound} data-testid={`sync-restore-${f.sync_id}`}>
+                  {t("sync.ignoredRestore")}
+                </Button>
+              </div>
+            ))}
+          </div>
+        </Block>
+      )}
+
       {st.connected && (
         <Block>
           <Button size="sm" onClick={() => void disconnect()} disabled={busy !== null} data-testid="sync-disconnect">
@@ -486,6 +523,10 @@ function describeChange(c: SyncChange, t: (k: string, o?: Record<string, unknown
       return t("sync.change.pref", { key: c.target });
     case "theme":
       return t("sync.change.theme", { name: c.target });
+    case "profile":
+      if (c.action === "upload") return t("sync.change.profileUpload", { name: c.target });
+      if (c.action === "update") return t("sync.change.profileUpdate", { name: c.target, to: String(c.to ?? "") });
+      return t("sync.change.profileAdd", { name: c.target });
   }
 }
 

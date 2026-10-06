@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { dataDir } from "../../wdio.conf.js";
@@ -116,8 +116,21 @@ describe("config sync", () => {
   });
 
   after(async () => {
+    // The profile cases turn a dormant install into one with profiles. Put it
+    // back whatever they left: the profile that came from the repo is deleted
+    // (its own directory, no worktrees), then the feature is switched off,
+    // which is the door built for the last profile standing. Before the
+    // disconnect, so the delete's "ignore this folder" note goes with the
+    // sync state instead of outliving it.
     await browser.execute(async () => {
-      try { await window.__termic!.invoke("sync_disconnect"); } catch { /* not connected */ }
+      const t = window.__termic!;
+      const view = await t.invoke("profiles_list");
+      for (const p of (view.profiles ?? []).filter((r: any) => !r.is_root)) {
+        try { await t.invoke("profile_delete", { slug: p.slug, deleteWorktrees: false }); } catch { /* already gone */ }
+      }
+      try { await t.invoke("sync_disconnect"); } catch { /* not connected */ }
+      try { await t.invoke("profiles_disable"); } catch { /* already dormant */ }
+      await t.useProfiles.getState().refresh();
     });
     await patchFixture({ preview_url: original.preview_url, default_yolo: original.default_yolo });
     await browser.execute(async (agents) => {
@@ -301,6 +314,86 @@ describe("config sync", () => {
     await waitVisible('[data-testid="sync-now"]', 30_000);
     await browser.waitUntil(async () => (await fixture()).default_yolo === true,
       { timeout: 15_000, timeoutMsg: "the confirmed first connect did not apply the repo's YOLO default" });
+    await browser.execute(() => window.__termic!.useUI.setState({ toasts: [] }));
+  });
+
+  // ── profiles follow the repo ──
+  //
+  // The other machine here has a second profile, "Work". This install has no
+  // profiles at all, which is the hard case: taking the profile means turning
+  // the feature on. The slot math of who is created, uploaded or left waiting
+  // is plan_adoption's, unit-tested in config_sync.rs; these cases are the
+  // window's half, that the profile really appears, stays deleted, and can be
+  // asked for again.
+
+  const profileNames = () => browser.execute(async () => {
+    const view = await window.__termic!.invoke("profiles_list");
+    return ((view.profiles ?? []) as { name: string }[]).map(p => p.name).sort();
+  });
+  const WORK = "E2E Work";
+
+  it("creates a profile here for one another machine added", async () => {
+    await openSync();
+    await waitVisible('[data-testid="sync-now"]');
+    expect(await profileNames()).toEqual([]);
+
+    // Another machine's second profile: a folder of its own, named after its
+    // slug, with a name, a colour and one project this machine has no folder
+    // for. Written beside this profile's folder, not into it.
+    onOtherMachine((mine) => {
+      const dir = path.join(path.dirname(mine), "e2e-work");
+      mkdirSync(path.join(dir, "projects"), { recursive: true });
+      writeFileSync(path.join(dir, "profile.json"), JSON.stringify({ accent: "orange", name: WORK }, null, 2) + "\n");
+      writeFileSync(path.join(dir, "projects", "work-only.json"), JSON.stringify({
+        id: "work-only", name: "work-only-app", non_git: false, position: 0,
+        remote_url: "https://git.acme.com/acme/work-only-app.git", subdir: "", type: "single",
+      }, null, 2) + "\n");
+    });
+    await syncNow();
+
+    await browser.waitUntil(async () => (await profileNames()).includes(WORK),
+      { timeout: 15_000, timeoutMsg: "the other machine's profile was never created here" });
+    // The report says so in words, since a new profile is not a silent change.
+    expect(await textOf('[data-testid="sync-result-list"]')).toContain(`Create profile ${WORK} on this machine`);
+    // And the window learned without a reload: the chip only renders once
+    // profiles exist, so its presence is the profile list having refreshed.
+    await waitVisible('[data-testid="profile-chip"]');
+    const made = await browser.execute(async (name) => {
+      const view = await window.__termic!.invoke("profiles_list");
+      return (view.profiles as any[]).find(p => p.name === name) ?? null;
+    }, WORK);
+    expect(made.accent).toBe("orange");
+    expect(made.is_root).toBe(false);
+    // This window's own profile is untouched: still following its folder.
+    expect(await textOf('[data-testid="sync-folder-name"]')).not.toContain("e2e-work");
+    await snap("sync-profile-created.png");
+  });
+
+  it("a profile deleted here stays deleted, and Settings offers it back", async () => {
+    const slug = await browser.execute(async (name) => {
+      const view = await window.__termic!.invoke("profiles_list");
+      return (view.profiles as any[]).find(p => p.name === name).slug as string;
+    }, WORK);
+    await browser.execute(async (s) => {
+      await window.__termic!.invoke("profile_delete", { slug: s, deleteWorktrees: false });
+    }, slug);
+    expect(await profileNames()).not.toContain(WORK);
+
+    // The sync that would have recreated it.
+    await openSync();
+    await syncNow();
+    expect(await profileNames()).not.toContain(WORK);
+    // Still in the repo for every other machine.
+    expect(remoteFiles()).toContain("profiles/e2e-work/profile.json");
+
+    // Listed, with the way back.
+    await waitVisible('[data-testid="sync-ignored-e2e-work"]');
+    expect(await textOf('[data-testid="sync-ignored-e2e-work"]')).toContain(WORK);
+    await snap("sync-profile-ignored.png");
+    await clickWhenVisible('[data-testid="sync-restore-e2e-work"]');
+    await browser.waitUntil(async () => (await profileNames()).includes(WORK),
+      { timeout: 30_000, timeoutMsg: "Create here did not bring the profile back" });
+    await waitGone('[data-testid="sync-ignored"]');
     await browser.execute(() => window.__termic!.useUI.setState({ toasts: [] }));
   });
 });

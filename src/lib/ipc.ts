@@ -1481,3 +1481,5 @@ export const syncSkip = (projectId: string, skip: boolean) => invoke<void>("sync
 export const syncKeep = (projectId: string) => invoke<void>("sync_keep", { projectId });
 export const syncDismissNotices = () => invoke<void>("sync_dismiss_notices");
 export const syncDisconnect = () => invoke<void>("sync_disconnect");
+export const syncRestoreFolder = (folder: string, prefs: SyncPrefsSnapshot) =>
+  invoke<SyncRunResult>("sync_restore_folder", { folder, prefs });

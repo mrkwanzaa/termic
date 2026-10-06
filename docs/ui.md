@@ -97,7 +97,7 @@ It shows as a badge, on the rail item and next to the page title, not as a separ
 
 ## Settings > Sync (config sync, phase 1)
 
-`components/settings/SyncSection.tsx`, loaded with `React.lazy` from `Settings.tsx` so the prefs registry and `lib/configSync.ts` stay off the app-start path. Experimental badge: nothing happens until a repo is connected, and Disconnect is the way out. The design is [ideas/config-sync.md](ideas/config-sync.md); the commands are in [ipc.md](ipc.md) "Config sync".
+`components/settings/SyncSection.tsx`, loaded with `React.lazy` from `Settings.tsx` so the prefs registry and `lib/configSync.ts` stay off the app-start path. Experimental badge: nothing happens until a repo is connected, and Disconnect is the way out. The design is [ideas/config-sync.md](ideas/config-sync.md); the commands are in [ipc.md](ipc.md) "Config sync". Only the first profile to connect on a machine chooses a folder; after that every sync creates a profile for each repo folder nobody here follows and uploads each unlinked profile, so the picker appears for exactly two cases and says which (`data-why` on its first line): a profile that shares its name with a repo folder (never matched on a guess, the folder is preselected), or one that was disconnected. "Profiles not on this machine" lists repo profiles deleted here, each with Create here.
 
 The page has three states, top to bottom:
 

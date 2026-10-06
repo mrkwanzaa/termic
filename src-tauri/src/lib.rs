@@ -5125,9 +5125,17 @@ fn profile_seeded_tasks_path(name: String) -> (String, String) {
     (slug, path)
 }
 
-#[tauri::command]
-fn profile_create(app: AppHandle, args: CreateProfileArgs) -> Result<ProfileView, String> {
-    dlog("[profile] create: start");
+/// Everything creating a profile does on disk: the registry entry and the
+/// seeded settings. No window, no tray, no event, so config sync can create a
+/// profile that arrived from the repo (`config_sync::adopt_profiles`) from a
+/// blocking thread; its caller announces the change.
+pub(crate) fn create_profile_data(
+    name: &str,
+    accent: &str,
+    tasks_path: &str,
+    existing_name: Option<&str>,
+    existing_accent: Option<&str>,
+) -> Result<(String, ProfileId, u32), String> {
     // Under the lock: creating the FIRST profile also adopts the existing
     // install, and both entries have to land in one write or the registry is
     // briefly a registry that names one of two profiles.
@@ -5135,13 +5143,7 @@ fn profile_create(app: AppHandle, args: CreateProfileArgs) -> Result<ProfileView
     // lock that wrote it: re-reading afterwards would be a second load another
     // window could have changed in between.
     let (slug, id, order) = with_registry(|_g, reg| {
-        let slug = registry_add_profile(
-            reg,
-            &args.name,
-            &args.accent,
-            args.existing_name.as_deref(),
-            args.existing_accent.as_deref(),
-        )?;
+        let slug = registry_add_profile(reg, name, accent, existing_name, existing_accent)?;
         let id = reg.id_for(&slug);
         let order = reg.get(&slug).map(|p| p.order).unwrap_or(0);
         Ok((slug, id, order))
@@ -5152,15 +5154,32 @@ fn profile_create(app: AppHandle, args: CreateProfileArgs) -> Result<ProfileView
     // rather than making the user re-detect every CLI. See
     // docs/plans/profiles.md, "Profile creation seeds, it never blanks".
     let mut seeded = load_settings_in(&ProfileId::Root);
-    seeded.default_tasks_path = if args.tasks_path.trim().is_empty() {
+    seeded.default_tasks_path = if tasks_path.trim().is_empty() {
         builtin_profile_tasks_path(&slug)
     } else {
-        args.tasks_path.trim().to_string()
+        tasks_path.trim().to_string()
     };
+    // The root's sync binding is the ROOT's. Copied, the new profile would
+    // follow the root's folder in the sync repo and the two would overwrite
+    // each other on every sync, with the root's removal outbox replayed too.
+    seeded.sync = config_sync::SyncLocal::default();
     // Projects and tasks are the profile's own; only the machine-level agent
     // registry carries over.
     save_settings_in(&id, &seeded)?;
     save_projects_in(&id, &[]).map_err(|e| e.to_string())?;
+    Ok((slug, id, order))
+}
+
+#[tauri::command]
+fn profile_create(app: AppHandle, args: CreateProfileArgs) -> Result<ProfileView, String> {
+    dlog("[profile] create: start");
+    let (slug, id, order) = create_profile_data(
+        &args.name,
+        &args.accent,
+        &args.tasks_path,
+        args.existing_name.as_deref(),
+        args.existing_accent.as_deref(),
+    )?;
 
     let view = ProfileView {
         slug: slug.clone(),
@@ -5498,6 +5517,10 @@ fn profile_delete_sync(app: &AppHandle, slug: &str, delete_worktrees: bool, call
         let _ = win.destroy();
     }
 
+    // Before the data goes: config sync creates a profile for every folder in
+    // the repo, so a deleted one has to be remembered or the next sync brings
+    // it straight back.
+    config_sync::note_profile_deleted(&id);
     delete_profile_data(&g, &mut reg, &id, slug, delete_worktrees)
 }
 
@@ -25206,7 +25229,7 @@ pub fn run() {
             config_sync::sync_status, config_sync::sync_connect, config_sync::sync_preview,
             config_sync::sync_bind, config_sync::sync_now, config_sync::sync_launch_pull,
             config_sync::sync_resolve, config_sync::sync_locate, config_sync::sync_skip,
-            config_sync::sync_keep, config_sync::sync_dismiss_notices, config_sync::sync_disconnect, agents_save, agents_defaults, run_capture_command, discover_repos, detect_clis,
+            config_sync::sync_keep, config_sync::sync_dismiss_notices, config_sync::sync_disconnect, config_sync::sync_restore_folder, agents_save, agents_defaults, run_capture_command, discover_repos, detect_clis,
             docker_check, docker_image_status, docker_get_dockerfile, docker_default_dockerfile, docker_set_dockerfile, docker_build_image, docker_agent_dirs, docker_command_preview,
             automation::automation_result,
             automation::automation_armed,

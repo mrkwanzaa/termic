@@ -19,10 +19,10 @@ The open questions at the end, answered:
 
 1. **Profiles.** One repo for the whole machine, a folder per profile
    (`profiles/<sync-id>/`). A profile is bound to its folder by a
-   `sync_id` kept locally in that profile (`Settings.sync`). At first
-   connect, a repo that already holds folders lists them by profile
-   name: the user picks the one this profile follows, or starts a new
-   one.
+   `sync_id` kept locally in that profile (`Settings.sync`). The first
+   profile to connect picks a folder or starts a new one, with a
+   preview; every other profile then follows the repo by itself, see
+   "Profiles follow the repo" below.
 2. **Safety defaults** sync: the app-wide prefs (`defaultYolo`,
    `globalDefaultSandboxKind`, `sandboxBypassPermissions`,
    `sandboxAllowScope`) and a project's `default_yolo`,
@@ -98,7 +98,47 @@ Decided while building, not by the questions above:
 - **Commit identity** is fixed in the clone's own config (`termic
   <sync@termic.dev>`), with hooks and signing off there too.
 - **Disconnect** unbinds the profile and, once no profile is bound,
-  deletes the clone. Nothing is deleted from the repo.
+  deletes the clone. Nothing is deleted from the repo. While other
+  profiles still sync, the disconnected one is remembered as opted out
+  (`SyncLocal::opted_out`), or the next sync would upload it again.
+- **Profiles follow the repo** (built after phase 1, `adopt_profiles`
+  and the pure `plan_adoption`). On every run with at least one
+  profile bound, after upstream is integrated and before the push:
+  - a repo folder no local profile follows becomes a local profile,
+    created with the name and accent in its `profile.json`, closed, and
+    filled by a first-connect apply. On an install with profiles
+    dormant this turns the feature on, naming the existing install
+    after the folder it follows;
+  - a local profile that follows nothing is uploaded as a new folder,
+    but only on a run that pushes ("Sync now"), never on the launch
+    pull: a folder named and left unpushed is a name another machine
+    can also take;
+  - a folder and an unlinked local profile that share a NAME (ignoring
+    case), or a folder named after that profile's slug, are never
+    matched or duplicated on a guess. Both wait, and that profile's
+    Settings > Sync shows the picker with the folder preselected
+    (`SyncStatus::suggested_folder`). Merging two project lists by
+    accident is hard to undo;
+  - deleting a profile here puts its folder on this machine's ignore
+    list (`SyncState::ignored_folders`, written by `profile_delete`
+    before the data goes), so it is not recreated. Settings > Sync
+    lists ignored folders with "Create here" (`sync_restore_folder`).
+  The first-connect preview lists the profiles that will be created
+  and uploaded, since connecting one profile now moves the others.
+- **A new folder is named after the profile's slug** (`new_folder_id`:
+  the root's registry slug, `default` when profiles are dormant, `-2`
+  on a clash with a folder already in the repo). It was 12 random hex
+  characters. The name is only a name: the binding is still the stored
+  `sync_id`, because slugs are minted per machine and can differ. A
+  repo made before this keeps its hex folder names and keeps working.
+- **`profile.json` holds `name` and `accent`**, and both sync like any
+  other field (three-way, applied to the registry; an open window's
+  title follows). A dormant install has no name for its one profile, so
+  it writes the file only when absent: exporting "Default" on every
+  sync renamed the folder another machine had named.
+- **A profile created by hand starts unlinked.** `profile_create`
+  seeded the new profile's settings from the root's, sync binding
+  included, which pointed two profiles at one folder.
 - **Not built:** the public-repo warning through `gh` / `glab`, and
   creating the repo from termic.
 - **Known limit:** git merges by line, and sorted keys put related

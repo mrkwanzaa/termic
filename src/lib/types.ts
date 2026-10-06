@@ -2008,10 +2008,11 @@ export interface SyncLocal {
 
 /** One line of a first-connect preview or a sync report. */
 export interface SyncChange {
-  kind: "project" | "agent" | "settings" | "pref" | "theme";
-  /** A project or agent name, a pref key, a theme file. */
+  kind: "project" | "agent" | "settings" | "pref" | "theme" | "profile";
+  /** A project, agent or profile name, a pref key, a theme file. */
   target: string;
-  action: "update" | "add" | "remove" | "wait";
+  /** "upload" is a profile's only: a local profile sent to the repo. */
+  action: "update" | "add" | "remove" | "wait" | "upload";
   field?: string;
   from?: unknown;
   to?: unknown;
@@ -2046,9 +2047,11 @@ export interface SyncRunResult {
   changes: SyncChange[];
   conflicts: string[];
   error: string | null;
+  /** A profile was created here from the repo. */
+  profiles_changed: boolean;
 }
 
-export interface SyncFolder { sync_id: string; name: string }
+export interface SyncFolder { sync_id: string; name: string; accent?: string | null }
 export interface SyncConnectInfo { url: string; empty: boolean; folders: SyncFolder[] }
 export interface SyncWaiting { id: string; name: string; remote_url: string | null; subdir: string; non_git: boolean }
 export interface SyncRemoval { id: string; name: string; machine: string; at: string }
@@ -2071,4 +2074,10 @@ export interface SyncStatus {
   skipped: SyncWaiting[];
   removals: SyncRemoval[];
   notices: SyncChange[];
+  /** This profile was told to stop syncing while the machine stays connected. */
+  opted_out: boolean;
+  /** For an unlinked profile: the repo folder that shares its name. */
+  suggested_folder: string | null;
+  /** Repo profiles deleted on this machine, which a sync will not recreate. */
+  ignored: SyncFolder[];
 }
