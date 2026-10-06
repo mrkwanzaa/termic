@@ -60,13 +60,33 @@ export function baseName(p: string, windows: boolean = IS_WINDOWS): string {
   return parts[parts.length - 1] || p;
 }
 
+/** The absolute path of `rel` under `root`. `rel` is in the app's
+ *  task-relative form (always `/`-joined, the shape the file tree and every
+ *  IPC payload carry) and the result is a NATIVE path, in the spelling the
+ *  platform's own shell APIs want. The inverse of `relUnder`. Trailing
+ *  separators on `root` are dropped, so a root (`/`, `C:\\`) joins to `/x`,
+ *  `C:\\x`. */
+export function absUnder(root: string, rel: string, windows: boolean = IS_WINDOWS): string {
+  const sep = windows ? "\\" : "/";
+  const r = rel.replace(/^[\\/]+/, "");
+  const base = root.replace(windows ? /[\\/]+$/ : /\/+$/, "");
+  if (!r) return base;
+  const joined = `${base}${sep}${r}`;
+  // Normalize EVERY separator, not just the one being inserted. Both halves
+  // can arrive in either spelling (a `\`-joined root from Rust, a `/`-joined
+  // `rel` from the app), and a Windows path that mixes them (`I:\repo/src`)
+  // is one `explorer` does not accept. It does not fail loudly either: it
+  // silently falls back to the user's Documents folder, so every "open in
+  // File Explorer" on a folder landed somewhere unrelated to the folder.
+  return windows ? joined.replace(/\//g, "\\") : joined;
+}
+
 /** `name` inside directory `dir`, in the platform's own spelling: a
  *  backslash on Windows, where a folder picked in the dialog or a canonical
- *  path from Rust already uses them. Trailing separators on `dir` are
- *  dropped, so a root (`/`, `C:\\`) joins to `/x`, `C:\\x`. */
+ *  path from Rust already uses them. A single segment, so this is `absUnder`
+ *  with the relative half being one name. */
 export function joinPath(dir: string, name: string, windows: boolean = IS_WINDOWS): string {
-  const sep = windows ? "\\" : "/";
-  return `${dir.replace(windows ? /[\\/]+$/ : /\/+$/, "")}${sep}${name}`;
+  return absUnder(dir, name, windows);
 }
 
 /** A `file://` URI for an absolute path, percent-encoding everything outside

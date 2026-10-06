@@ -17,15 +17,16 @@
 
 import { useTranslation } from "react-i18next";
 import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/ContextMenu";
-import { copyToClipboard, joinPath } from "@/lib/clipboard";
+import { copyToClipboard } from "@/lib/clipboard";
 import { openPath, revealPath } from "@/lib/ipc";
+import { absUnder } from "@/lib/osPath";
 import { FILE_MANAGER, openInDefaultApp } from "@/lib/openExternal";
 import { useUI } from "@/store/ui";
 import { Copy, CornerUpLeft, ExternalLink, FolderOpen } from "lucide-react";
 
 export function CopyPathItems({ rel, root, isDir = false }: { rel: string; root: string; isDir?: boolean }) {
   const { t } = useTranslation("task");
-  const abs = joinPath(root, rel);
+  const abs = absUnder(root, rel);
   const name = rel.split("/").pop() || rel;
   const revealInFileManager = () => {
     // Folders open (show their contents); files are revealed/selected in

@@ -22,10 +22,3 @@ export function copyToClipboard(text: string, label = "text") {
     .catch(() => useUI.getState().pushToast(i18n.t("backend:clipboard.failed"), "error"));
 }
 
-/** Join a task root with a task-relative path into an absolute
- *  path, tolerating an empty relative segment and stray slashes. */
-export function joinPath(root: string, rel: string): string {
-  const r = rel.replace(/^\/+/, "");
-  if (!r) return root;
-  return `${root.replace(/\/+$/, "")}/${r}`;
-}

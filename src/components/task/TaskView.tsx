@@ -35,6 +35,7 @@ import { getAllLeaves, computeLeafBounds, focusedTabId } from "@/lib/splitTree";
 import type { PaneLeaf, Rect } from "@/lib/splitTree";
 import { openPath, revealPath } from "@/lib/ipc";
 import { copyToClipboard } from "@/lib/clipboard";
+import { absUnder } from "@/lib/osPath";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent } from "@/components/ui/ContextMenu";
@@ -145,7 +146,7 @@ function EditorBreadcrumb({ task }: { task: Task }) {
   // Absolute folder that contains the file — opening THE DIRECTORY (not the
   // file) launches the OS file manager (Finder / Files / Explorer) at that
   // location. openPath → opener plugin: `open` on macOS, xdg-open on Linux.
-  const folderAbs = dir ? `${task.path}/${dir}` : task.path;
+  const folderAbs = absUnder(task.path, dir);
   const iconBtn = "shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]";
   const copyPath = () => {
     navigator.clipboard.writeText(path)
