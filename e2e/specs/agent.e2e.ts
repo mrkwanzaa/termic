@@ -3410,4 +3410,57 @@ describe("agent messages wait for your draft", () => {
     });
     expect(await logs()).not.toContain("never mindsecond-report");
   });
+
+  // The other direction, and the one that deadlocks: a draft that is NOT
+  // there. `composing` true with an empty prompt queues every message another
+  // agent sends, and nothing clears it until someone presses Enter in that
+  // terminal, which an agent only other agents talk to never gets.
+  const composing = () => browser.execute(
+    (id) => !!window.__termic!.useApp.getState().tabs[id][0].composing, taskId);
+
+  it("a word deleted with Ctrl-W is gone from the draft, so the next report is not held", async function () {
+    this.timeout(90_000);
+    await typeIntoAgent(taskId, "oops");
+    await browser.waitUntil(composing, { timeout: 5_000, timeoutMsg: "the draft was never noticed" });
+    // The tty erases the word (and so does an agent's own input box); the
+    // tracker used to keep counting its four characters.
+    await typeIntoAgent(taskId, "\x17");
+    await browser.waitUntil(async () => !(await composing()), {
+      timeout: 5_000, timeoutMsg: "deleting the only word left the tab composing",
+    });
+    const r = await cliRpc({ cmd: "send", task: NAME, prompt: "third-report" });
+    expect(r.ok).toBe(true);
+    // Delivered at once, or queued behind the previous report's turn if that
+    // is still ending: either is fine. What a phantom draft did was keep it
+    // queued for good, so the assertion is that it ARRIVES.
+    await browser.waitUntil(async () => (await queuedCount(taskId)) === 0 && (await echoed("third-report")), {
+      timeout: 30_000, timeoutMsg: "the report stayed queued behind a draft that was not there",
+    });
+  });
+
+  it("a key that answers the agent's own prompt is not a draft", async function () {
+    this.timeout(90_000);
+    // Blocked on the user, the way a permission dialog leaves it. claude's
+    // takes a bare digit and no Enter, so the digit was counted as one draft
+    // character that nothing would ever submit or clear.
+    await browser.execute((id) => {
+      const s = window.__termic!.useApp.getState();
+      s.markAttention(id, s.tabs[id][0].id, "attention");
+    }, taskId);
+    await typeIntoAgent(taskId, "1");
+    // The key is taken as the answer: the bell goes, and no draft appears.
+    await browser.waitUntil(() => browser.execute(
+      (id) => window.__termic!.useApp.getState().tabs[id][0].unread == null, taskId), {
+      timeout: 5_000, timeoutMsg: "the answering key did not clear the bell",
+    });
+    expect(await composing()).toBe(false);
+    // The fixture has no dialog to swallow the digit, so take it back off the
+    // tty line before the report is typed there.
+    await typeIntoAgent(taskId, "\x15");
+    const r = await cliRpc({ cmd: "send", task: NAME, prompt: "fourth-report" });
+    expect(r.ok).toBe(true);
+    await browser.waitUntil(async () => (await queuedCount(taskId)) === 0 && (await echoed("fourth-report")), {
+      timeout: 30_000, timeoutMsg: "the report stayed queued behind a draft that was not there",
+    });
+  });
 });

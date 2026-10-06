@@ -165,10 +165,23 @@ mark and still waits for the turn to end.
 Every automatic send types into the same prompt the user types into, so a
 message arriving mid-sentence landed inside their text and the next Enter
 submitted both. `composing` on the tab tracks the user's own keystrokes
-(TerminalPane `trackDraft`: printable input and pastes start a draft, Up
-arrow's history recall counts as one, Enter or Ctrl-C / Ctrl-U or
-backspacing to nothing ends it; Shift+Enter is written straight to the PTY,
-so a multi-line draft stays one). While it is set, the message queue does
+(`nextDraft` in `lib/draftTracker.ts`, fed by TerminalPane `trackDraft`:
+printable input and pastes start a draft, Up arrow's history recall counts as
+one until Down steps back out, Enter or Ctrl-C / Ctrl-U or deleting it all
+ends it, by character or by word; Shift+Enter is written straight to the PTY,
+so a multi-line draft stays one). A key pressed while the tab is marked
+`attention` is an ANSWER to the agent's own prompt and never a draft, and a
+respawn starts empty.
+
+**A draft that is not there is a deadlock.** Every message for the tab
+queues, the turn-end drain refuses, the stall watchdog stands down, and only
+an Enter in that terminal clears it, which an agent only other agents talk to
+never gets. The tracker was a character count, and claude's permission
+dialog, which takes a bare digit and no Enter, left it at one for good; so
+did Ctrl-W and Option-Backspace. It still errs towards "there is a draft"
+where it cannot see the text (an edited history entry, a kill-line), because
+typing into a real one is the worse mistake. A hold is written to the
+work-state log as `queue-held ... why=draft in the prompt`, once per hold. While it is set, the message queue does
 not send (except "Send now", which is the user asking) and an agent's
 message queues even on an idle agent. The queue resumes when the draft
 ends: Enter starts the user's turn and its done drains the queue after, and

@@ -51,6 +51,7 @@ import { imageFromClipboard, pastePathText } from "@/lib/clipboardImage";
 import { setupImeReplacementBridge } from "@/lib/ime";
 import { deliverMessage } from "@/lib/agentSend";
 import { queueLooksStalled } from "@/lib/queueStall";
+import { EMPTY_DRAFT, isComposing, nextDraft, type DraftState } from "@/lib/draftTracker";
 import { failCliQueuedPrompts, reportCliPromptDelivery } from "@/lib/cliPromptReports";
 import { waitForAgentReady, hooksOwnStartupReadiness } from "@/lib/agentReady";
 import { hasDueScheduled, lateBy, pickQueueItem } from "@/lib/scheduledQueue";
@@ -520,37 +521,31 @@ const captureArmedRef = useRef(false);
   // there means a focused agent's loop still advances (the store downgrades
   // a focused tab's "done" to "idle", so we can't watch workState for this).
   const sendNextQueuedRef = useRef<((force?: boolean) => boolean) | null>(null);
+  // Whether the current "held behind a draft" has been written to the
+  // work-state log, so a hold is one line however many times the drain asks.
+  const draftHoldLoggedRef = useRef(false);
 
   // ── The user's unsubmitted draft ──
   // Anything typed into the prompt while the user has a draft there lands in
   // the middle of it, and the Enter that follows submits both halves as one
   // message. So we follow the draft from the user's own keystrokes and hold
   // every automatic send while one exists (see `composing` on TerminalTab).
-  // A rough character count is enough: it only has to tell "something is
-  // there" from "the prompt is empty". Shift+Enter bypasses onData (it is
-  // written straight to the PTY), so a multi-line draft stays a draft.
-  const draftLenRef = useRef(0);
+  // Shift+Enter bypasses onData (it is written straight to the PTY), so a
+  // multi-line draft stays a draft.
+  //
+  // The rule is `nextDraft` (lib/draftTracker.ts), pure and unit-tested,
+  // because a draft that is not there is a deadlock: every message for the
+  // tab queues and nothing sends until someone presses Enter here.
+  const draftRef = useRef<DraftState>(EMPTY_DRAFT);
   const trackDraft = useCallback((data: string) => {
-    let n = draftLenRef.current;
-    if (/[\r\n]/.test(data) || data === "\x03" || data === "\x15") {
-      n = 0; // submitted (Enter), or cleared (Ctrl-C, Ctrl-U)
-    } else if (data.startsWith("\x1b[200~")) {
-      n += Math.max(1, data.length - 12); // a bracketed paste into the prompt
-    } else if (data === "\x1b[A" || data === "\x1bOA") {
-      // Up arrow: history recall puts an old prompt in the input without a
-      // single typed character. Treat it as a draft; Enter or a clear ends it.
-      n = Math.max(n, 1);
-    } else if (data.startsWith("\x1b")) {
-      return; // arrows, Escape, and xterm's own replies (cursor reports)
-    } else {
-      for (const ch of data) {
-        if (ch === "\x7f" || ch === "\b") n = Math.max(0, n - 1);
-        else if (ch >= " ") n += 1;
-      }
-    }
-    draftLenRef.current = n;
-    const composing = n > 0;
     const cur = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
+    // Blocked on a prompt of its own (a permission dialog, a question): this
+    // key answers that, it is not a character in the input box. Read BEFORE
+    // the caller clears the mark on this same keystroke.
+    const answering = cur?.unread?.reason === "attention";
+    const next = nextDraft(draftRef.current, data, answering);
+    draftRef.current = next;
+    const composing = isComposing(next);
     // Written only when it flips: this runs on every keystroke (bear trap 8).
     if (!!cur?.composing !== composing) patchTab(task.id, tab.id, { composing });
   }, [task.id, tab.id]);
@@ -794,8 +789,16 @@ const captureArmedRef = useRef(false);
     // "Send now" (force) is the user asking for exactly this, so it goes.
     if (cur.composing && !force) {
       debugLogRef.current?.("queue-held", "user is typing a draft");
+      // In the always-on log too, once per hold: a queue held behind a draft
+      // looks exactly like a queue that is stuck, and the person it happens to
+      // has no devtools. A send that gets past this point re-arms the line.
+      if (!draftHoldLoggedRef.current) {
+        draftHoldLoggedRef.current = true;
+        logWorkState("queue-held", `task="${task.name}" cli=${tab.cli} queued=${cur.queue?.length ?? 0} why=draft in the prompt`);
+      }
       return false;
     }
+    draftHoldLoggedRef.current = false;
     // Our last queued submit has not been seen to start a turn, so whatever
     // made this agent look idle is the PREVIOUS turn ending. Writing now is the
     // truncation bug from the transcripts: the agent is still finishing that
@@ -1637,6 +1640,14 @@ const captureArmedRef = useRef(false);
     // env and possibly a different sandbox mode, so it has to demonstrate
     // delivery again rather than inherit a claim the previous process earned.
     hookSeenRef.current = false;
+    // A fresh process has an empty prompt, whatever the old one's held. Left
+    // alone, a draft typed into an agent that then exited or was restarted
+    // kept every later message queued behind text that no longer existed.
+    draftRef.current = EMPTY_DRAFT;
+    {
+      const cur = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
+      if (cur?.composing) patchTab(task.id, tab.id, { composing: false });
+    }
     delegatedSeenRef.current = null;
     delegatedSeenAtRef.current = 0;
     // The DISPLAY too, not just the memory. A restart gets a fresh process,
