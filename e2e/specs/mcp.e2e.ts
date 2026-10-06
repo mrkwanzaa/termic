@@ -11,6 +11,7 @@
 // Raw node:http, not fetch: the boundary cases need forbidden headers
 // (Origin) and header-identical comparisons that fetch abstracts away.
 import http from "node:http";
+import net from "node:net";
 import fs from "node:fs";
 import { execSync } from "node:child_process";
 import path from "node:path";
@@ -590,5 +591,62 @@ describe("MCP lifecycle: disable revokes, re-enable mints fresh", () => {
     expect(endpoint()).toBe(urlBefore);
     const frame = await rpc("server/discover");
     expect(frame.result._meta["io.modelcontextprotocol/serverInfo"].name).toBe("termic");
+  });
+});
+
+describe("MCP bind address and port: the settings decide where it listens", () => {
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+  });
+
+  const setBind = (address: string, port: number) =>
+    browser.execute(async (a, p) => {
+      const t = window.__termic!;
+      const s = await t.invoke("settings_load");
+      await t.invoke("settings_save", { s: { ...(s as object), mcp_bind_address: a, mcp_port: p } });
+    }, address, port);
+
+  /** A port nothing holds right now, found the way the app would. */
+  const freePort = () =>
+    new Promise<number>((resolve, reject) => {
+      const srv = net.createServer();
+      srv.once("error", reject);
+      srv.listen(0, "127.0.0.1", () => {
+        const { port } = srv.address() as net.AddressInfo;
+        srv.close(() => resolve(port));
+      });
+    });
+
+  // 0.0.0.0 is deliberately not driven here: binding every interface makes
+  // the OS firewall ask a question no spec can answer. The address half is
+  // covered in mcp_server.rs; this covers the live rebind.
+  it("a typed port moves the listener there, with a fresh token", async () => {
+    const tokenBefore = token();
+    const port = await freePort();
+    await setBind("", port);
+    try {
+      expect(endpoint()).toBe(`http://127.0.0.1:${port}/mcp`);
+      expect(token()).not.toBe(tokenBefore);
+      const frame = await rpc("server/discover");
+      expect(frame.result._meta["io.modelcontextprotocol/serverInfo"].name).toBe("termic");
+    } finally {
+      await setBind("", 0);
+    }
+    // No preference again keeps the port it has: nothing moved, so a
+    // client config written a moment ago still works.
+    expect(endpoint()).toBe(`http://127.0.0.1:${port}/mcp`);
+  });
+
+  it("an address that is not an IP stays on loopback, never everything", async () => {
+    const urlBefore = endpoint();
+    await setBind("everything", 0);
+    try {
+      expect(endpoint()).toBe(urlBefore);
+      const frame = await rpc("server/discover");
+      expect(frame.result._meta["io.modelcontextprotocol/serverInfo"].name).toBe("termic");
+    } finally {
+      await setBind("", 0);
+    }
   });
 });

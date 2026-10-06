@@ -27,7 +27,7 @@
 //! enable/disable cycles and restarts so pasted client configs survive.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{IpAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
@@ -165,6 +165,10 @@ pub(crate) struct McpServer {
     /// handlers, so MCP never grows a second implementation.
     host: Arc<dyn CliHost>,
     enabled: Box<dyn Fn() -> bool + Send + Sync>,
+    /// Bound somewhere other machines can reach (Settings
+    /// "mcp_bind_address" is not loopback). Fixed for the life of a
+    /// listener: changing the address rebinds.
+    lan: bool,
     backoff: Mutex<Backoff>,
 }
 
@@ -175,7 +179,7 @@ impl McpServer {
         enabled: Box<dyn Fn() -> bool + Send + Sync>,
         retired: Arc<AtomicBool>,
     ) -> Self {
-        McpServer { retired, token, host, enabled, backoff: Mutex::new(Backoff { failures: 0 }) }
+        McpServer { retired, token, host, enabled, lan: false, backoff: Mutex::new(Backoff { failures: 0 }) }
     }
 }
 
@@ -493,7 +497,7 @@ fn handle_conn(stream: TcpStream, server: &McpServer) -> std::io::Result<()> {
     //    cannot read the 0600 file), but the spec asks for this check
     //    and it makes the layering above actually independent.
     if let Some(h) = req.host.as_deref() {
-        if !host_is_loopback(h) {
+        if !host_allowed(h, server.lan) {
             return respond(stream, 403, b"");
         }
     }
@@ -540,12 +544,36 @@ fn handle_conn(stream: TcpStream, server: &McpServer) -> std::io::Result<()> {
 /// is irrelevant (we only ever bound one), so only the host part is
 /// compared; a bracketed IPv6 literal keeps its brackets.
 fn host_is_loopback(host: &str) -> bool {
-    let name = match host.strip_prefix('[') {
+    matches!(host_name(host), "127.0.0.1" | "localhost" | "::1")
+}
+
+/// The host part of a `Host` header, without port or IPv6 brackets.
+fn host_name(host: &str) -> &str {
+    match host.strip_prefix('[') {
         // [::1]:port -> ::1
         Some(rest) => rest.split(']').next().unwrap_or(""),
         None => host.split(':').next().unwrap_or(""),
-    };
-    matches!(name, "127.0.0.1" | "localhost" | "::1")
+    }
+}
+
+/// Gate 2b with the bind address folded in. A device on the network
+/// reaches us by this machine's address, so off loopback any IP LITERAL
+/// is answered, and nothing else is. That keeps the rebinding defence
+/// whole: the attack needs a hostname the attacker's DNS controls, and a
+/// literal address is never resolved. The cost is that `machine.local`
+/// is refused; clients are given the address.
+fn host_allowed(host: &str, lan: bool) -> bool {
+    host_is_loopback(host) || (lan && host_name(host).parse::<std::net::IpAddr>().is_ok())
+}
+
+/// This machine's address on the network other devices would use, for the
+/// URL Settings shows. Connecting a UDP socket sends nothing; it only makes
+/// the OS pick the outbound interface (192.0.2.1 is TEST-NET-1, reserved
+/// for documentation). `None` with no route, i.e. no network.
+fn lan_ip() -> Option<std::net::IpAddr> {
+    let s = std::net::UdpSocket::bind(("0.0.0.0", 0)).ok()?;
+    s.connect(("192.0.2.1", 9)).ok()?;
+    s.local_addr().ok().map(|a| a.ip()).filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
 }
 
 fn respond(mut stream: TcpStream, status: u16, body: &[u8]) -> std::io::Result<()> {
@@ -1707,6 +1735,8 @@ fn tool_reply_payload(reply: proto::Reply) -> serde_json::Value {
 
 struct McpHandle {
     port: u16,
+    /// What this listener was bound to, so a changed setting is noticed.
+    addr: IpAddr,
     shutdown: Arc<AtomicBool>,
     /// Fires when the accept loop has returned and the socket is gone.
     stopped: Option<mpsc::Receiver<()>>,
@@ -1738,11 +1768,46 @@ fn state() -> &'static Mutex<McpState> {
 /// survive, or a fresh one when there is nothing to reclaim. `Err(PortTaken)` when a port we previously advertised is
 /// held by someone else, which is NOT a case to paper over: see
 /// apply_enabled.
-fn bind_listener(preferred: Option<u16>) -> Result<TcpListener, BindFailure> {
+fn bind_listener(preferred: Option<u16>, addr: IpAddr) -> Result<TcpListener, BindFailure> {
     match preferred.filter(|p| *p != 0) {
-        Some(p) => TcpListener::bind(("127.0.0.1", p)).map_err(|_| BindFailure::PortTaken(p)),
-        None => TcpListener::bind(("127.0.0.1", 0)).map_err(BindFailure::Io),
+        Some(p) => TcpListener::bind((addr, p)).map_err(|e| match e.kind() {
+            // An address this machine does not have is a wrong setting,
+            // not a squatter on our port: report it as what it is.
+            std::io::ErrorKind::AddrNotAvailable => BindFailure::Io(e),
+            _ => BindFailure::PortTaken(p),
+        }),
+        None => TcpListener::bind((addr, 0)).map_err(BindFailure::Io),
     }
+}
+
+const LOOPBACK: IpAddr = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+
+/// The address and port Settings asks for ("mcp_bind_address",
+/// "mcp_port"). Empty or unparseable is loopback, never "everything": a
+/// typo must not be what exposes the endpoint. Port 0 means no preference.
+fn bind_setting() -> (IpAddr, Option<u16>) {
+    let s = crate::load_settings_inner();
+    (parse_bind_address(&s.mcp_bind_address), Some(s.mcp_port).filter(|p| *p != 0))
+}
+
+fn parse_bind_address(s: &str) -> IpAddr {
+    s.trim().parse().unwrap_or(LOOPBACK)
+}
+
+/// The address a client on THIS machine dials for a listener bound to
+/// `addr`. A wildcard is not dialable, and a listener bound to one
+/// specific interface does not answer on loopback.
+fn reach(addr: IpAddr) -> IpAddr {
+    match addr {
+        a if !a.is_unspecified() => a,
+        IpAddr::V4(_) => LOOPBACK,
+        IpAddr::V6(_) => IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+    }
+}
+
+/// SocketAddr's own formatting, so an IPv6 address gets its brackets.
+fn url_at(addr: IpAddr, port: u16) -> String {
+    format!("http://{}/mcp", std::net::SocketAddr::new(addr, port))
 }
 
 #[derive(Debug)]
@@ -1752,8 +1817,9 @@ enum BindFailure {
     Io(std::io::Error),
 }
 
+#[cfg(test)]
 fn url_for(port: u16) -> String {
-    format!("http://127.0.0.1:{port}/mcp")
+    url_at(LOOPBACK, port)
 }
 
 /// The credential currently on disk, when the file is one this server
@@ -1787,8 +1853,10 @@ fn token_from_file(dir: &Path) -> Option<String> {
 fn port_from_file(dir: &Path) -> Option<u16> {
     let url = std::fs::read_to_string(dir.join(MCP_PORT_FILE)).ok()?;
     let url = url.trim();
-    let rest = url.strip_prefix("http://127.0.0.1:")?;
-    rest.split('/').next()?.parse().ok()
+    // Whatever address it was bound to: the port is after the last colon
+    // of the authority.
+    let authority = url.strip_prefix("http://")?.split('/').next()?;
+    authority.rsplit(':').next()?.parse().ok()
 }
 
 /// Setup-hook entry: bind now if the setting is already on.
@@ -1802,7 +1870,15 @@ pub(crate) fn start_if_enabled(app: tauri::AppHandle) {
 /// setup hook and from settings_save, so the Settings toggle applies
 /// live in both directions.
 pub(crate) fn apply_enabled(app: tauri::AppHandle, on: bool) {
+    let (addr, want_port) = bind_setting();
     let mut st = state().lock().unwrap();
+    // Both are fixed at bind, so a changed address or port is a stop and a
+    // start, with a fresh token as on any re-enable.
+    if on && st.handle.as_ref().is_some_and(|h| h.addr != addr || want_port.is_some_and(|p| p != h.port)) {
+        drop(st);
+        apply_enabled(app.clone(), false);
+        return apply_enabled(app, true);
+    }
     match (on, st.handle.is_some()) {
         (true, false) => {
             let Ok(dir) = crate::global_dir() else {
@@ -1820,8 +1896,9 @@ pub(crate) fn apply_enabled(app: tauri::AppHandle, on: bool) {
                     dlog("[mcp] previous listener still winding down; the port may change");
                 }
             }
-            let preferred = st.last_port.or_else(|| port_from_file(&dir));
-            let listener = match bind_listener(preferred) {
+            // A port the user typed outranks the one we remembered.
+            let preferred = want_port.or(st.last_port).or_else(|| port_from_file(&dir));
+            let listener = match bind_listener(preferred, addr) {
                 Ok(l) => l,
                 // Moving to a different port silently is the dangerous
                 // option, not the safe one. Client configs hold the OLD
@@ -1874,18 +1951,20 @@ pub(crate) fn apply_enabled(app: tauri::AppHandle, on: bool) {
                 dlog(&format!("[mcp] token write failed: {e}; not serving"));
                 return;
             }
-            if let Err(e) = std::fs::write(dir.join(MCP_PORT_FILE), format!("{}\n", url_for(port))) {
+            if let Err(e) = std::fs::write(dir.join(MCP_PORT_FILE), format!("{}\n", url_at(reach(addr), port))) {
                 dlog(&format!("[mcp] port file write failed: {e}; not serving"));
                 let _ = std::fs::remove_file(dir.join(MCP_TOKEN_FILE));
                 return;
             }
             let shutdown = Arc::new(AtomicBool::new(false));
-            let server = Arc::new(McpServer::new(
+            let mut server = McpServer::new(
                 token.clone(),
                 Arc::new(cli_server::tauri_host(app, token)),
                 Box::new(|| crate::load_settings_inner().mcp_enabled),
                 shutdown.clone(),
-            ));
+            );
+            server.lan = !addr.is_loopback();
+            let server = Arc::new(server);
             let sd = shutdown.clone();
             let (done_tx, done_rx) = mpsc::channel();
             // Not bound: nothing joins it, and the channel below is how
@@ -1896,9 +1975,9 @@ pub(crate) fn apply_enabled(app: tauri::AppHandle, on: bool) {
                 // listener is dropped and the port released.
                 let _ = done_tx.send(());
             });
-            dlog(&format!("[mcp] listening on {}", url_for(port)));
+            dlog(&format!("[mcp] listening on {}", url_at(addr, port)));
             st.last_port = Some(port);
-            st.handle = Some(McpHandle { port, shutdown, stopped: Some(done_rx) });
+            st.handle = Some(McpHandle { port, addr, shutdown, stopped: Some(done_rx) });
         }
         (false, true) => {
             let mut h = st.handle.take().unwrap();
@@ -1910,8 +1989,8 @@ pub(crate) fn apply_enabled(app: tauri::AppHandle, on: bool) {
             // connect can park for the OS timeout (~75s) on a full
             // backlog, which would freeze the window and wedge every
             // later save (docs/ipc.md; the CLAUDE.md sync-IO trap).
-            let addr = std::net::SocketAddr::from(([127, 0, 0, 1], h.port));
-            let _ = TcpStream::connect_timeout(&addr, SHUTDOWN_POKE_TIMEOUT);
+            let poke = std::net::SocketAddr::new(reach(h.addr), h.port);
+            let _ = TcpStream::connect_timeout(&poke, SHUTDOWN_POKE_TIMEOUT);
             // The accept loop only has to observe the flag; if the poke
             // did not land, let it exit on its own rather than blocking
             // the UI thread on a join that may never return.
@@ -1953,13 +2032,23 @@ pub(crate) struct McpStatus {
     url: Option<String>,
     /// Where the client reads its credential from.
     token_path: Option<String>,
+    /// The address another device on the network connects to, when the
+    /// listener is bound on every interface (where `url` is the loopback
+    /// one) and the machine has a network address.
+    lan_url: Option<String>,
 }
 
 /// Settings-UI probe. Reads the live handle, so it reflects reality
 /// (a failed bind reports url: null even with the setting on).
 #[tauri::command]
 pub(crate) fn mcp_status() -> McpStatus {
-    let url = state().lock().unwrap().handle.as_ref().map(|h| url_for(h.port));
+    let (url, lan_url) = match state().lock().unwrap().handle.as_ref() {
+        Some(h) => (
+            Some(url_at(reach(h.addr), h.port)),
+            h.addr.is_unspecified().then(lan_ip).flatten().map(|ip| url_at(ip, h.port)),
+        ),
+        None => (None, None),
+    };
     let rendered = url.as_ref().and_then(|u| {
         let dir = crate::global_dir().ok()?;
         let helper = helper_command(&dir.join(MCP_TOKEN_FILE));
@@ -1973,6 +2062,7 @@ pub(crate) fn mcp_status() -> McpStatus {
             .then(|| crate::global_dir().ok().map(|d| d.join(MCP_TOKEN_FILE).to_string_lossy().into_owned()))
             .flatten(),
         url,
+        lan_url,
     }
 }
 
@@ -2154,7 +2244,7 @@ fn install_client_inner(client: &str) -> Result<String, String> {
         .unwrap()
         .handle
         .as_ref()
-        .map(|h| url_for(h.port))
+        .map(|h| url_at(reach(h.addr), h.port))
         .ok_or("the endpoint is not running, so there is no address to register")?;
     let helper = helper_command(&dir.join(MCP_TOKEN_FILE));
 
@@ -2632,11 +2722,15 @@ mod tests {
         let held = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = held.local_addr().unwrap().port();
         assert!(
-            matches!(bind_listener(Some(port)), Err(BindFailure::PortTaken(p)) if p == port),
+            matches!(bind_listener(Some(port), LOOPBACK), Err(BindFailure::PortTaken(p)) if p == port),
             "a taken advertised port must be an error, never a quiet fallback"
         );
         // With nothing to reclaim, any free port is fine.
-        assert!(bind_listener(None).is_ok());
+        assert!(bind_listener(None, LOOPBACK).unwrap().local_addr().unwrap().ip().is_loopback());
+        // An address this machine does not have (TEST-NET-1) is a wrong
+        // setting, reported as that and not as someone holding our port.
+        let elsewhere: IpAddr = "192.0.2.1".parse().unwrap();
+        assert!(matches!(bind_listener(Some(port), elsewhere), Err(BindFailure::Io(_))));
         // And once it is free again, it is reclaimed.
         //
         // Retried rather than asserted on the first attempt. `drop` closes the
@@ -2650,11 +2744,33 @@ mod tests {
         drop(held);
         let deadline = std::time::Instant::now() + PORT_RELEASE_WAIT * 8;
         let reclaimed = loop {
-            if bind_listener(Some(port)).is_ok() { break true }
+            if bind_listener(Some(port), LOOPBACK).is_ok() { break true }
             if std::time::Instant::now() >= deadline { break false }
             std::thread::sleep(Duration::from_millis(20));
         };
         assert!(reclaimed, "a freed advertised port must be reclaimable");
+    }
+
+    #[test]
+    fn a_bad_bind_address_is_loopback_and_urls_name_a_dialable_address() {
+        // A typo must never be what exposes the endpoint.
+        for bad in ["", "  ", "everything", "0.0.0", "192.168.1.300", "localhost"] {
+            assert_eq!(parse_bind_address(bad), LOOPBACK, "{bad:?}");
+        }
+        assert!(parse_bind_address(" 0.0.0.0 ").is_unspecified());
+        // What a local client is told to dial: never the wildcard, and the
+        // interface itself when bound to one.
+        let any: IpAddr = "0.0.0.0".parse().unwrap();
+        let one: IpAddr = "192.168.1.20".parse().unwrap();
+        assert_eq!(url_at(reach(any), 8123), "http://127.0.0.1:8123/mcp");
+        assert_eq!(url_at(reach(one), 8123), "http://192.168.1.20:8123/mcp");
+        assert_eq!(url_at(reach("::".parse().unwrap()), 8123), "http://[::1]:8123/mcp");
+        // And the port comes back out of whichever was written.
+        let dir = tempfile::tempdir().unwrap();
+        for url in ["http://127.0.0.1:8123/mcp", "http://192.168.1.20:8123/mcp", "http://[::1]:8123/mcp"] {
+            std::fs::write(dir.path().join(MCP_PORT_FILE), format!("{url}\n")).unwrap();
+            assert_eq!(port_from_file(dir.path()), Some(8123), "{url}");
+        }
     }
 
     #[test]
@@ -2729,6 +2845,17 @@ mod tests {
         // their own merits further down, never on the Host).
         for h in ["127.0.0.1", "127.0.0.1:1", "localhost", "[::1]:80"] {
             assert!(host_is_loopback(h), "{h} should pass");
+        }
+        // The LAN setting answers this machine's address and still no
+        // hostname, which is the half a rebinding page needs.
+        for h in ["192.168.1.20:65510", "10.0.0.5", "[fe80::1]:80", "127.0.0.1:1", "localhost"] {
+            assert!(host_allowed(h, true), "{h}");
+        }
+        for h in ["192.168.1.20:65510", "10.0.0.5", "[fe80::1]:80"] {
+            assert!(!host_allowed(h, false), "{h} must be refused on a loopback-only listener");
+        }
+        for h in ["evil.example", "machine.local:65510", "192.168.1.20.evil.example", ""] {
+            assert!(!host_allowed(h, true), "{h}");
         }
         for h in ["evil.example", "termic.dev:80", "", "127.0.0.1.evil.example"] {
             assert!(!host_is_loopback(h), "{h} should be refused");

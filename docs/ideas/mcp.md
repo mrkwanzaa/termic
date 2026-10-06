@@ -479,6 +479,21 @@ Decisions settled at implementation time (mcp_server.rs):
   a preflight this server never answers. A deliberate local extension to
   the spec's auth guidance, for a loopback endpoint where we own both
   ends.
+- **The bind address and port are settings (2026-10-06).** Loopback
+  stays the default, and `mcp_bind_address` / `mcp_port` (Settings > MCP)
+  let the user bind `0.0.0.0` or one interface so another device in the
+  house can connect. This is the user widening the boundary on purpose,
+  and what it costs is stated next to the field: the token crosses the
+  network in cleartext HTTP, and holding it means creating tasks and
+  running agents on this machine. What still holds off loopback: the
+  token on every request, the Origin refusal, and the rebinding gate,
+  which answers an IP-literal `Host` and no hostname (`host_allowed`),
+  so `machine.local` is refused. An address that does not parse binds
+  loopback, never everything. A change rebinds and mints a new token,
+  and the token still rotates on every launch, so a remote device has to
+  be handed a new one each time; a stable credential for remote clients
+  is not designed. The per-task seatbelt grant and everything above
+  about "one pinned loopback port" describe the default binding.
 - **One setup rule, and a button (2026-08-21).** Both clients now run
   the SAME shell command to read the 0600 token file at connect time,
   differing only in config syntax (codex `http_headers_helper` in TOML,

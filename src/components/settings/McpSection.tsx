@@ -30,6 +30,7 @@ import type { McpStatus } from "@/lib/types";
 import { copyToClipboard } from "@/lib/clipboard";
 import { useUI } from "@/store/ui";
 import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 import { Block, SectionTitle, Toggle, useBackendSettings } from "./Controls";
 import { cn } from "@/lib/utils";
 
@@ -37,7 +38,7 @@ import { cn } from "@/lib/utils";
  *  Never `null`: that is the "still reading" sentinel, and a rejection left
  *  there parks the panel on it forever, with no retry and no path to the
  *  could-not-bind copy. */
-const UNBOUND: McpStatus = { url: null, token_path: null, codex_config: null, claude_command: null };
+const UNBOUND: McpStatus = { url: null, token_path: null, codex_config: null, claude_command: null, lan_url: null };
 
 /** A copyable monospace block. One component so every snippet shares the
  *  same chrome and copy affordance. */
@@ -61,6 +62,18 @@ function CopyRow({ text, label, className }: { text: string; label: string; clas
       </button>
     </div>
   );
+}
+
+/** An IPv4 dotted quad or an IPv6 literal. Loose on IPv6 on purpose: the
+ *  backend's parser is the judge, and falls back to loopback. */
+function isIpAddress(s: string): boolean {
+  const v4 = s.split(".");
+  if (v4.length === 4) return v4.every(o => /^\d{1,3}$/.test(o) && Number(o) <= 255);
+  return s.includes(":") && /^[0-9a-fA-F:.]+$/.test(s);
+}
+
+function isLoopback(s: string): boolean {
+  return s.startsWith("127.") || s === "::1";
 }
 
 /** A client's heading with its own install action on the right. */
@@ -90,8 +103,17 @@ export function McpSection() {
   // button produced it rather than floating above both.
   const [installed, setInstalled] = useState<{ client: string; message: string } | null>(null);
 
+  // Drafts, saved on blur: a half-typed address must not rebind the
+  // listener on every keystroke.
+  const [address, setAddress] = useState("");
+  const [port, setPort] = useState("");
+  const [bindError, setBindError] = useState<string | null>(null);
+
   useEffect(() => {
-    if (settings) setMcpEnabled(settings.mcp_enabled === true);
+    if (!settings) return;
+    setMcpEnabled(settings.mcp_enabled === true);
+    setAddress(settings.mcp_bind_address ?? "");
+    setPort(settings.mcp_port ? String(settings.mcp_port) : "");
   }, [settings]);
 
   useEffect(() => {
@@ -107,6 +129,22 @@ export function McpSection() {
     }
     // settings_save applies the bind/unbind before it resolves, so the
     // status re-read reflects the new listener (or its absence).
+    setStatus(await mcpStatus().catch(() => UNBOUND));
+  }
+
+  /** Save the address and port. The backend treats an address it cannot
+   *  parse as loopback, so a typo is refused here, where it can be said.
+   *  A change rebinds the listener, which mints a new token, so the status
+   *  is re-read like an enable. */
+  async function saveBind() {
+    if (!settings) return;
+    const a = address.trim();
+    const p = port.trim() === "" ? 0 : Number(port.trim());
+    if (a !== "" && !isIpAddress(a)) return setBindError(t("mcp.bind.badAddress"));
+    if (!Number.isInteger(p) || p < 0 || p > 65535) return setBindError(t("mcp.bind.badPort"));
+    setBindError(null);
+    if (a === (settings.mcp_bind_address ?? "") && p === (settings.mcp_port ?? 0)) return;
+    if (!(await patch({ mcp_bind_address: a, mcp_port: p }))) return;
     setStatus(await mcpStatus().catch(() => UNBOUND));
   }
 
@@ -137,6 +175,9 @@ export function McpSection() {
   }
 
   const url = status?.url ?? null;
+  // The SAVED address, not the draft: the warning describes what is bound.
+  const saved = settings?.mcp_bind_address ?? "";
+  const exposed = saved !== "" && !isLoopback(saved);
   const tokenPath = status?.token_path ?? null;
 
 
@@ -159,6 +200,52 @@ export function McpSection() {
           onChange={saveMcpEnabled}
         />
       </Block>
+
+      {mcpEnabled && (
+        <Block>
+          <div className="text-[14px] font-medium">{t("mcp.bind.title")}</div>
+          <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">{t("mcp.bind.hint")}</div>
+          <div className="mt-3 flex items-center gap-2">
+            <Input
+              data-testid="mcp-bind-address"
+              aria-label={t("mcp.bind.address")}
+              value={address}
+              placeholder="127.0.0.1"
+              onChange={e => setAddress(e.target.value)}
+              onBlur={saveBind}
+              onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+              className="w-56 font-mono"
+            />
+            <span className="text-[var(--color-fg-faint)]">:</span>
+            <Input
+              data-testid="mcp-bind-port"
+              aria-label={t("mcp.bind.port")}
+              value={port}
+              placeholder={t("mcp.bind.portAuto")}
+              inputMode="numeric"
+              onChange={e => setPort(e.target.value)}
+              onBlur={saveBind}
+              onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+              className="w-28 font-mono"
+            />
+          </div>
+          {bindError && (
+            <p className="mt-2 text-[12px] text-[var(--color-warn,inherit)]">{bindError}</p>
+          )}
+          {exposed && (
+            <p data-testid="mcp-bind-warning" className="mt-2 text-[12px] text-[var(--color-warn,inherit)]">
+              {t("mcp.bind.exposed")}
+            </p>
+          )}
+          {exposed && status?.lan_url && (
+            <CopyRow
+              text={status.lan_url}
+              label={t("mcp.copyUrlLabel")}
+              className="mt-3 items-center text-[12.5px]"
+            />
+          )}
+        </Block>
+      )}
 
       {mcpEnabled && (
         <Block>

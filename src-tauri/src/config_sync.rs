@@ -114,7 +114,7 @@ pub(crate) const SETTINGS_LOCAL: &[&str] = &[
     "discovery_dismissed",
     // CLI and MCP install state, one-time migration markers.
     "cli_enabled", "cli_default_migrated", "hooks_auto_default_migrated",
-    "cli_user_link_installed", "mcp_enabled",
+    "cli_user_link_installed", "mcp_enabled", "mcp_bind_address", "mcp_port",
     "welcomed", "schema_version",
     // This module's own per-profile state.
     "sync",
@@ -3083,6 +3083,8 @@ mod tests {
             hooks_auto_default_migrated: true,
             cli_user_link_installed: true,
             mcp_enabled: true,
+            mcp_bind_address: "0.0.0.0".into(),
+            mcp_port: 8123,
             close_action: Some("ask".into()),
             tray_enabled: Some(true),
             auto_install_hooks: true,

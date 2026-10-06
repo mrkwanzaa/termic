@@ -21357,6 +21357,17 @@ pub struct Settings {
     /// applies even to connections racing the unbind.
     #[serde(default)]
     pub mcp_enabled: bool,
+    /// The address the MCP listener binds (Settings). Empty, the default,
+    /// is 127.0.0.1, and so is anything that does not parse as an IP.
+    /// `0.0.0.0` or a specific interface lets other devices connect: the
+    /// token is still required, but it travels in cleartext HTTP, so that
+    /// is for a network the user trusts.
+    #[serde(default)]
+    pub mcp_bind_address: String,
+    /// The port the MCP listener binds. 0, the default, lets the OS pick
+    /// one and then keeps it across restarts.
+    #[serde(default)]
+    pub mcp_port: u16,
     /// What the window's close button does: "ask" (default) | "menubar" |
     /// "quit". "ask" shows the close prompt whose "Don't ask again" checkbox
     /// writes the chosen one back here. Stored rather than inferred so the

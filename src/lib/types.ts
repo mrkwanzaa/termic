@@ -908,6 +908,10 @@ export interface Settings {
    *  clients (Claude Desktop, claude mcp add). Default off; unlike the CLI
    *  socket the listener only exists while this is on. See docs/ideas/mcp.md. */
   mcp_enabled?: boolean;
+  /** Address the MCP listener binds; empty means 127.0.0.1. */
+  mcp_bind_address?: string;
+  /** Port the MCP listener binds; 0 means chosen automatically. */
+  mcp_port?: number;
   /** What the window's close button does. Absent/"ask" = show the close
    *  prompt (whose "Show this every time" checkbox writes the choice back here);
    *  "menubar" = close to the menu bar, agents keep running; "quit" = quit
@@ -967,6 +971,8 @@ export interface McpStatus {
   url: string | null;
   /** Path of the mcp-token file the client reads (never the value). */
   token_path: string | null;
+  /** The URL another device on the network uses, when LAN access is on. */
+  lan_url: string | null;
 }
 
 export interface DiscoveredRepo {

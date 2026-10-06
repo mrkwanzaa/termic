@@ -265,7 +265,17 @@ export default {
     title: "MCP endpoint",
     enable: {
       label: "Enable MCP endpoint",
-      hint: "Serve this app's tasks and projects as MCP tools on a local-only address, for clients that cannot use the CLI. Off means nothing is listening. Access needs a token only your user account can read.",
+      hint: "Serve this app's tasks and projects as MCP tools on an address that is local-only by default, for clients that cannot use the CLI. Off means nothing is listening. Access needs a token only your user account can read.",
+    },
+    bind: {
+      title: "Address and port",
+      hint: "Where the endpoint listens. The default, 127.0.0.1, is reachable from this computer only. Use 0.0.0.0 for every network interface, or one interface's own address. Leave the port empty to have one picked and kept.",
+      address: "Address",
+      port: "Port",
+      portAuto: "auto",
+      badAddress: "That is not an IP address, so nothing was changed.",
+      badPort: "The port has to be a number from 1 to 65535, or empty.",
+      exposed: "Other devices on your network can reach this address. The token is still required, but it is sent unencrypted, and anyone who has it can create tasks and run agents on this computer. It changes every time Termic restarts or this address changes, and your firewall may ask to allow Termic.",
     },
     connect: "Connect a client",
     reading: "Reading the endpoint state...",
