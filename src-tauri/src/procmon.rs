@@ -15,8 +15,9 @@
 //!    of `PROC_PIDT_SHORTBSDINFO` over every pid builds the pid->ppid map
 //!    (64 bytes per pid, no allocation per call); the expensive per-process
 //!    calls (task info, rusage) run ONLY for pids inside one of our
-//!    subtrees. Shelling out to `ps` per pid (which `sandbox::ppid_of`
-//!    still does) would fork dozens of processes per second.
+//!    subtrees. Shelling out to `ps` per pid would fork dozens of
+//!    processes per second (`sandbox`'s path watcher did, and burned a
+//!    core; it now uses `short_info` below).
 //! 3. **`phys_footprint`, not RSS.** Summing RSS across a process tree
 //!    double-counts shared pages - a node agent plus its children share
 //!    the binary and every dylib, so an RSS sum reads ~2x reality.
@@ -183,8 +184,9 @@ fn c_str_to_string(raw: &[libc::c_char]) -> String {
 
 /// (ppid, comm) for one pid, or None if it exited between the listing and
 /// now (the common case for short-lived helpers - a false negative here
-/// just means the process is missing from this one sample).
-fn short_info(pid: u32) -> Option<(u32, String)> {
+/// just means the process is missing from this one sample). Also the
+/// sandbox path watcher's ancestry lookup.
+pub(crate) fn short_info(pid: u32) -> Option<(u32, String)> {
     let mut info: ProcBsdShortInfo = unsafe { std::mem::zeroed() };
     let ret = unsafe {
         proc_pidinfo(
@@ -251,7 +253,9 @@ fn pid_stats(pid: u32) -> Option<PidStats> {
     })
 }
 
-fn pid_path(pid: u32) -> Option<String> {
+/// Executable path for one pid. Also the sandbox path watcher's
+/// process-name fallback.
+pub(crate) fn pid_path(pid: u32) -> Option<String> {
     let mut buf = vec![0u8; PROC_PIDPATHINFO_MAXSIZE];
     let ret = unsafe {
         proc_pidpath(

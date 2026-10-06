@@ -39,7 +39,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::Task;
 use crate::SandboxMode;
@@ -62,11 +64,10 @@ pub struct SandboxBundle {
     /// EMFILE, etc.) - the caller downgrades to "filesystem sandbox +
     /// no network" rather than failing the spawn outright.
     pub proxy: Option<proxy::ProxyHandle>,
-    /// `log stream` child process tailing macOS unified log for
-    /// seatbelt deny events touching this task's path. Counts
-    /// per-path go into PATH_DENY_TRACKER (queryable via
+    /// This PTY's hold on the app-wide `log stream` (see `watch_task`).
+    /// Counts per-path go into PATH_DENY_TRACKER (queryable via
     /// `path_deny_count` / `path_deny_list`). None when log stream
-    /// couldn't start. Killed on Drop.
+    /// couldn't start. Dropping the last handle kills the stream.
     #[allow(dead_code)]
     pub path_watcher: Option<PathWatcher>,
     /// The mode this bundle was provisioned for. wrap_command
@@ -76,15 +77,28 @@ pub struct SandboxBundle {
     pub mode: crate::SandboxMode,
 }
 
+/// One PTY's registration with the shared watcher. Every sandboxed PTY
+/// holds one; the stream runs while any exist.
 pub struct PathWatcher {
-    child: Child,
+    task_id: String,
+    monitor: bool,
 }
 impl Drop for PathWatcher {
     fn drop(&mut self) {
+        let child = lock_watcher().detach(&self.task_id, self.monitor);
+        reap(child);
+    }
+}
+
+/// Kill and reap a stream the watcher handed back. Always called with the
+/// watcher lock released: `wait` can block, and PathWatcher drops run under
+/// the PTY map lock.
+fn reap(child: Option<Child>) {
+    if let Some(mut child) = child {
         // log stream doesn't catch SIGTERM cleanly on macOS in some
         // versions; SIGKILL is fine - it's a passive reader.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -504,22 +518,20 @@ pub fn compute_monitor_policy(task: &Task, agent_override: Option<&str>) -> Moni
     MonitorPolicy { rw_subpaths, read_roots, rw_regexes, read_literals }
 }
 
-/// Drop every path-deny entry for this task whose path is at or
-/// under `prefix`. Called after the user clicks "Allow" on a path so
-/// the historical deny rows actually disappear from the popover —
-/// without this, the in-memory tracker keeps the entry around and the
-/// row sticks even though future accesses succeed.
 // ─── PID ancestry tracker ────────────────────────────────────────────
 //
-// The path-deny watcher subscribes to a system-wide log predicate, so
+// The path watcher subscribes to a system-wide log predicate, so
 // without filtering it picks up EVERY sandboxed process on the Mac
 // (Finder hitting iCloud, browser sandboxes, Spotlight indexer, ...).
 // The fix: only count denies whose process is a descendant of one of
 // the PIDs we spawned under our sandbox. Each pty_spawn registers its
-// child PID here; the watcher walks the kernel PPID chain for every
-// deny and accepts only matches.
+// child PID here; the watcher walks the kernel PPID chain once per pid
+// and routes the line to the task that owns the root it reaches.
 
 static SANDBOX_PIDS: OnceLock<Mutex<HashMap<String, HashSet<u32>>>> = OnceLock::new();
+/// Bumped on every root change so the watcher's pid -> task cache knows
+/// its answers may be stale.
+static SANDBOX_PIDS_GEN: AtomicU64 = AtomicU64::new(0);
 
 fn sandbox_pids() -> &'static Mutex<HashMap<String, HashSet<u32>>> {
     SANDBOX_PIDS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -532,6 +544,7 @@ pub fn register_root_pid(ws_id: &str, pid: u32) {
     if let Ok(mut g) = sandbox_pids().lock() {
         g.entry(ws_id.to_string()).or_default().insert(pid);
     }
+    SANDBOX_PIDS_GEN.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Drop a root PID when its PTY exits. Keeps the set from growing
@@ -543,55 +556,126 @@ pub fn unregister_root_pid(ws_id: &str, pid: u32) {
             set.remove(&pid);
         }
     }
+    SANDBOX_PIDS_GEN.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Read PPID for a live PID via `/bin/ps`. Returns None if the process
-/// already exited (most likely for short-lived helpers); the watcher
-/// treats that as "not ours" — false negative is preferred over false
-/// positive (counting other apps' denies under our task).
+/// PPID for a live PID, None if the process already exited (most likely
+/// for short-lived helpers); the watcher treats that as "not ours" - a
+/// false negative is preferred over counting other apps' denies under our
+/// task. libproc, never `ps`: this runs for every deny line on the Mac,
+/// and forking per hop cost >150 spawns/s with ~25 panes open.
+#[cfg(target_os = "macos")]
 fn ppid_of(pid: u32) -> Option<u32> {
-    let out = crate::proc_ctl::command("/bin/ps")
-        .args(["-p", &pid.to_string(), "-o", "ppid="])
-        .output().ok()?;
-    if !out.status.success() { return None; }
-    let s = String::from_utf8_lossy(&out.stdout);
-    s.trim().parse::<u32>().ok()
+    crate::procmon::short_info(pid).map(|(ppid, _)| ppid)
 }
+#[cfg(not(target_os = "macos"))]
+fn ppid_of(_pid: u32) -> Option<u32> { None }
 
-/// Authoritative process name for a PID via `/bin/ps`. Used to back-fill
-/// the popover's per-row "what tried to access this?" indicator when the
-/// log-line parse turns up a weird/empty/version-only string. Returns
-/// None if the process is already gone.
-fn comm_of(pid: u32) -> Option<String> {
-    let out = crate::proc_ctl::command("/bin/ps")
-        .args(["-p", &pid.to_string(), "-o", "comm="])
-        .output().ok()?;
-    if !out.status.success() { return None; }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+/// Executable path for a PID, the popover's fallback when the log-parsed
+/// process name is empty or a bare version string. A path, not the
+/// kernel's short name: that is capped at 15 chars and, for claude's
+/// version-named binary (`.../claude/versions/2.1.144`), is the same
+/// useless `2.1.144` the fallback exists to replace. `ps -o comm=` printed
+/// this path too.
+#[cfg(target_os = "macos")]
+fn exe_of(pid: u32) -> Option<String> {
+    crate::procmon::pid_path(pid).filter(|p| !p.is_empty())
 }
+#[cfg(not(target_os = "macos"))]
+fn exe_of(_pid: u32) -> Option<String> { None }
 
-/// Is `pid` (or any ancestor up to launchd) one of our registered
-/// sandbox root PIDs for this task? Walks up to a depth of 20 to
-/// guard against pathological pid loops (shouldn't happen on macOS).
-pub fn is_our_sandboxed_pid(ws_id: &str, mut pid: u32) -> bool {
-    if pid == 0 { return false; }
-    let our_pids: HashSet<u32> = match sandbox_pids().lock() {
-        Ok(g) => g.get(ws_id).cloned().unwrap_or_default(),
-        Err(_) => return false,
-    };
-    if our_pids.is_empty() { return false; }
+/// Which task owns `pid`: walk up the PPID chain until a registered root
+/// (`roots`: root pid -> task id) turns up. Depth 20 guards against
+/// pathological pid loops (shouldn't happen on macOS).
+fn owner_of(mut pid: u32, roots: &HashMap<u32, Arc<str>>, ppid: impl Fn(u32) -> Option<u32>) -> Option<Arc<str>> {
     for _ in 0..20 {
-        if our_pids.contains(&pid) { return true; }
-        if pid <= 1 { return false; }
-        match ppid_of(pid) {
+        if let Some(task) = roots.get(&pid) { return Some(task.clone()); }
+        if pid <= 1 { return None; }
+        match ppid(pid) {
             Some(p) if p != pid => pid = p,
-            _ => return false,
+            _ => return None,
         }
     }
-    false
+    None
 }
 
+/// What the router learned about one pid.
+struct Proc {
+    /// the parent it had when routed. A pid recycled under a different
+    /// parent no longer matches, so its cached answer is thrown away.
+    ppid: u32,
+    owner: Option<Arc<str>>,
+    exe: std::cell::OnceCell<Option<String>>,
+}
+
+/// Resolves a log line's pid for `dispatch_line`. The reader's `Router` in
+/// the app, a fixed answer in tests.
+trait Resolve {
+    fn owner(&mut self, pid: u32) -> Option<Arc<str>>;
+    fn exe(&mut self, pid: u32) -> Option<String>;
+}
+
+/// pid -> owning task, cached. Owned by the single reader thread, so no
+/// locking past the root snapshot. The cache is dropped when roots change
+/// or when it gets big, and every hit re-reads the pid's parent (one
+/// libproc call, against up to 20 for a walk) so a recycled pid can't
+/// inherit a stale answer.
+struct Router {
+    gen: u64,
+    roots: HashMap<u32, Arc<str>>,
+    cache: HashMap<u32, Proc>,
+    ppid: fn(u32) -> Option<u32>,
+    exe: fn(u32) -> Option<String>,
+}
+
+impl Router {
+    fn new(ppid: fn(u32) -> Option<u32>, exe: fn(u32) -> Option<String>) -> Self {
+        Router { gen: u64::MAX, roots: HashMap::new(), cache: HashMap::new(), ppid, exe }
+    }
+}
+
+impl Resolve for Router {
+    fn owner(&mut self, pid: u32) -> Option<Arc<str>> {
+        let gen = SANDBOX_PIDS_GEN.load(Ordering::Relaxed);
+        if gen != self.gen || self.cache.len() >= 8192 {
+            self.roots = match sandbox_pids().lock() {
+                Ok(g) => g.iter().flat_map(|(t, ps)| {
+                    let t: Arc<str> = t.as_str().into();
+                    ps.iter().map(move |p| (*p, t.clone()))
+                }).collect(),
+                Err(_) => HashMap::new(),
+            };
+            self.cache.clear();
+            self.gen = gen;
+        }
+        if let Some(task) = self.roots.get(&pid) { return Some(task.clone()); }
+        let live = (self.ppid)(pid);
+        if let Some(hit) = self.cache.get(&pid) {
+            // an exited pid isn't held by anyone else yet, so the line came
+            // from the process we routed: keep its answer. That is also the
+            // only way a deny from an already-exited helper gets attributed.
+            if live.is_none() || live == Some(hit.ppid) { return hit.owner.clone(); }
+        }
+        let parent = live?;
+        let owner = owner_of(parent, &self.roots, self.ppid);
+        self.cache.insert(pid, Proc { ppid: parent, owner: owner.clone(), exe: Default::default() });
+        owner
+    }
+
+    fn exe(&mut self, pid: u32) -> Option<String> {
+        let lookup = self.exe;
+        match self.cache.get(&pid) {
+            Some(p) => p.exe.get_or_init(|| lookup(pid)).clone(),
+            None => lookup(pid),
+        }
+    }
+}
+
+/// Drop every path-deny entry for this task whose path is at or
+/// under `prefix`. Called after the user clicks "Allow" on a path so
+/// the historical deny rows actually disappear from the popover —
+/// without this, the in-memory tracker keeps the entry around and the
+/// row sticks even though future accesses succeed.
 pub fn clear_path_denies_under(ws_id: &str, prefix: &str) {
     if ws_id.is_empty() || prefix.is_empty() { return; }
     // Normalize trailing slash so the prefix check is unambiguous:
@@ -610,107 +694,223 @@ pub fn clear_path_denies_under(ws_id: &str, prefix: &str) {
     }
 }
 
-/// Spawn `log stream` filtered to seatbelt denies for this task.
-/// Parses stdout line-by-line, increments the per-path deny tracker.
-/// Returns None if the child couldn't start - non-fatal, just means
-/// no path counter for this task.
-fn start_path_watcher(task_id: &str, task_path: &str, ws_dirs: Vec<String>, monitor: bool, policy: MonitorPolicy) -> Option<PathWatcher> {
-    use std::io::{BufRead, BufReader};
-    use std::thread;
+// ─── Shared path watcher ─────────────────────────────────────────────
+//
+// ONE `log stream` for the whole app, not one per sandboxed PTY. The
+// predicate is system-wide either way, so N streams meant N copies of the
+// same firehose decoded by N `log` processes (plus diagnosticd fanning it
+// out N times), and N ancestry walks per line. Measured with 25 panes:
+// ~73% CPU in the streams and ~36% in termic, mostly forking `ps`.
+// See docs/performance.md bear trap 13.
 
-    // ENFORCING: tail seatbelt DENY events. MONITORING: the profile is
-    // `(allow default (with report))`, so the kernel logs every ALLOWED
-    // file op instead — tail those (scoped to file ops to keep the
-    // firehose down; the PID-ancestry + /Users path filters do the rest).
-    // Predicate kept loose - some macOS versions tag seatbelt events
-    // under kernel/sandboxd, others under com.apple.libsandbox, others
-    // don't tag at all. We match on "Sandbox" in the message which is
-    // present in every form, then filter further in the parser.
-    let predicate = if monitor {
-        "eventMessage CONTAINS \"Sandbox\" AND eventMessage CONTAINS \" allow \" AND eventMessage CONTAINS \"file-\""
-    } else {
-        "eventMessage CONTAINS \"Sandbox:\" AND eventMessage CONTAINS \"deny\""
-    };
+/// ENFORCING tails seatbelt DENY events. MONITORING's profile is
+/// `(allow default (with report))`, so the kernel logs every ALLOWED file
+/// op instead (scoped to file ops to keep the firehose down; the PID
+/// routing + /Users path filters do the rest). One OR'd predicate covers
+/// both, so a mix of modes still costs one stream. Kept loose - some macOS
+/// versions tag seatbelt events under kernel/sandboxd, others under
+/// com.apple.libsandbox, others don't tag at all. We match on "Sandbox" in
+/// the message, which is present in every form, then filter in the parser.
+const WATCH_PREDICATE: &str = "eventMessage CONTAINS \"Sandbox\" AND \
+    ((eventMessage CONTAINS \"Sandbox:\" AND eventMessage CONTAINS \"deny\") OR \
+    (eventMessage CONTAINS \" allow \" AND eventMessage CONTAINS \"file-\"))";
+
+/// What the reader needs to record a line for one task. The monitor
+/// fields come from the latest MONITOR provision. The policy is
+/// agent-specific (`compute_monitor_policy`), so two agents in one Monitor
+/// task share whichever spawned last.
+struct WatchedTask {
+    path: String,
+    ws_dirs: Vec<String>,
+    policy: MonitorPolicy,
+}
+
+/// One task's live PTYs, counted per mode. `task_set_sandbox(kill_live=false)`
+/// leaves old PTYs running under the old mode, so one task can have caged
+/// and monitored agents at once, and each keeps its lines recorded.
+#[derive(Clone)]
+struct Holds {
+    cfg: Arc<WatchedTask>,
+    enforce: usize,
+    monitor: usize,
+}
+
+/// Starts a `log stream` whose reader reports back as generation `gen`.
+/// Injectable so tests count starts without running `log`.
+type Spawn = Box<dyn FnMut(u64) -> Option<Child> + Send>;
+
+/// A stream that dies sooner than this after starting isn't restarted by
+/// its reader (crash-loop guard, no sleep); the next sandboxed spawn retries.
+const RESPAWN_MIN_LIFE: Duration = Duration::from_secs(10);
+
+struct Watcher {
+    tasks: HashMap<String, Holds>,
+    child: Option<Child>,
+    /// bumped per stream started, so a reader can tell whether the stream
+    /// it drained is still the current one. The OS pid can't: it recycles.
+    gen: u64,
+    started: Instant,
+    spawn: Spawn,
+}
+
+impl Watcher {
+    fn new(spawn: Spawn) -> Self {
+        Watcher { tasks: HashMap::new(), child: None, gen: 0, started: Instant::now(), spawn }
+    }
+
+    fn start(&mut self) -> bool {
+        self.gen += 1;
+        self.child = (self.spawn)(self.gen);
+        self.started = Instant::now();
+        self.child.is_some()
+    }
+
+    /// Take one PTY's hold on `task_id`, starting the stream if none is
+    /// running. False, with nothing recorded, when it couldn't start.
+    fn attach(&mut self, task_id: &str, monitor: bool, cfg: WatchedTask) -> bool {
+        if self.child.is_none() && !self.start() { return false; }
+        let cfg = Arc::new(cfg);
+        let h = self.tasks.entry(task_id.to_string())
+            .or_insert_with(|| Holds { cfg: cfg.clone(), enforce: 0, monitor: 0 });
+        // an enforce spawn carries no monitor policy: don't let it replace
+        // the one live Monitor PTYs of this task are still using.
+        if monitor || h.monitor == 0 { h.cfg = cfg; }
+        if monitor { h.monitor += 1 } else { h.enforce += 1 }
+        true
+    }
+
+    /// Release one PTY's hold. Hands back the stream when that was the last
+    /// hold on any task, for the caller to `reap` outside the lock.
+    fn detach(&mut self, task_id: &str, monitor: bool) -> Option<Child> {
+        if let Some(h) = self.tasks.get_mut(task_id) {
+            let n = if monitor { &mut h.monitor } else { &mut h.enforce };
+            *n = n.saturating_sub(1);
+            if h.enforce + h.monitor == 0 { self.tasks.remove(task_id); }
+        }
+        if self.tasks.is_empty() { self.child.take() } else { None }
+    }
+
+    /// Stream `gen`'s reader hit EOF. If that is still the current stream,
+    /// hand it back to reap, and start a replacement when PTYs still hold
+    /// the watcher so open panes don't go quiet. A stale reader (its stream
+    /// already stopped or replaced) changes nothing.
+    fn on_stream_exit(&mut self, gen: u64) -> Option<Child> {
+        if gen != self.gen { return None; }
+        let dead = self.child.take();
+        if !self.tasks.is_empty() && self.started.elapsed() >= RESPAWN_MIN_LIFE {
+            self.start();
+        }
+        dead
+    }
+
+    fn task(&self, task_id: &str) -> Option<Holds> {
+        self.tasks.get(task_id).cloned()
+    }
+}
+
+static WATCHER: OnceLock<Mutex<Watcher>> = OnceLock::new();
+
+fn lock_watcher() -> std::sync::MutexGuard<'static, Watcher> {
+    WATCHER.get_or_init(|| Mutex::new(Watcher::new(Box::new(spawn_stream))))
+        .lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Register a sandboxed PTY of `task_id` with the shared watcher, starting
+/// `log stream` if it's the first. Returns None if the stream couldn't
+/// start - non-fatal, just means no path counter for this PTY.
+fn watch_task(task_id: &str, task_path: &str, ws_dirs: Vec<String>, monitor: bool, policy: MonitorPolicy) -> Option<PathWatcher> {
+    let cfg = WatchedTask { path: task_path.to_string(), ws_dirs, policy };
+    lock_watcher().attach(task_id, monitor, cfg)
+        .then(|| PathWatcher { task_id: task_id.to_string(), monitor })
+}
+
+fn spawn_stream(gen: u64) -> Option<Child> {
+    use std::io::{BufRead, BufReader};
+
     let mut child = crate::proc_ctl::command("/usr/bin/log")
-        .args(["stream", "--predicate", predicate, "--style", "compact"])
+        .args(["stream", "--predicate", WATCH_PREDICATE, "--style", "compact"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-
-    let stdout = child.stdout.take()?;
-    let ws_id = task_id.to_string();
-    let ws_path = task_path.to_string();
-    let ws_id_dbg = ws_id.clone();
-    thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        // Per-pid caches. MONITORING's `(allow default (with report))` is a
-        // system-wide firehose; without caching, every line would shell out
-        // to /bin/ps up to 20× (ancestry) + once (comm). A pid's ancestry
-        // and name are fixed for its lifetime, so we look them up once. (pid
-        // reuse within a monitoring session is negligible.)
-        let mut ours_cache: HashMap<u32, bool> = HashMap::new();
-        let mut comm_cache: HashMap<u32, String> = HashMap::new();
-        for line in reader.lines().flatten() {
-            // MONITORING: parse ALLOW lines into the access tracker and
-            // skip the deny parsing below entirely.
-            if monitor {
-                handle_monitor_line(&line, &ws_id, &ws_id_dbg, &ws_path, &ws_dirs, &policy, &mut ours_cache, &mut comm_cache);
-                continue;
-            }
-            // Sample deny line on macOS 15 (Sequoia):
-            //   2026-05-18 ...  Sandbox: openssl(12345) deny(1) file-write-create /Users/x/Pictures/ccc.txt
-            //
-            // Older macOS variants:
-            //   ... Sandbox: <proc>/<thread> deny(1) <op> <path>
-            //
-            // We look for the operation token (`file-` or `network-`)
-            // and treat everything after it as the path. Falls back to
-            // the first absolute-path prefix in the line if no op token
-            // is present.
-            if !line.contains("deny") { continue; }
-            // Reject false positives BEFORE path extraction. The log
-            // predicate is system-wide ("Sandbox: ... deny") so we'd
-            // otherwise pick up Finder, Spotlight, every other sandboxed
-            // app on the Mac. Parse the PID and check PPID ancestry —
-            // only denies from our spawned PTYs (or their descendants)
-            // count.
-            let pid = extract_deny_pid(&line);
-            let Some(pid) = pid else { continue; };
-            if !is_our_sandboxed_pid(&ws_id, pid) { continue; }
-            let path = extract_deny_path(&line);
-            let Some(path) = path else { continue; };
-            // Belt-and-suspenders: even after the PID check, ignore
-            // any path outside /Users/ — system caches etc.
-            if !path.starts_with(&ws_path) && !path.starts_with("/Users/") {
-                continue;
-            }
-            // Prefer the log-parsed proc name; if it looks like a bare
-            // version string (claude logs itself as `claude 2.1.144`
-            // and some formatters strip the leading word), fall back to
-            // `ps -p X -o comm=` for the authoritative kernel name.
-            let parsed = extract_deny_proc(&line).unwrap_or_default();
-            let looks_versionlike = !parsed.is_empty()
-                && parsed.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-');
-            let proc = if parsed.is_empty() || looks_versionlike {
-                comm_of(pid).unwrap_or_else(|| if parsed.is_empty() { "?".into() } else { parsed.clone() })
-            } else {
-                parsed
-            };
-            let op = extract_deny_op(&line).unwrap_or_else(|| "?".into());
-            // Log EVERY deny — not just the first — so users can audit
-            // exactly which process is hitting which path AND what kind
-            // of access was attempted (file-read-data vs file-write-data
-            // vs file-test-existence …). The op token tells you whether
-            // claude is *reading* a browser config (privacy concern) or
-            // just stat()-ing to check if it exists.
-            dlog(&format!("[sandbox/{ws_id_dbg}] DENY {proc}({pid}) {op} {path}"));
-            incr_path_deny(&ws_id, &path, pid, &proc);
+    let Some(stdout) = child.stdout.take() else {
+        reap(Some(child));
+        return None;
+    };
+    let stream_pid = child.id();
+    dlog(&format!("[sandbox] path watcher started (log stream {stream_pid}, gen {gen})"));
+    std::thread::spawn(move || {
+        let mut router = Router::new(ppid_of, exe_of);
+        for line in BufReader::new(stdout).lines().flatten() {
+            dispatch_line(&line, &mut router);
         }
-        dlog(&format!("[sandbox/{ws_id_dbg}] path-deny watcher exited"));
+        dlog(&format!("[sandbox] path watcher exited (log stream {stream_pid}, gen {gen})"));
+        // a reader can still be draining its killed stream's pipe while a
+        // replacement starts, so for that sliver one event can count twice.
+        // Harmless, and the kill stays outside the lock regardless.
+        let dead = lock_watcher().on_stream_exit(gen);
+        reap(dead);
     });
-    Some(PathWatcher { child })
+    Some(child)
+}
+
+/// Route one log line to the task that owns its pid and record it. Each
+/// line is recorded once, against one task, however many PTYs that task
+/// has open.
+fn dispatch_line(line: &str, r: &mut impl Resolve) {
+    // whichever marker comes first decides the kind, so a path that happens
+    // to contain the other one can't flip it.
+    let is_deny = match (line.find("deny("), line.find(" allow ")) {
+        (Some(d), Some(a)) => d < a,
+        (Some(_), None) => true,
+        _ => false,
+    };
+    let pid = if is_deny { extract_deny_pid(line) } else { monitor_pid_and_dup(line).map(|(p, _)| p) };
+    let Some(pid) = pid else { return; };
+    let Some(task_id) = r.owner(pid) else { return; };
+    let Some(h) = lock_watcher().task(&task_id) else { return; };
+    if is_deny {
+        if h.enforce > 0 { handle_deny_line(line, pid, &task_id, &h.cfg.path, r); }
+    } else if h.monitor > 0 {
+        handle_monitor_line(line, &task_id, &h.cfg.path, &h.cfg.ws_dirs, &h.cfg.policy, r);
+    }
+}
+
+/// Process name for the popover: the log-parsed one, unless it looks like a
+/// bare version string (claude logs itself as `claude 2.1.144` and some
+/// formatters strip the leading word), then the executable's path.
+fn proc_name(parsed: Option<String>, pid: u32, r: &mut impl Resolve) -> String {
+    let parsed = parsed.unwrap_or_default();
+    let looks_versionlike = !parsed.is_empty()
+        && parsed.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-');
+    if !parsed.is_empty() && !looks_versionlike { return parsed; }
+    r.exe(pid).unwrap_or_else(|| if parsed.is_empty() { "?".into() } else { parsed })
+}
+
+fn handle_deny_line(line: &str, pid: u32, ws_id: &str, ws_path: &str, r: &mut impl Resolve) {
+    // Sample deny line on macOS 15 (Sequoia):
+    //   2026-05-18 ...  Sandbox: openssl(12345) deny(1) file-write-create /Users/x/Pictures/ccc.txt
+    //
+    // Older macOS variants:
+    //   ... Sandbox: <proc>/<thread> deny(1) <op> <path>
+    //
+    // We look for the operation token (`file-` or `network-`) and treat
+    // everything after it as the path. Falls back to the first
+    // absolute-path prefix in the line if no op token is present.
+    let Some(path) = extract_deny_path(line) else { return; };
+    // Belt-and-suspenders: even after the PID check, ignore any path
+    // outside /Users/ - system caches etc.
+    if !path.starts_with(ws_path) && !path.starts_with("/Users/") { return; }
+    let proc = proc_name(extract_deny_proc(line), pid, r);
+    let op = extract_deny_op(line).unwrap_or_else(|| "?".into());
+    // Log EVERY deny - not just the first - so users can audit exactly
+    // which process is hitting which path AND what kind of access was
+    // attempted (file-read-data vs file-write-data vs file-test-existence
+    // …). The op token tells you whether claude is *reading* a browser
+    // config (privacy concern) or just stat()-ing to check if it exists.
+    dlog(&format!("[sandbox/{ws_id}] DENY {proc}({pid}) {op} {path}"));
+    incr_path_deny(ws_id, &path, pid, &proc);
 }
 
 /// Pick the absolute path out of a Sandbox deny log line.
@@ -877,19 +1077,10 @@ fn extract_allow_path(line: &str, op: &str) -> Option<String> {
 }
 
 fn handle_monitor_line(
-    line: &str, ws_id: &str, ws_id_dbg: &str, ws_path: &str, ws_dirs: &[String], policy: &MonitorPolicy,
-    ours_cache: &mut HashMap<u32, bool>,
-    comm_cache: &mut HashMap<u32, String>,
+    line: &str, ws_id: &str, ws_path: &str, ws_dirs: &[String], policy: &MonitorPolicy,
+    r: &mut impl Resolve,
 ) {
     let Some((pid, dup)) = monitor_pid_and_dup(line) else { return; };
-    // Bound the caches: a long session spawning many short-lived pids
-    // would otherwise grow them unboundedly. Clearing is cheap (rebuilt
-    // lazily) and pids are small.
-    if ours_cache.len() >= 8192 { ours_cache.clear(); }
-    if comm_cache.len() >= 8192 { comm_cache.clear(); }
-    // Cached ancestry check — avoids the up-to-20 /bin/ps spawns per line.
-    let is_ours = *ours_cache.entry(pid).or_insert_with(|| is_our_sandboxed_pid(ws_id, pid));
-    if !is_ours { return; }
     let Some(op) = extract_allow_op(line) else { return; };
     let Some(path) = extract_allow_path(line, &op) else { return; };
     // Same belt-and-suspenders filter the deny parser uses: ignore
@@ -904,15 +1095,7 @@ fn handle_monitor_line(
     if filters.exclude_ws && ws_dirs.iter().any(|d| under(&path, d)) { return; }
     let would_block = policy.would_block(&path, &op);
     if filters.wb_only && !would_block { return; }
-    let parsed = extract_allow_proc(line).unwrap_or_default();
-    let looks_versionlike = !parsed.is_empty()
-        && parsed.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-');
-    let proc = if parsed.is_empty() || looks_versionlike {
-        // Cached comm lookup — avoids a /bin/ps spawn per line.
-        let comm = comm_cache.entry(pid).or_insert_with(|| comm_of(pid).unwrap_or_default()).clone();
-        if !comm.is_empty() { comm } else if !parsed.is_empty() { parsed } else { "?".into() }
-    } else { parsed };
-    let _ = ws_id_dbg;
+    let proc = proc_name(extract_allow_proc(line), pid, r);
     incr_path_access(ws_id, &path, &op, pid, &proc, would_block, dup);
 }
 
@@ -1849,9 +2032,9 @@ pub fn provision(task: &Task, agent_override: Option<&str>, mode: SandboxMode) -
         task.id, if monitor { "monitor" } else { "enforce" }, patterns.len()));
     let policy = if monitor { compute_monitor_policy(task, agent_override) } else { MonitorPolicy::default() };
     let ws_dirs = if monitor { task_exclude_dirs(task) } else { Vec::new() };
-    let path_watcher = start_path_watcher(&task.id, &canonicalize_or_keep(&task.path), ws_dirs, monitor, policy);
+    let path_watcher = watch_task(&task.id, &canonicalize_or_keep(&task.path), ws_dirs, monitor, policy);
     if path_watcher.is_some() {
-        dlog(&format!("[sandbox/{}] path {} watcher started", task.id, if monitor { "access" } else { "deny" }));
+        dlog(&format!("[sandbox/{}] path {} watcher attached", task.id, if monitor { "access" } else { "deny" }));
     }
     // EnforceFs disables the network sandbox entirely: no proxy, no
     // hostname allow-list, no http_proxy injection (wrap_command only
@@ -3224,5 +3407,234 @@ mod tests {
             );
         }
         });
+    }
+}
+
+#[cfg(test)]
+mod watcher_tests {
+    //! The shared path watcher: routing a pid to its task, the refcount
+    //! that keeps ONE `log stream` for the app, and recording each line
+    //! once. Counts only, no timings (docs/perf-ci.md).
+    use super::*;
+    use std::sync::atomic::{AtomicU32, AtomicUsize};
+
+    const DENY: &str =
+        "2026-06-07 20:39:36.008 Df kernel[0] (Sandbox) Sandbox: touch(500) deny(1) file-write-create /Users/u/Library/Application Support/x";
+    const ALLOW: &str =
+        "2026-06-07 20:39:36.008 Df kernel[0] (Sandbox) Sandbox: cat(500) allow file-read-data /Users/u/notes/deny(1).txt";
+
+    fn cfg(path: &str) -> WatchedTask {
+        WatchedTask { path: path.into(), ws_dirs: vec![], policy: MonitorPolicy::default() }
+    }
+
+    fn roots(rs: &[(u32, &str)]) -> HashMap<u32, Arc<str>> {
+        rs.iter().map(|(p, t)| (*p, Arc::from(*t))).collect()
+    }
+
+    // 1 <- 100 (root of "a") <- 200 <- 300; 1 <- 400 (unrelated)
+    fn tree(pid: u32) -> Option<u32> {
+        match pid { 100 | 400 => Some(1), 200 => Some(100), 300 => Some(200), 900 => Some(900), _ => None }
+    }
+
+    /// A watcher whose "stream" is `true` (exits at once, nothing to leak)
+    /// and a count of how many it started. `fail` makes every start fail.
+    fn counted(fail: bool) -> (Watcher, Arc<AtomicUsize>) {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let n = starts.clone();
+        let w = Watcher::new(Box::new(move |_gen| {
+            n.fetch_add(1, Ordering::Relaxed);
+            if fail { None } else { std::process::Command::new("true").spawn().ok() }
+        }));
+        (w, starts)
+    }
+
+    #[test]
+    fn owner_of_walks_to_the_registered_root() {
+        let rs = roots(&[(100, "a"), (400_000, "b")]);
+        assert_eq!(owner_of(100, &rs, tree).as_deref(), Some("a"), "the root itself");
+        assert_eq!(owner_of(300, &rs, tree).as_deref(), Some("a"), "a grandchild");
+        assert_eq!(owner_of(400, &rs, tree), None, "unrelated, reaches launchd");
+        assert_eq!(owner_of(777, &rs, tree), None, "already exited");
+        assert_eq!(owner_of(900, &rs, tree), None, "self-parented loop");
+        assert_eq!(owner_of(300, &HashMap::new(), tree), None, "root unregistered");
+    }
+
+    #[test]
+    fn owner_of_tells_two_tasks_apart() {
+        let rs = roots(&[(100, "a"), (400, "b")]);
+        assert_eq!(owner_of(300, &rs, tree).as_deref(), Some("a"));
+        assert_eq!(owner_of(400, &rs, tree).as_deref(), Some("b"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn one_stream_for_every_task_and_mode_killed_with_the_last() {
+        let (mut w, starts) = counted(false);
+        assert!(w.attach("a", false, cfg("/a")));
+        assert!(w.attach("a", false, cfg("/a")), "second PTY of a task");
+        assert!(w.attach("b", true, cfg("/b")), "another task, other mode");
+        assert_eq!(starts.load(Ordering::Relaxed), 1, "one stream for all three");
+        assert!(w.detach("a", false).is_none());
+        assert!(w.detach("b", true).is_none(), "`a` still has a PTY open");
+        assert!(w.detach("a", true).is_none(), "a detach for a mode `a` doesn't hold changes nothing");
+        assert!(w.task("a").is_some());
+        reap(Some(w.detach("a", false).expect("the last hold hands back the stream")));
+        assert!(w.attach("c", false, cfg("/c")), "after the last close, the next spawn restarts it");
+        assert_eq!(starts.load(Ordering::Relaxed), 2);
+        reap(w.detach("c", false));
+    }
+
+    #[test]
+    fn a_stream_that_fails_to_start_records_no_hold() {
+        let (mut w, starts) = counted(true);
+        assert!(!w.attach("a", false, cfg("/a")));
+        assert!(w.task("a").is_none(), "a failed attach must not leave a hold behind");
+        assert!(!w.attach("a", false, cfg("/a")), "the next spawn retries");
+        assert_eq!(starts.load(Ordering::Relaxed), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stream_that_dies_is_replaced_while_ptys_hold_it() {
+        let (mut w, starts) = counted(false);
+        w.attach("a", false, cfg("/a"));
+        let gen = w.gen;
+        w.started = Instant::now().checked_sub(RESPAWN_MIN_LIFE * 2).unwrap();
+        reap(Some(w.on_stream_exit(gen).expect("the dead stream comes back to reap")));
+        assert_eq!(starts.load(Ordering::Relaxed), 2, "a PTY still holds it, so it restarts");
+        assert!(w.child.is_some());
+        assert!(w.on_stream_exit(gen).is_none(), "a stale reader can't touch the replacement");
+        assert_eq!(starts.load(Ordering::Relaxed), 2);
+        // dying right after a start is a crash loop: stop until a spawn asks
+        reap(w.on_stream_exit(w.gen));
+        assert_eq!(starts.load(Ordering::Relaxed), 2);
+        assert!(w.child.is_none());
+        assert!(w.attach("a", false, cfg("/a")));
+        assert_eq!(starts.load(Ordering::Relaxed), 3);
+        reap(w.detach("a", false));
+        reap(w.detach("a", false));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mixed_modes_keep_their_own_holds_and_the_monitor_policy() {
+        let (mut w, _) = counted(false);
+        w.attach("a", true, cfg("/monitor"));
+        w.attach("a", false, cfg("/enforce"));
+        let h = w.task("a").unwrap();
+        assert_eq!((h.enforce, h.monitor), (1, 1));
+        assert_eq!(h.cfg.path, "/monitor", "an enforce spawn must not replace a live monitor policy");
+        w.detach("a", true);
+        let h = w.task("a").unwrap();
+        assert_eq!((h.enforce, h.monitor), (1, 0), "closing the monitor PTY leaves the caged one counted");
+        reap(w.detach("a", false));
+    }
+
+    /// Router over a fake tree whose ppid calls are counted: 1 <- 7100
+    /// (root) <- 7200 <- 7300, and 7300's parent can be changed to stand
+    /// in for a recycled pid (0 = exited).
+    static RT_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static RT_PARENT_OF_7300: AtomicU32 = AtomicU32::new(7200);
+    fn rt_tree(pid: u32) -> Option<u32> {
+        RT_CALLS.fetch_add(1, Ordering::Relaxed);
+        match pid {
+            7100 | 7400 => Some(1),
+            7200 => Some(7100),
+            7300 => Some(RT_PARENT_OF_7300.load(Ordering::Relaxed)).filter(|p| *p != 0),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn router_caches_and_revalidates() {
+        let calls = || RT_CALLS.load(Ordering::Relaxed);
+        let mut r = Router::new(rt_tree, |_| None);
+        register_root_pid("rt-a", 7100);
+        assert_eq!(r.owner(7300).as_deref(), Some("rt-a"));
+        let before = calls();
+        assert_eq!(r.owner(7300).as_deref(), Some("rt-a"));
+        assert_eq!(calls() - before, 1, "a hit re-reads only the pid's own parent, no walk");
+
+        RT_PARENT_OF_7300.store(0, Ordering::Relaxed);
+        assert_eq!(r.owner(7300).as_deref(), Some("rt-a"), "an exited pid keeps its answer");
+
+        RT_PARENT_OF_7300.store(7400, Ordering::Relaxed);
+        assert_eq!(r.owner(7300), None, "a pid recycled under another parent is re-routed");
+        RT_PARENT_OF_7300.store(7200, Ordering::Relaxed);
+
+        unregister_root_pid("rt-a", 7100);
+        assert_eq!(r.owner(7300), None, "root gone");
+        register_root_pid("rt-a", 7100);
+        assert_eq!(r.owner(7300).as_deref(), Some("rt-a"), "a cached miss clears when a root registers");
+        unregister_root_pid("rt-a", 7100);
+    }
+
+    /// Fixed answers for `dispatch_line`.
+    struct Fixed(Option<&'static str>);
+    impl Resolve for Fixed {
+        fn owner(&mut self, _pid: u32) -> Option<Arc<str>> { self.0.map(Arc::from) }
+        fn exe(&mut self, _pid: u32) -> Option<String> { Some("/opt/claude/versions/2.1.144".into()) }
+    }
+
+    /// Hold `id` in the app's watcher without starting a stream.
+    fn hold(id: &str, enforce: usize, monitor: usize) {
+        lock_watcher().tasks.insert(id.into(), Holds { cfg: Arc::new(cfg("/Users/u/task")), enforce, monitor });
+    }
+    fn release(id: &str) {
+        lock_watcher().tasks.remove(id);
+    }
+
+    #[test]
+    fn a_line_counts_once_however_many_ptys_the_task_has() {
+        let id = "watcher-test-once";
+        hold(id, 2, 0);
+        dispatch_line(DENY, &mut Fixed(Some(id)));
+        assert_eq!(path_deny_count(id), 1);
+        release(id);
+    }
+
+    #[test]
+    fn lines_go_to_the_mode_that_asked_for_them() {
+        let (enf, mon) = ("watcher-test-enforce", "watcher-test-monitor");
+        hold(enf, 1, 0);
+        hold(mon, 0, 1);
+        dispatch_line(ALLOW, &mut Fixed(Some(enf)));
+        dispatch_line(DENY, &mut Fixed(Some(mon)));
+        assert_eq!(path_deny_count(enf), 0, "an allow line is not a deny");
+        assert_eq!(path_access_count(mon), 0, "a monitor task has no denies to record");
+        // `deny(1)` in the allow line's PATH must not make it a deny
+        dispatch_line(ALLOW, &mut Fixed(Some(mon)));
+        assert_eq!(path_access_count(mon), 1);
+        release(enf);
+        release(mon);
+    }
+
+    #[test]
+    fn a_task_with_both_modes_records_both() {
+        // `task_set_sandbox(kill_live=false)` leaves a caged agent running
+        // next to a monitored one; its denies must still count.
+        let id = "watcher-test-mixed";
+        hold(id, 1, 1);
+        dispatch_line(DENY, &mut Fixed(Some(id)));
+        dispatch_line(ALLOW, &mut Fixed(Some(id)));
+        assert_eq!(path_deny_count(id), 1);
+        assert_eq!(path_access_count(id), 1);
+        release(id);
+    }
+
+    #[test]
+    fn unowned_and_unwatched_lines_are_dropped() {
+        let id = "watcher-test-unowned";
+        dispatch_line(DENY, &mut Fixed(None));
+        dispatch_line(DENY, &mut Fixed(Some(id)));
+        assert_eq!(path_deny_count(id), 0, "a task with no open PTY records nothing");
+    }
+
+    #[test]
+    fn a_versionlike_name_falls_back_to_the_executable_path() {
+        let mut r = Fixed(None);
+        assert_eq!(proc_name(Some("2.1.144".into()), 1, &mut r), "/opt/claude/versions/2.1.144");
+        assert_eq!(proc_name(Some("touch".into()), 1, &mut r), "touch");
+        assert_eq!(proc_name(None, 1, &mut r), "/opt/claude/versions/2.1.144");
     }
 }
