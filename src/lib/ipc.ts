@@ -1219,6 +1219,8 @@ export const mcpStatus         = () => invoke<McpStatus>("mcp_status");
  *  it on click and hand it straight to the clipboard; never put it in
  *  component state or render it. Null when the endpoint is not bound. */
 export const mcpToken          = () => invoke<string | null>("mcp_token");
+/** Replace the MCP token. Every client holding the old one stops working. */
+export const mcpRegenerateToken = () => invoke<void>("mcp_regenerate_token");
 /** Register the running endpoint with a client ("claude" | "codex"), so
  *  setup is a button rather than a config block pasted by hand. Resolves
  *  to a human-readable confirmation; rejects with the reason. */

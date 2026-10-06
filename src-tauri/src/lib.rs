@@ -25256,6 +25256,7 @@ pub fn run() {
             cli_server::cli_install_status,
             mcp_server::mcp_status,
             mcp_server::mcp_token,
+            mcp_server::mcp_regenerate_token,
             mcp_server::mcp_install_client,
             window_close_choice, window_is_windowless, close_prompt_ack,
             tray_set_attention,

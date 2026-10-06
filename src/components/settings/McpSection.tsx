@@ -25,7 +25,7 @@
 
 import { useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
-import { mcpInstallClient, mcpStatus, mcpToken } from "@/lib/ipc";
+import { mcpInstallClient, mcpRegenerateToken, mcpStatus, mcpToken } from "@/lib/ipc";
 import type { McpStatus } from "@/lib/types";
 import { copyToClipboard } from "@/lib/clipboard";
 import { useUI } from "@/store/ui";
@@ -162,8 +162,9 @@ export function McpSection() {
   // The one place the token IS rendered, and only once the endpoint is
   // bound off loopback: another device cannot read the token file, so
   // the command it runs has to carry the value, and a command you cannot
-  // select is not one you can move to that device. `status` changes on
-  // every rebind, which is also when the token does.
+  // select is not one you can move to that device. `status` is re-read
+  // after a rebind and after Regenerate token, the one thing that changes
+  // the value.
   const remoteUrl = exposed ? (status?.lan_url ?? status?.url ?? null) : null;
   useEffect(() => {
     let live = true;
@@ -200,6 +201,18 @@ export function McpSection() {
       return;
     }
     await copyToClipboard(value, t("mcp.copyTokenLabel"));
+  }
+
+  /** The only thing that changes the token. The listener restarts with
+   *  it, so the status (and the remote command built from it) is re-read. */
+  async function regenerateToken() {
+    try {
+      await mcpRegenerateToken();
+      useUI.getState().pushToast(t("mcp.regenerated"), "success");
+    } catch (e) {
+      useUI.getState().pushToast(String(e), "error");
+    }
+    setStatus(await mcpStatus().catch(() => UNBOUND));
   }
 
   const url = status?.url ?? null;
@@ -299,6 +312,14 @@ export function McpSection() {
                 className="mt-2 text-[12px] text-[var(--color-fg-faint)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-fg-dim)]"
               >
                 {t("mcp.copyToken")}
+              </button>
+              <button
+                type="button"
+                data-testid="mcp-regenerate-token"
+                onClick={regenerateToken}
+                className="ml-4 mt-2 text-[12px] text-[var(--color-fg-faint)] underline decoration-dotted underline-offset-2 hover:text-[var(--color-fg-dim)]"
+              >
+                {t("mcp.regenerateToken")}
               </button>
               <p className="mt-1 text-[12px] text-[var(--color-fg-faint)]">
                 {t("mcp.tokenNote")}

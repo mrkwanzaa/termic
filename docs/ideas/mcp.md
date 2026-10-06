@@ -489,11 +489,19 @@ Decisions settled at implementation time (mcp_server.rs):
   token on every request, the Origin refusal, and the rebinding gate,
   which answers an IP-literal `Host` and no hostname (`host_allowed`),
   so `machine.local` is refused. An address that does not parse binds
-  loopback, never everything. A change rebinds and mints a new token,
-  and the token still rotates on every launch, so a remote device has to
-  be handed a new one each time; a stable credential for remote clients
-  is not designed. The per-task seatbelt grant and everything above
+  loopback, never everything. Settings shows the `claude mcp add` line
+  for a second device with the token in it. The per-task seatbelt grant and everything above
   about "one pinned loopback port" describe the default binding.
+- **The token changes only when asked (2026-10-06).** It was minted
+  on every bind, which is free for a local client (its helper reads the
+  file at connect) and breaks a remote one, which holds a pasted value,
+  on every restart. Now a bind adopts the token on disk, a disable
+  removes the port file only, and "Regenerate token" in Settings is the
+  one thing that replaces it. What this gives up, knowingly: after a
+  crash another local user can bind the freed port, and a token a client
+  then hands it stays valid until regenerated. A refused (taken) port no
+  longer deletes the token either. This supersedes "minting per bind"
+  wherever the entries below rely on it.
 - **One setup rule, and a button (2026-08-21).** Both clients now run
   the SAME shell command to read the 0600 token file at connect time,
   differing only in config syntax (codex `http_headers_helper` in TOML,

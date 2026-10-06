@@ -556,13 +556,13 @@ describe("MCP tools/call: a real task round-trip through the live webview", () =
   });
 });
 
-describe("MCP lifecycle: disable revokes, re-enable mints fresh", () => {
+describe("MCP lifecycle: disable goes quiet, re-enable serves the same token", () => {
   before(async () => {
     await waitForAppShell();
     await requireTermicApi();
   });
 
-  it("toggling off unbinds and removes both files; on mints a new token", async () => {
+  it("toggling off unbinds and removes the port file; on keeps the token", async () => {
     const urlBefore = endpoint();
     const tokenBefore = token();
     const setEnabled = (on: boolean) =>
@@ -574,9 +574,9 @@ describe("MCP lifecycle: disable revokes, re-enable mints fresh", () => {
 
     await setEnabled(false);
     try {
-      // settings_save unbinds before it resolves; the files are the
-      // revocation contract.
-      expect(fs.existsSync(tokenFile)).toBe(false);
+      // settings_save unbinds before it resolves. Nothing is advertised,
+      // and the token is kept: it changes only when regenerated.
+      expect(fs.existsSync(tokenFile)).toBe(true);
       expect(fs.existsSync(portFile)).toBe(false);
       await expect(
         raw({ url: urlBefore, headers: { "mcp-method": "tools/list" } }, "{}"),
@@ -584,10 +584,9 @@ describe("MCP lifecycle: disable revokes, re-enable mints fresh", () => {
     } finally {
       await setEnabled(true);
     }
-    // Fresh credential, and (preferred-port rebind) the same URL, so a
+    // The same credential and (preferred-port rebind) the same URL, so a
     // pasted client config survives the cycle.
-    expect(fs.existsSync(tokenFile)).toBe(true);
-    expect(token()).not.toBe(tokenBefore);
+    expect(token()).toBe(tokenBefore);
     expect(endpoint()).toBe(urlBefore);
     const frame = await rpc("server/discover");
     expect(frame.result._meta["io.modelcontextprotocol/serverInfo"].name).toBe("termic");
@@ -621,13 +620,13 @@ describe("MCP bind address and port: the settings decide where it listens", () =
   // 0.0.0.0 is deliberately not driven here: binding every interface makes
   // the OS firewall ask a question no spec can answer. The address half is
   // covered in mcp_server.rs; this covers the live rebind.
-  it("a typed port moves the listener there, with a fresh token", async () => {
+  it("a typed port moves the listener there, with the same token", async () => {
     const tokenBefore = token();
     const port = await freePort();
     await setBind("", port);
     try {
       expect(endpoint()).toBe(`http://127.0.0.1:${port}/mcp`);
-      expect(token()).not.toBe(tokenBefore);
+      expect(token()).toBe(tokenBefore);
       const frame = await rpc("server/discover");
       expect(frame.result._meta["io.modelcontextprotocol/serverInfo"].name).toBe("termic");
     } finally {

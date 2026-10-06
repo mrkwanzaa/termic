@@ -183,27 +183,20 @@ impl McpServer {
     }
 }
 
-/// What revocation removes. One definition, because three copies of
-/// "delete the token then the port file" means a change to the contract
-/// can leave one path still advertising a dead endpoint.
+/// What going quiet removes: the port file, so nothing says an endpoint
+/// is listening. The TOKEN stays. It changes only when the user asks
+/// (`mcp_regenerate_token`), because a client on another machine holds a
+/// pasted copy, and a token that rotated by itself broke that client on
+/// every restart.
 fn revoke_advertisement(dir: &Path) {
-    for f in [MCP_TOKEN_FILE, MCP_PORT_FILE] {
-        let _ = std::fs::remove_file(dir.join(f));
-    }
+    let _ = std::fs::remove_file(dir.join(MCP_PORT_FILE));
 }
 
-/// Revoke the credential but KEEP the port memo, for the one case where
-/// forgetting the port is the dangerous half: a port we advertised is now
-/// held by someone else.
-///
-/// The token has to go, or a client still pointed at that port reads it
-/// and hands it to whoever answers there. The port must NOT go with it.
-/// It is the only durable record of what clients were told, and a later
-/// bind that cannot find it binds somewhere else and mints a fresh token,
-/// which those same clients then send to the squatter: the handoff the
-/// refusal exists to prevent, one restart later.
-fn revoke_credential(dir: &Path) {
-    let _ = std::fs::remove_file(dir.join(MCP_TOKEN_FILE));
+/// The credential a new listener serves: the one on disk when it is one
+/// this server wrote, a fresh one otherwise (first enable, or a file
+/// someone damaged).
+fn token_for_bind(dir: &Path) -> String {
+    token_from_file(dir).unwrap_or_else(cli_server::mint_token)
 }
 
 /// Drop the endpoint's advertised state after its listener dies on its
@@ -1906,20 +1899,17 @@ pub(crate) fn apply_enabled(app: tauri::AppHandle, on: bool) {
                 // the next client start would hand a freshly minted,
                 // valid token to whatever process now answers on that
                 // port, and it could spend it against us. Refuse to
-                // serve, and take the advertisement down so there is no
-                // token left for a squatter to be handed.
+                // serve.
                 Err(BindFailure::PortTaken(p)) => {
                     dlog(&format!(
                         "[mcp] port {p} is held by another process; not serving, \
                          because clients pointed at it would send their token there"
                     ));
-                    // Keep refusing THIS port until it can be reclaimed,
-                    // in memory and on disk both. Dropping the memo here
-                    // would make the next enable, or the next launch, bind
-                    // a different port and mint a live token while every
-                    // installed client still points at the squatter.
+                    // Keep refusing THIS port until it can be reclaimed:
+                    // dropping the memo would make the next enable bind a
+                    // different port while every installed client still
+                    // points at the squatter.
                     st.last_port = Some(p);
-                    revoke_credential(&dir);
                     return;
                 }
                 Err(BindFailure::Io(e)) => {
@@ -1938,22 +1928,19 @@ pub(crate) fn apply_enabled(app: tauri::AppHandle, on: bool) {
             // discipline); if the token cannot be written, advertise
             // nothing and keep the port closed.
             //
-            // Minted fresh on EVERY bind, never adopted from the file.
-            // Adopting looked like config stability, but it let a token
-            // outlive the port that vouched for it: after a crash the
-            // files persist while the port frees, so another local user
-            // can bind it, collect the bearer from the next client that
-            // connects, and still be holding a valid credential once we
-            // relaunch. The port is only ours while we hold it, so the
-            // token cannot be older than the binding.
-            let token = cli_server::mint_token();
+            // Adopted from the file, not minted per bind. Minting per
+            // bind closed a narrow hole (another local user binding our
+            // freed port after a crash keeps whatever token a client then
+            // hands it) at the price of breaking every client that holds
+            // a pasted token on each restart. The user regenerates it
+            // when they want it changed.
+            let token = token_for_bind(&dir);
             if let Err(e) = cli_server::write_token_file(&dir.join(MCP_TOKEN_FILE), &token) {
                 dlog(&format!("[mcp] token write failed: {e}; not serving"));
                 return;
             }
             if let Err(e) = std::fs::write(dir.join(MCP_PORT_FILE), format!("{}\n", url_at(reach(addr), port))) {
                 dlog(&format!("[mcp] port file write failed: {e}; not serving"));
-                let _ = std::fs::remove_file(dir.join(MCP_TOKEN_FILE));
                 return;
             }
             let shutdown = Arc::new(AtomicBool::new(false));
@@ -1995,8 +1982,8 @@ pub(crate) fn apply_enabled(app: tauri::AppHandle, on: bool) {
             // did not land, let it exit on its own rather than blocking
             // the UI thread on a join that may never return.
             st.stopped = h.stopped.take();
-            // Disable is an explicit revocation: both files go, unlike
-            // the harmless lingering cli-token. Re-enable mints fresh.
+            // Off means nothing is advertised. The token is kept for the
+            // next enable (see revoke_advertisement).
             if let Ok(dir) = crate::global_dir() {
                 revoke_advertisement(&dir);
             }
@@ -2075,11 +2062,25 @@ pub(crate) fn mcp_status() -> McpStatus {
 /// This discloses nothing new: the caller is the app's own webview on
 /// the user's machine, and anything running as this user can read the
 /// 0600 file directly. Reading the file (rather than caching the value)
-/// keeps one source of truth and answers None the moment a disable
-/// revokes it.
+/// keeps one source of truth.
 #[tauri::command]
 pub(crate) fn mcp_token() -> Option<String> {
     token_from_file(&crate::global_dir().ok()?)
+}
+
+/// Settings "Regenerate token": the ONLY thing that changes the token.
+/// A running listener holds the old value, so it is restarted, which
+/// drops every client still presenting it.
+#[tauri::command]
+pub(crate) fn mcp_regenerate_token(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = crate::global_dir().map_err(|e| e.to_string())?;
+    cli_server::write_token_file(&dir.join(MCP_TOKEN_FILE), &cli_server::mint_token())
+        .map_err(|e| e.to_string())?;
+    if state().lock().unwrap().handle.is_some() {
+        apply_enabled(app.clone(), false);
+        apply_enabled(app, crate::load_settings_inner().mcp_enabled);
+    }
+    Ok(())
 }
 
 // ─────────────────────── one-click client setup ──────────────────────
@@ -2774,28 +2775,23 @@ mod tests {
     }
 
     #[test]
-    fn refusing_a_hijacked_port_keeps_the_port_memo_and_drops_only_the_token() {
-        // The refusal is only safe while we still remember WHICH port the
-        // clients hold. Revoking the memo too would make the next bind pick
-        // a fresh port and mint a live token, and every installed client
-        // would then hand that token to whoever holds the old one: the
-        // handoff this refusal exists to prevent, one restart later.
+    fn the_token_outlives_a_disable_and_changes_only_when_asked() {
+        // A client on another machine holds a pasted copy. Anything that
+        // changed the token by itself (a restart, a toggle, a rebind) broke
+        // that client, so going quiet takes the port file and nothing else.
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(MCP_TOKEN_FILE), "secret").unwrap();
+        let first = token_for_bind(dir.path());
+        assert!(first.len() == 64, "nothing on disk yet: a fresh one");
+        cli_server::write_token_file(&dir.path().join(MCP_TOKEN_FILE), &first).unwrap();
         std::fs::write(dir.path().join(MCP_PORT_FILE), "http://127.0.0.1:65000/mcp\n").unwrap();
 
-        revoke_credential(dir.path());
-
-        assert!(!dir.path().join(MCP_TOKEN_FILE).exists(), "the credential must go");
-        assert_eq!(
-            port_from_file(dir.path()),
-            Some(65000),
-            "the port clients were told to use must survive, so the next bind keeps refusing it",
-        );
-
-        // Full revocation (disable, listener death) still takes both.
         revoke_advertisement(dir.path());
-        assert_eq!(port_from_file(dir.path()), None);
+        assert_eq!(port_from_file(dir.path()), None, "off advertises nothing");
+        assert_eq!(token_for_bind(dir.path()), first, "the next bind serves the same token");
+
+        // A file this server did not write is not adopted.
+        std::fs::write(dir.path().join(MCP_TOKEN_FILE), "not a token").unwrap();
+        assert_ne!(token_for_bind(dir.path()), first);
     }
 
     #[test]
