@@ -1897,6 +1897,13 @@ pub(crate) fn preview(clone: &Path, id: &ProfileId, folder: Option<&str>, prefs:
 
 /// Bind a profile to a folder (or a new one) and run its first sync.
 pub(crate) fn bind(clone: &Path, id: &ProfileId, folder: Option<String>, opts: &RunOpts) -> SyncRunResult {
+    // Two profiles on one machine exporting into one folder would overwrite
+    // each other on every sync.
+    if let Some(f) = &folder {
+        if bound_profiles().iter().any(|(p, s)| s == f && p != id) {
+            return SyncRunResult { error: Some("Another profile on this machine already follows that folder.".into()), ..Default::default() };
+        }
+    }
     // Bring the clone up to date for whatever is already bound, without
     // pushing. Nothing bound: just the fetch and fast-forward.
     let pre = run_core(clone, &RunOpts { push: false, ..*opts });
@@ -2827,6 +2834,27 @@ mod tests {
             let clone = sync_dir().unwrap();
             let canon_parent = dunce::canonicalize(clone.parent().unwrap()).unwrap();
             assert!(canon_parent.join("sync").starts_with(&denied), "{} not under {}", clone.display(), denied.display());
+        });
+    }
+
+    #[test]
+    fn two_local_profiles_cannot_follow_one_folder() {
+        crate::test_support::with_scratch_data_dir(|dir| {
+            let profile = |slug: &str| crate::profiles::Profile {
+                slug: slug.into(), name: slug.into(), accent: "#d97757".into(),
+                order: 0, last_focused_at: None, open_at_quit: false,
+            };
+            let reg = crate::profiles::Registry { profiles: vec![profile("home"), profile("work")], root_slug: Some("home".into()) };
+            crate::profiles::save_registry(dir, &reg).unwrap();
+            let mut s = crate::load_settings_in(&ProfileId::Root);
+            s.sync.sync_id = Some("shared-folder".into());
+            crate::save_settings_in(&ProfileId::Root, &s).unwrap();
+            let finder = Finder { find_repo: &|_, _| None };
+            let opts = RunOpts { push: false, machine: "m", prefs: None, locate: &|_, _| None, finder: &finder };
+            let work = ProfileId::Slug("work".into());
+            let r = bind(&dir.join("sync"), &work, Some("shared-folder".into()), &opts);
+            assert!(r.error.as_deref().is_some_and(|e| e.contains("already follows")), "{r:?}");
+            assert_eq!(crate::load_settings_in(&work).sync.sync_id, None, "nothing was bound");
         });
     }
 

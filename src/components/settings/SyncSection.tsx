@@ -62,8 +62,9 @@ export default function SyncSection() {
     let cancelled = false;
     void syncConnect(st.repo_url).then(info => {
       if (cancelled) return;
+      const free = info.folders.filter(f => !st.bound.some(b => b.sync_id === f.sync_id));
       setFolders(info.folders);
-      setPick(info.folders[0]?.sync_id ?? "");
+      setPick(free[0]?.sync_id ?? "");
     }).catch(e => { if (!cancelled) setErr(String(e)); });
     return () => { cancelled = true; };
   }, [st, folders]);
@@ -207,7 +208,10 @@ export default function SyncSection() {
           <h3 className="text-[14px] font-semibold">{t("sync.pickTitle")}</h3>
           <p className="mt-1 text-[12.5px] text-[var(--color-fg-dim)]">{t("sync.pickHint")}</p>
           <div className="mt-3 flex flex-col gap-1.5" role="radiogroup">
-            {(folders ?? []).map(f => (
+            {/* A folder another profile on this machine already follows is
+                not offered: two profiles exporting into one folder would
+                overwrite each other. */}
+            {(folders ?? []).filter(f => !st.bound.some(b => b.sync_id === f.sync_id)).map(f => (
               <FolderOption key={f.sync_id} id={f.sync_id} label={f.name} hint={`profiles/${f.sync_id}`}
                 checked={pick === f.sync_id} onPick={() => { setPick(f.sync_id); setPreview(null); }} />
             ))}
