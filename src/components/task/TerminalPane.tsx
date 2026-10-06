@@ -2159,6 +2159,9 @@ const captureArmedRef = useRef(false);
     term.parser.registerOscHandler(777, (data) => {
       const parts = data.split(";");
       if (parts[0] !== "notify") return false;
+      // Read before it is set: the ready branch below needs to know whether
+      // THIS report is the one that proves the hooks.
+      const provesHooks = !hookSeenRef.current;
       if (!hookSeenRef.current) {
         hookSeenRef.current = true;
         logWorkState("hook-proven", `cli=${tab.cli} task=${JSON.stringify(task.name)} (via OSC 777)`);
@@ -2199,6 +2202,26 @@ const captureArmedRef = useRef(false);
         if (!hookSeenRef.current) {
           hookSeenRef.current = true;
           logWorkState("hook-proven", `cli=${tab.cli} task=${JSON.stringify(task.name)} (via ready)`);
+        }
+        // A "working" that no hook started has nothing left to end it. Before
+        // the hooks are proven, the submit-window heuristic can promote a tab
+        // on an Enter that starts no turn (a slash command that restarts the
+        // session). This report then proves the hooks, every fallback demoter
+        // stands down, and no done is coming: the tab read "working" over an
+        // empty prompt and a message another agent sent sat queued behind it
+        // for good (captured: `req=working why=-`, this ready 238ms later,
+        // then nothing).
+        //
+        // Only on the report that PROVES the hooks. Ready also fires mid-turn
+        // (an auto-compact restarts the session inside a turn), and by then a
+        // "working" is the hook's own and a done will end it.
+        if (provesHooks) {
+          const live = useApp.getState().tabs[task.id]
+            ?.find(t => t.id === tab.id) as TerminalTab | undefined;
+          if (live?.workState === "working") {
+            useApp.getState().setWorkState(task.id, tab.id, "idle", "ready proved the hooks; no hook started this turn");
+            sendNextQueuedRef.current?.();
+          }
         }
         // Stamped once per PTY: seedPrompt waits on it, and a resumed session
         // re-firing SessionStart must not look like a second, later readiness.
