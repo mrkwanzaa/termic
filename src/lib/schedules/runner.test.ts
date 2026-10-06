@@ -54,6 +54,9 @@ vi.mock("@/lib/agentDelivery", () => ({
   waitForAgentPty: vi.fn().mockResolvedValue(true),
   deliverPromptWhenReady: vi.fn().mockResolvedValue({ ok: true, tabId: "tab" }),
 }));
+// The store's tab actions focus the DOM through retry timers; left real, one
+// fires after happy-dom is torn down ("document is not defined", CI only).
+vi.mock("@/lib/tabFocus", () => ({ focusTerminalTab: vi.fn(), focusMainTab: vi.fn(), focusPaneTab: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(null) }));
 
