@@ -18,7 +18,7 @@ use crate::{global_dir, Task};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Tag prefix for every image we build. Cleanup and listing filter on this.
@@ -447,6 +447,70 @@ fn sanitize_extra_mount(raw: &str, home: &str, task_path: &str) -> Option<(Strin
         return None;
     }
     Some((host, container.to_string()))
+}
+
+/// `p` with every symlink resolved, also when its tail does not exist yet:
+/// Docker creates a missing bind source, so `<link to the data dir>/new`
+/// has to resolve through the link. The deepest existing ancestor is
+/// canonicalised and the rest appended, `..` popped lexically (nothing
+/// below a non-existent component can be a symlink).
+fn resolve_host(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let parts: Vec<Component> = p.components().collect();
+    for i in (1..=parts.len()).rev() {
+        let head: PathBuf = parts[..i].iter().collect();
+        if let Ok(mut out) = dunce::canonicalize(&head) {
+            for c in &parts[i..] {
+                match c {
+                    Component::ParentDir => {
+                        out.pop();
+                    }
+                    Component::Normal(n) => out.push(n),
+                    _ => {}
+                }
+            }
+            return out;
+        }
+    }
+    p.to_path_buf()
+}
+
+/// Does a mount of `host` hand the container termic's data dir? That dir
+/// holds the sync clone, every agent's Docker login (`docker-agents/`), the
+/// forge logins and the CLI token, so neither it nor anything inside it is
+/// a host side an extra mount may take.
+fn host_in_data_dir(host: &Path, data: &Path) -> bool {
+    resolve_host(host).starts_with(data)
+}
+
+/// The data dir, resolved the way `host_in_data_dir` compares it.
+fn data_dir_resolved() -> Option<PathBuf> {
+    global_dir().ok().map(|d| resolve_host(&d))
+}
+
+/// Save-time half of the data-dir refusal, for every list of extra mounts a
+/// user can write (`Task`, `Project`, `Settings` defaults). `~`/`$HOME` are
+/// expanded; an entry with `$WORKSPACE` is left to `build_spec`, which
+/// knows the task path and skips the mount if it lands in the data dir.
+/// Entries that do not parse are not this check's business.
+pub fn refuse_data_dir_mounts(mounts: &[String]) -> Result<(), String> {
+    let Some(data) = data_dir_resolved() else { return Ok(()) };
+    let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    for raw in mounts {
+        let Some((host_raw, _)) = raw.trim().rsplit_once(':') else { continue };
+        let host_raw = host_raw.trim();
+        if host_raw.is_empty() || host_raw.contains("$WORKSPACE") {
+            continue;
+        }
+        let host = subst_path(host_raw, &home, "");
+        if Path::new(&host).is_absolute() && host_in_data_dir(Path::new(&host), &data) {
+            return Err(format!(
+                "\"{raw}\" isn't allowed: the host path is inside Termic's data folder ({}), which holds agent logins, the sync clone and the CLI token.",
+                data.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Host directory that persists an agent's login + sessions + MCP config
@@ -1095,8 +1159,15 @@ pub fn build_spec(
     //    every mount already staged above, including the agent config dir
     //    step just above - a mount whose CONTAINER path collides with an
     //    already-claimed one is dropped rather than silently shadowing it.
+    //    A host side in termic's data dir is dropped here too, not only at
+    //    save: a value already on disk, or one with `$WORKSPACE`, never got
+    //    the save-time check (`refuse_data_dir_mounts`).
+    let data = data_dir_resolved();
     for raw in extra_mounts {
         let Some((host, container)) = sanitize_extra_mount(raw, &home, &task_path) else { continue };
+        if data.as_deref().is_some_and(|d| host_in_data_dir(Path::new(&host), d)) {
+            continue;
+        }
         if mounts.iter().any(|m| m.host == host || m.container == container) {
             continue;
         }
@@ -1252,10 +1323,9 @@ pub fn validate_extra_args(args: &[String]) -> Result<(), String> {
 /// save time (`task_set_docker`) so a malformed entry surfaces as an error to
 /// the user instead of being silently dropped at spawn time the way
 /// `sanitize_extra_mount` drops bad entries. Checks the same shape rules
-/// `sanitize_extra_mount` enforces on the container half, without resolving
-/// `$HOME`/`$WORKSPACE`/symlinks on the host half - those are always valid
-/// at save time regardless of which task's path they'll later be resolved
-/// against, so only the fully task-agnostic checks run here.
+/// `sanitize_extra_mount` enforces on the container half. The host half is
+/// only checked for termic's data dir (`refuse_data_dir_mounts`): anything
+/// else about it depends on the task path it is later resolved against.
 pub fn validate_extra_mounts(mounts: &[String]) -> Result<(), String> {
     for raw in mounts {
         let raw_t = raw.trim();
@@ -1279,7 +1349,7 @@ pub fn validate_extra_mounts(mounts: &[String]) -> Result<(), String> {
             ));
         }
     }
-    Ok(())
+    refuse_data_dir_mounts(mounts)
 }
 
 /// The `docker run --user` value: the HOST process's own uid:gid, so the
@@ -2837,6 +2907,64 @@ mod tests {
         assert_eq!(containers.iter().filter(|c| **c == "/data/mcp").count(), 1, "{containers:?}");
         let mcp_mount = spec.mounts.iter().find(|m| m.container == "/data/mcp").unwrap();
         assert_eq!(mcp_mount.host, "/tmp/mcp-data");
+    }
+
+    /// `build_spec` with only `extras` as task-level mounts; the containers
+    /// it kept.
+    fn extra_containers(extras: &[String]) -> Vec<String> {
+        let task = stub_task("t-data", "/tmp/termic-docker-test-does-not-exist-data");
+        let env = std::collections::HashMap::new();
+        let spec = build_spec(&task, "claude", "img", &task.path, vec![], &env, &[], false, &[], extras, "pty-dddd0000", "claude", &[], None);
+        spec.mounts.into_iter().map(|m| m.container).filter(|c| c.starts_with("/data/")).collect()
+    }
+
+    #[test]
+    fn an_extra_mount_cannot_take_termics_data_dir_or_anything_in_it() {
+        crate::test_support::with_scratch_data_dir(|dir| {
+            std::fs::create_dir_all(dir.join("sync")).unwrap();
+            let data = dir.to_string_lossy().into_owned();
+            let refused = [
+                format!("{data}:/data/a"),
+                format!("{data}/:/data/b"),
+                format!("{data}/sync:/data/c"),
+                format!("{data}/not-yet/made:/data/d"),
+                format!("{data}/sync/../docker-agents:/data/e"),
+            ];
+            for m in &refused {
+                let err = validate_extra_mounts(std::slice::from_ref(m)).unwrap_err();
+                assert!(err.contains("Termic's data folder"), "{m}: {err}");
+                assert_eq!(refuse_data_dir_mounts(std::slice::from_ref(m)), Err(err));
+            }
+            // A sibling whose name only STARTS with the data dir's is not in it.
+            let outside = tempfile::tempdir().unwrap();
+            let ok = [format!("{data}-other:/data/y"), format!("{}:/data/z", outside.path().display())];
+            assert_eq!(validate_extra_mounts(&ok), Ok(()));
+            // A value already on disk never met the save check: spawn skips it.
+            let all: Vec<String> = refused.iter().chain(&ok).cloned().collect();
+            assert_eq!(extra_containers(&all), ["/data/y", "/data/z"]);
+            // `$WORKSPACE` is the spawn's to resolve, so the save lets it by.
+            assert_eq!(refuse_data_dir_mounts(&["$WORKSPACE/x:/data/w".into()]), Ok(()));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_extra_mount_cannot_reach_the_data_dir_through_a_symlink() {
+        crate::test_support::with_scratch_data_dir(|dir| {
+            let outside = tempfile::tempdir().unwrap();
+            let link = outside.path().join("innocent");
+            std::os::unix::fs::symlink(dir, &link).unwrap();
+            let refused = [format!("{}:/data/a", link.display()), format!("{}/sync/new:/data/b", link.display())];
+            for m in &refused {
+                let err = validate_extra_mounts(std::slice::from_ref(m)).unwrap_err();
+                assert!(err.contains("Termic's data folder"), "{m}: {err}");
+            }
+            assert!(extra_containers(&refused).is_empty());
+            // The control: the same link pointed elsewhere is an ordinary mount.
+            std::fs::remove_file(&link).unwrap();
+            std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+            assert_eq!(validate_extra_mounts(&refused[..1]), Ok(()));
+        });
     }
 
     #[test]

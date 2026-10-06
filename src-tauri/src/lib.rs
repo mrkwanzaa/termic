@@ -6006,6 +6006,11 @@ fn project_set_group(ids: Vec<String>, group: Option<String>) -> Result<(), Stri
 fn project_update(mut p: Project) -> Result<(), String> {
     let mut list = load_projects_all();
     if let Some(slot) = list.iter_mut().find(|x| x.id == p.id) {
+        // Only when they change: the Repository page autosaves the whole
+        // record, and a value already on disk is `build_spec`'s to skip.
+        if p.docker_extra_mounts != slot.docker_extra_mounts {
+            docker::refuse_data_dir_mounts(&p.docker_extra_mounts)?;
+        }
         p.profile = slot.profile.clone();
         *slot = p;
         save_projects(&list).map_err(|e| e.to_string())?;
@@ -23109,7 +23114,11 @@ fn run_capture_command_blocking(
 fn settings_save(app: AppHandle, window: tauri::Window, s: Settings) -> Result<(), String> {
     let tray_on = tray_enabled_pref(&s);
     let profile = window_profile(&window);
-    let s = keep_disk_account_fields(&load_settings_in(&profile), s);
+    let disk = load_settings_in(&profile);
+    if s.docker_default_extra_mounts != disk.docker_default_extra_mounts {
+        docker::refuse_data_dir_mounts(&s.docker_default_extra_mounts)?;
+    }
+    let s = keep_disk_account_fields(&disk, s);
     save_settings_in(&profile, &s)?;
     // Applies live: flipping the toggle in Settings shouldn't need a restart
     // to show/hide the menu-bar item, matching close_action/cli_enabled's
