@@ -49,10 +49,20 @@ pub fn hook_emit(target: Option<&std::path::Path>) -> i32 {
 /// environment, which is the agent's, and is empty outside Termic (the
 /// server ignores empty). Exit 0 when printed, 1 otherwise.
 pub fn mcp_headers(token_file: Option<&std::path::Path>) -> i32 {
-    let Some(token) = token_file.and_then(|f| std::fs::read_to_string(f).ok()) else { return 1 };
     let task = std::env::var("TERMIC_TASK_ID").unwrap_or_default();
-    println!("{}", serde_json::json!({ "X-Termic-Token": token.trim(), "X-Termic-Task": task }));
-    0
+    match mcp_headers_line(token_file, &task) {
+        Some(line) => { println!("{line}"); 0 }
+        None => 1,
+    }
+}
+
+/// The line `mcp_headers` prints, or None when there is no token to send.
+/// Split out so the header names and the trimming are testable: nothing on a
+/// Mac or Linux build ever runs this command, so a typo here would only show
+/// up as a 401 on a Windows machine.
+fn mcp_headers_line(token_file: Option<&std::path::Path>, task: &str) -> Option<String> {
+    let token = std::fs::read_to_string(token_file?).ok()?;
+    Some(serde_json::json!({ "X-Termic-Token": token.trim(), "X-Termic-Task": task }).to_string())
 }
 
 /// Write one hook report to `target`. A named pipe reports "all instances
@@ -3011,6 +3021,38 @@ mod tests {
     #[test]
     fn clap_definition_is_coherent() {
         cli_command().debug_assert();
+    }
+
+    #[test]
+    fn mcp_headers_prints_the_two_headers_the_server_reads() {
+        // The names are MCP_TOKEN_HEADER / MCP_TASK_HEADER in
+        // src-tauri/src/mcp_server.rs, a crate this one cannot import, so
+        // they are pinned here as literals. The token file ends in a newline
+        // on every platform that wrote it with an editor or `echo`, and a
+        // header value carrying one is rejected.
+        let dir = std::env::temp_dir().join(format!("termic-mcp-headers-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("mcp token");
+        std::fs::write(&file, "s3cret\r\n").unwrap();
+        let line = mcp_headers_line(Some(&file), "task-1").expect("a readable token file prints");
+        let v: serde_json::Value = serde_json::from_str(&line).expect("one JSON object");
+        assert_eq!(v, serde_json::json!({ "X-Termic-Token": "s3cret", "X-Termic-Task": "task-1" }));
+        assert!(!line.contains('\n'), "a headers helper emits exactly one line");
+        // Outside Termic there is no task: the header is still sent, empty.
+        let bare: serde_json::Value =
+            serde_json::from_str(&mcp_headers_line(Some(&file), "").unwrap()).unwrap();
+        assert_eq!(bare["X-Termic-Task"], "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mcp_headers_fails_rather_than_send_an_empty_credential() {
+        // No argument, or a file that is not there: exit 1 and print nothing,
+        // so the client reports a broken helper instead of an unauthenticated
+        // request that the server answers 401.
+        assert_eq!(mcp_headers_line(None, "t"), None);
+        assert_eq!(mcp_headers_line(Some(std::path::Path::new("/nonexistent/termic/mcp-token")), "t"), None);
+        assert_eq!(mcp_headers(None), 1);
     }
 
     #[test]
