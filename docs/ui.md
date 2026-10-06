@@ -1771,9 +1771,50 @@ doing" opens Notifications. The pointer now runs the other way, from the four
 indicators to the thing that decides them, which is the direction that needs
 explaining.
 
-Two consequences worth keeping. The rows stay in ONE table above the per-agent
-tabs rather than a field on each card: "not needed, its terminal already
-reports this" and "not supported yet" only mean something next to each other,
-and it is a decision made once, not a per-agent preference. And the link out of
-Notifications does not gate on which agents are supported; the table is the
-authority on that.
+**Hooks and the terminal patterns are one setting, "Agent state", on each
+agent's card.** They were two: the hooks table above the tabs, and a "Work-done
+detection" group at the bottom of every card (a switch over four regex fields),
+written before hooks existed. Hooks replace that detection at runtime (once
+installed and proven on a pty nothing else may end a turn, agent-hooks.md
+"Hooks own the turn"), and nothing on the page said so: a card with hooks
+installed still showed four fields that looked live.
+
+The section now leads with its SOURCE (`AgentHookSource.tsx`,
+`hookSourceState`), and everything under it follows from that line:
+
+| source | the card says | patterns |
+| --- | --- | --- |
+| `hooks` | reported by the agent, hooks replace terminal detection; Remove | folded, labelled "fallback, not in use" |
+| `available` | guessed from the terminal, hooks recommended; Install, in amber | open, "in use" |
+| `blocked` | the agent's own `disableAllHooks` stops them | open, "in use" |
+| `terminal` | no hooks exist for this agent (cursor, a custom CLI, most agents on Windows) | open, "in use", and no warning colour: it has done nothing wrong |
+| `absent` | the CLI is not on PATH | open |
+
+Rules that came out of building it:
+
+- **The switch is `work_done` and means "track this agent at all".** It gates
+  the hook-reported state too (`workDoneCapable` is the single gate, and the
+  queue and scheduled runs read it), so it sits above both sources rather than
+  being one of them. Off, the source row and the patterns are not rendered.
+- **A fallback is folded, not removed.** The patterns still apply before a
+  tab's first hook arrives and when a hook cannot deliver (Docker transport),
+  and the disclosure says exactly that when opened.
+- **Antigravity gets a footnote.** It has no hook for a permission prompt, so
+  "needs you" still comes off the screen; "hooks replace the terminal" would be
+  false for it without the note.
+- **The output-matching switch is not drawn until a pattern exists.** Disabled,
+  it rendered as a grey dot with no track.
+- **One colour for switches.** These two were `--color-ok` green among accent
+  switches, which read as a different kind of control.
+
+What is left above the tabs (`AgentHooksBlock.tsx`) is the fleet control: the
+"Install hooks for every agent" switch, the coverage count, and, while any
+wirable agent is still guessed at, a line naming them. That line is the
+recommendation: amber when some agents are wired and others are not, ordinary
+dim on an untouched install. Its names, and the rows behind the chevron, are
+links that select the agent's tab and scroll to its Agent state section; they
+carry no install button, so there is one place per agent to act. Both read
+installed and supported from the store (`agentHooksInstalled`,
+`agentHooksSupported`), the same read a live tab uses, so the block, the cards
+and the terminals cannot disagree. The link out of Notifications does not gate
+on which agents are supported; the cards are the authority on that.

@@ -1,8 +1,12 @@
 # Agent hooks
 
 How termic learns what an agent is doing from the agent itself, instead of
-reading its terminal. Off by default, per agent, installed globally into that
-agent's own config. Settings → Agents & Terminals → Agent hooks.
+reading its terminal. On by default since the one-time
+`migrate_hooks_auto_default` flip ("Install hooks for every agent"), per
+agent, installed globally into that agent's own config. The switch and the
+coverage count are Settings → Agents & Terminals → Agent hooks; each agent's
+own install, removal and the disclosure of what it writes are on that agent's
+card, under Agent state (docs/ui.md "Settings: where a feature's row belongs").
 
 The state machine this feeds (`working` / `attention` / `done`, the settle
 timer, the demoters) lives in `TerminalPane`; this doc covers the hook half and

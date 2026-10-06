@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import os from "node:os";
 import path from "node:path";
 import { dataDir } from "../../wdio.conf.js";
-import { archiveTask, clearLanguagePref, clickWhenVisible, dismissOverlays, openTask, pointerDrag, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitVisible, rmTree } from "../helpers";
+import { archiveTask, clearLanguagePref, clickWhenVisible, dismissOverlays, openTask, pointerDrag, requireTermicApi, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible, rmTree } from "../helpers";
 
 /** Click the [role="switch"] in the settings row whose label matches exactly.
  *  Toggle rows are label + switch inside one .justify-between wrapper
@@ -3764,5 +3764,147 @@ describe("install hooks for every agent", () => {
     }, REWIRE);
     await browser.execute(() => window.__termic!.invoke("agent_hooks_sync"));
     expect(await status(REWIRE)).toBe(false);
+  });
+});
+
+// The card's "Agent state" section: ONE place that says where an agent's state
+// comes from, with the terminal patterns filed under it as live or as a
+// fallback. It replaced "Work-done detection", four regex fields that looked
+// live whether or not hooks had made them dormant, while the hooks themselves
+// were installed from a table above the tabs that never mentioned them.
+//
+// Driven on the seeded fake clones for the same reason as the block above:
+// they are on PATH on every runner, and installs land in the throwaway profile.
+describe("agent state section", () => {
+  const HOOKED = "fakeclaude";
+  const PLAIN = "fakeagent";
+  const card = (id: string, rest = "") => `[data-agent-card="${id}"] ${rest}`.trim();
+  const source = (id: string) => card(id, '[data-testid="agent-state-source"]');
+  const patterns = (id: string) => card(id, '[data-testid="agent-state-patterns-toggle"]');
+  const openCard = async (id: string) => {
+    await clickWhenVisible(`[data-agent-id="${id}"]`);
+    await waitVisible(card(id, '[data-testid="agent-state"]'));
+  };
+  const sourceState = (id: string) => browser.execute(
+    (sel) => document.querySelector(sel)?.getAttribute("data-state") ?? null, source(id));
+  const waitSource = (id: string, want: string) => browser.waitUntil(
+    async () => (await sourceState(id)) === want,
+    { timeout: 20_000, timeoutMsg: `${id}'s source never read "${want}"` },
+  ).catch(async () => { throw new Error(`${id}'s source never read "${want}", it reads "${await sourceState(id)}"`); });
+  const patternsView = (id: string) => browser.execute((sel) => {
+    const t = document.querySelector(sel);
+    return {
+      open: t?.getAttribute("aria-expanded"),
+      role: t?.querySelector('[data-testid="agent-state-patterns-role"]')?.getAttribute("data-role"),
+    };
+  }, patterns(id));
+  const hooksOn = (id: string) => browser.execute(async (a) =>
+    (await window.__termic!.invoke("agent_hooks_status", { agentId: a })).host.installed as boolean, id);
+  const clean = () => browser.execute(async () => {
+    const t = window.__termic!;
+    await t.invoke("agent_hooks_auto_set", { on: false });
+    for (const a of t.useApp.getState().agents) {
+      try { await t.invoke("agent_hooks_remove", { agentId: a.id }); } catch { /* unsupported */ }
+    }
+    await t.useApp.getState().refreshAgentHooks();
+  });
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    await dismissOverlays();
+    await clean();
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("agents"));
+    await waitVisible('[data-agent-id][data-kind="agent"]');
+  });
+  after(async () => {
+    await clean();
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await dismissOverlays();
+  });
+
+  it("recommends hooks on the card of an agent that could have them, with the patterns live", async () => {
+    await openCard(HOOKED);
+    await waitSource(HOOKED, "available");
+    expect(await browser.execute(
+      (sel) => !!document.querySelector(sel), card(HOOKED, '[data-testid="agent-state-install"]'))).toBe(true);
+    // Guessing from the terminal means the patterns ARE the mechanism: open,
+    // and said to be in use.
+    expect(await patternsView(HOOKED)).toEqual({ open: "true", role: "live" });
+    await snap("agent-state-available.png");
+  });
+
+  it("installs from the card, and the patterns fold away as a fallback", async () => {
+    await clickWhenVisible(card(HOOKED, '[data-testid="agent-state-install"]'));
+    await waitSource(HOOKED, "hooks");
+    expect(await hooksOn(HOOKED)).toBe(true);
+    // The whole point of the section: with hooks in, nothing may suggest the
+    // regex fields are what is reading this agent.
+    await browser.waitUntil(async () => (await patternsView(HOOKED)).open === "false",
+      { timeout: 5_000, timeoutMsg: "the patterns stayed open after hooks were installed" });
+    expect((await patternsView(HOOKED)).role).toBe("fallback");
+    await snap("agent-state-hooks.png");
+
+    // Still reachable: a fallback is folded, not removed, and says when it applies.
+    await clickWhenVisible(patterns(HOOKED));
+    await waitVisible(card(HOOKED, '[data-testid="agent-state-fallback-note"]'));
+    await clickWhenVisible(patterns(HOOKED));
+    await waitGone(card(HOOKED, '[data-testid="agent-state-fallback-note"]'));
+  });
+
+  it("counts the install in the block above the tabs without a reload", async () => {
+    await browser.waitUntil(async () => await browser.execute(() =>
+      document.querySelector('[data-testid="agent-hooks-summary"]')?.getAttribute("data-state") !== "none"),
+      { timeout: 10_000, timeoutMsg: "the coverage summary never counted the card's install" });
+    // And it no longer names this agent as one still read from the terminal.
+    expect(await browser.execute((id) =>
+      !!document.querySelector(`[data-testid="agent-hooks-gap-${id}"]`), HOOKED)).toBe(false);
+  });
+
+  it("removes from the card, back to a recommendation with the patterns open", async () => {
+    await clickWhenVisible(card(HOOKED, '[data-testid="agent-state-remove"]'));
+    await waitSource(HOOKED, "available");
+    expect(await hooksOn(HOOKED)).toBe(false);
+    await browser.waitUntil(async () => (await patternsView(HOOKED)).open === "true",
+      { timeout: 5_000, timeoutMsg: "the patterns stayed folded after the hooks were removed" });
+    expect((await patternsView(HOOKED)).role).toBe("live");
+  });
+
+  it("an agent with no hooks reads from the terminal, with nothing to install and no warning", async () => {
+    await openCard(PLAIN);
+    await waitSource(PLAIN, "terminal");
+    expect(await browser.execute(
+      (sel) => !!document.querySelector(sel), card(PLAIN, '[data-testid="agent-state-install"]'))).toBe(false);
+    expect(await patternsView(PLAIN)).toEqual({ open: "true", role: "live" });
+    await snap("agent-state-terminal.png");
+  });
+
+  it("the gap line above the tabs opens the card of the agent it names", async () => {
+    // From another agent's tab, so the jump has something to do.
+    const link = `[data-testid="agent-hooks-gap-${HOOKED}"]`;
+    await waitVisible(link);
+    await clickWhenVisible(link);
+    await waitVisible(source(HOOKED));
+    expect(await sourceState(HOOKED)).toBe("available");
+  });
+
+  it("switching state tracking off takes the source and the patterns with it", async () => {
+    await openCard(PLAIN);
+    const tracked = () => browser.execute(
+      (sel) => document.querySelector(sel)?.getAttribute("data-tracked"), card(PLAIN, '[data-testid="agent-state"]'));
+    expect(await tracked()).toBe("1");
+    try {
+      await clickWhenVisible(card(PLAIN, '[data-testid="agent-state-switch"]'));
+      await browser.waitUntil(async () => (await tracked()) === "0",
+        { timeout: 5_000, timeoutMsg: "the Agent state switch never turned off" });
+      // Nothing left describing a machine that is not running.
+      await waitGone(source(PLAIN));
+      await waitGone(patterns(PLAIN));
+      expect(await browser.execute((id) =>
+        window.__termic!.useApp.getState().agents.find((a: any) => a.id === id)?.work_done, PLAIN)).toBe(false);
+    } finally {
+      if ((await tracked()) === "0") await clickWhenVisible(card(PLAIN, '[data-testid="agent-state-switch"]'));
+    }
+    await waitVisible(source(PLAIN));
   });
 });

@@ -20,10 +20,11 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { AppDialog } from "@/components/ui/Dialog";
 import { Tip } from "@/components/ui/Tooltip";
-import { Trash2, Plus, Check, AlertTriangle, RotateCcw, Copy } from "lucide-react";
+import { Trash2, Plus, Check, AlertTriangle, RotateCcw, Copy, ChevronRight } from "lucide-react";
 import { AgentAccountsRow, AgentAccountsAction } from "@/components/settings/AgentAccountsRow";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { SignalInspector } from "./SignalInspector";
+import { AgentHookSource } from "./AgentHookSource";
 import { cn, slugify } from "@/lib/utils";
 import { isTerminalEntry, BUILTIN_TITLE_SIGNALS, builtinBaseId, yoloArgsNote } from "@/lib/agents";
 import { SubSection } from "@/components/settings/SubSection";
@@ -403,17 +404,30 @@ export function AgentsSection() {
 
       {err && <div className="text-[13px] text-[var(--color-err)]">{err}</div>}
 
-      {/* Above the per-agent tabs, because it is one decision across all of
-          them rather than a field on any one card, and because it belongs on
-          this page at all: it writes into the AGENT's own config and changes
-          how that agent reports its state.
+      {/* Above the per-agent tabs, because what is left in it is one decision
+          across all of them (install for every agent) plus the coverage count.
+          Each agent's own install lives on its card's Agent state section, and
+          the rows and gap line in here jump to it. It belongs on this page at
+          all because it writes into the AGENT's own config and changes how
+          that agent reports its state.
           It lived under Notifications first, on the reasoning that the
           indicators there are all downstream of work-state detection. True,
           and beside the point: Notifications is where you choose whether to be
           TOLD, not how termic KNOWS. The tell was that placing it there
           required a signpost on this page pointing at it, and a cross
           reference is usually evidence the thing is in the wrong place. */}
-      <AgentHooksBlock />
+      <AgentHooksBlock
+        onSelectAgent={(id) => {
+          setActiveId(id);
+          // The card is keyed by agent id, so the section to land on does not
+          // exist until the tab switch has rendered. A timer rather than rAF:
+          // rAF is frozen on an occluded window (docs/gotchas.md).
+          window.setTimeout(() => {
+            document.querySelector(`[data-agent-card="${CSS.escape(id)}"] [data-testid="agent-state"]`)
+              ?.scrollIntoView({ behavior: "smooth", block: "start" });
+          }, 60);
+        }}
+      />
 
       <AgentsTabs
         agents={agents}
@@ -871,6 +885,14 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
   // switch, which has nothing to run without one (see the group below).
   const sig = agent.capabilities?.signals;
   const hasSignals = !!(sig?.busy?.length || sig?.idle?.length || sig?.attention?.length || sig?.pending?.length);
+  // Hooks installed: the patterns below are a fallback, so they start folded
+  // away. Otherwise they ARE the mechanism and start open. `null` follows that
+  // default, so installing from the row above folds them as it happens; a
+  // click on the disclosure is the user's own answer and sticks.
+  const hooksInstalled = useApp(s => s.agentHooksInstalled[agent.id] === true);
+  const [patternsOpen, setPatternsOpen] = useState<boolean | null>(null);
+  const showPatterns = patternsOpen ?? !hooksInstalled;
+  const tracked = agent.work_done !== false;
 
   return (
     // data-agent-card: every card renders the same control labels, so e2e (and
@@ -1171,46 +1193,75 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             placeholder={inheritedPlaceholder(inherited, a => a.sandbox_allowed_hosts, "*.mycompany.com\nbitbucket.org", "\n")}
           />
         </Field>
-        {/* Work-done detection and the patterns are one feature: whether we
-            read this agent's state at all, and what we read it from. The master
-            switch sits on the section's legend, so the body underneath is
-            visibly what it governs, and turning it off collapses that body
-            rather than leaving dead fields for a machine that isn't running. */}
+        {/* One section for one question: how termic knows what this agent is
+            doing. It was "Work-done detection", a switch over four regex
+            fields, written before hooks existed; hooks then arrived in a block
+            of their own above the tabs, and nothing here said they had made
+            these fields dormant. Now the first thing under the switch is the
+            SOURCE in use (AgentHookSource), and the patterns sit behind a
+            disclosure that says whether they are in use or a fallback.
+
+            The switch is still `work_done`, and it gates the hook-reported
+            state too (`workDoneCapable` is the single gate), which is why it
+            reads as "track this agent" and not as one of the two sources. */}
         {!isTerminal &&
           <SubSection
-            title={t("agents.card.workDoneTitle")}
-            hint={t("agents.card.workDoneHint")}
+            title={t("agents.state.title")}
+            hint={t("agents.state.hint")}
           >
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2" data-testid="agent-state" data-tracked={tracked ? "1" : "0"}>
               <button
                 type="button"
                 role="switch"
-                aria-checked={agent.work_done !== false}
-                onClick={() => onPatch({ work_done: agent.work_done === false ? true : false })}
+                data-testid="agent-state-switch"
+                aria-checked={tracked}
+                aria-label={t("agents.state.title")}
+                onClick={() => onPatch({ work_done: !tracked })}
                 className={cn(
                   "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out items-center",
-                  // bg-2, not bg-3: the band itself is bg-3, so an off switch
+                  // The accent, like every other settings switch. bg-2, not
+                  // bg-3, when off: the band itself is bg-3, so an off switch
                   // tracked in bg-3 would have no track at all.
-                  agent.work_done !== false ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-2)]"
+                  tracked ? "bg-[var(--color-accent)]" : "bg-[var(--color-bg-2)]"
                 )}
               >
                 <span
                   className={cn(
-                    // Ok-filled track, so the ok ink (see the toggle above).
                     "pointer-events-none inline-block h-4 w-4 transform rounded-full shadow ring-0 transition duration-200 ease-in-out",
-                    agent.work_done !== false ? "translate-x-4 bg-[var(--color-ok-fg)]" : "translate-x-0 bg-white"
+                    tracked ? "translate-x-4 bg-[var(--color-accent-fg)]" : "translate-x-0 bg-white"
                   )}
                 />
               </button>
               <span className="text-[12.5px] text-[var(--color-fg-dim)] select-none">
-                {agent.work_done !== false ? t("agents.card.on") : t("agents.card.off")}
+                {tracked ? t("agents.card.on") : t("agents.card.off")}
               </span>
             </div>
-            {agent.work_done !== false && <>
-            {/* The patterns are what the switch above turns on, so they live
-                under it and vanish with it. Their shared explanation sits here
-                rather than on the legend, which speaks for the whole section. */}
-            <div className="border-t border-[var(--color-border-soft)] pt-3 text-[12px] text-[var(--color-fg-dim)]">
+            {tracked && <>
+            <AgentHookSource agentId={agent.id} />
+            <button
+              type="button"
+              data-testid="agent-state-patterns-toggle"
+              aria-expanded={showPatterns}
+              onClick={() => setPatternsOpen(!showPatterns)}
+              className="flex w-full items-center gap-2 border-t border-[var(--color-border-soft)] pt-3 text-left"
+            >
+              <ChevronRight className={cn("h-4 w-4 shrink-0 text-[var(--color-fg-faint)] transition-transform", showPatterns && "rotate-90")} />
+              <span className="text-[13px] font-medium text-[var(--color-fg)]">{t("agents.state.patternsTitle")}</span>
+              <span
+                data-testid="agent-state-patterns-role"
+                data-role={hooksInstalled ? "fallback" : "live"}
+                className="text-[12px] text-[var(--color-fg-dim)]"
+              >
+                {hooksInstalled ? t("agents.state.patternsFallback") : t("agents.state.patternsLive")}
+              </span>
+            </button>
+            {showPatterns && <>
+            {hooksInstalled && (
+              <div className="text-[12px] leading-snug text-[var(--color-fg-dim)]" data-testid="agent-state-fallback-note">
+                {t("agents.state.fallbackNote")}
+              </div>
+            )}
+            <div className="text-[12px] text-[var(--color-fg-dim)]">
               {signalGroupHint(agent.id, t)}
             </div>
             {/* The rows below tune a GUESS, and the exact answer is now on
@@ -1258,47 +1309,43 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
             {/* Output matching runs the patterns typed into the fields above,
                 and only those: it never falls back to the built-in heuristics,
                 because "^\s*✳" describes claude's title, not a line of its
-                stdout. So with all three fields empty (every agent's default,
-                built-in or custom) the switch has nothing to match and is dead.
-                Disabled until there is at least one pattern, rather than
-                offering a switch that silently does nothing. */}
-            <div className="border-t border-[var(--color-border-soft)] pt-3">
+                stdout. So with every field empty (every agent's default,
+                built-in or custom) the switch has nothing to match, and it is
+                not rendered at all rather than drawn dead: a disabled switch
+                with no track read as a stray grey dot. The patterns' own hint
+                says what filling one in makes possible. */}
+            {hasSignals && <div className="border-t border-[var(--color-border-soft)] pt-3">
               <Field
                 label={t("agents.card.matchLabel")}
-                hint={hasSignals
-                  ? t("agents.card.matchHintOn")
-                  : t("agents.card.matchHintOff")}
+                hint={t("agents.card.matchHintOn")}
               >
                 <div className="flex items-center gap-2 pt-0.5">
                   <button
                     type="button"
                     role="switch"
-                    disabled={!hasSignals}
                     aria-checked={!!agent.capabilities?.match_output}
                     onClick={() => onPatchCaps({ match_output: !agent.capabilities?.match_output })}
                     className={cn(
-                      "relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out items-center", /* allow-shortcut: standard toggle switch, matches the Work-done switch above, not a decorative chip (Orel-approved) */
-                      hasSignals ? "cursor-pointer" : "cursor-not-allowed opacity-50",
+                      "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out items-center", /* allow-shortcut: standard toggle switch, matches the Agent state switch above, not a decorative chip (Orel-approved) */
                       // bg-2, not bg-3: the band itself is bg-3, so an off
                       // switch tracked in bg-3 would have no track at all.
-                      hasSignals && agent.capabilities?.match_output ? "bg-[var(--color-ok)]" : "bg-[var(--color-bg-2)]"
+                      agent.capabilities?.match_output ? "bg-[var(--color-accent)]" : "bg-[var(--color-bg-2)]"
                     )}
                   >
                     <span
                       className={cn(
-                        "pointer-events-none inline-block h-4 w-4 transform rounded-full shadow ring-0 transition duration-200 ease-in-out", /* allow-shortcut: toggle knob circle, matches the Work-done switch above (Orel-approved) */
-                        hasSignals && agent.capabilities?.match_output ? "translate-x-4 bg-[var(--color-ok-fg)]" : "translate-x-0 bg-white"
+                        "pointer-events-none inline-block h-4 w-4 transform rounded-full shadow ring-0 transition duration-200 ease-in-out", /* allow-shortcut: toggle knob circle, matches the Agent state switch above (Orel-approved) */
+                        agent.capabilities?.match_output ? "translate-x-4 bg-[var(--color-accent-fg)]" : "translate-x-0 bg-white"
                       )}
                     />
                   </button>
                   <span className="text-[12.5px] text-[var(--color-fg-dim)] select-none">
-                    {!hasSignals ? t("agents.card.matchNone")
-                      : agent.capabilities?.match_output ? t("agents.card.matchBoth")
-                      : t("agents.card.matchTitle")}
+                    {agent.capabilities?.match_output ? t("agents.card.matchBoth") : t("agents.card.matchTitle")}
                   </span>
                 </div>
               </Field>
-            </div>
+            </div>}
+            </>}
             </>}
           </SubSection>}
       </div>

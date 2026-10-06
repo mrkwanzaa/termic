@@ -8,54 +8,45 @@
 // was that the arrangement needed a signpost on the Agents page pointing at
 // it, and a cross reference is usually evidence a thing is in the wrong place.
 //
-// One table above the per-agent tabs, not a field on each card: the per-agent
-// statuses ("not needed", "not supported yet") only read as coverage when they
-// sit next to each other, and it is a decision made once, not per agent.
+// This block is the FLEET control, above the per-agent tabs: the one decision
+// that spans agents ("install for every agent"), the coverage count, and, when
+// some agent is still being guessed at, which ones. It deliberately carries no
+// per-agent action any more. Install, remove and the disclosure of what an
+// install writes live on each agent's own card (AgentHookSource), next to the
+// terminal patterns they replace: with the actions up here and the patterns
+// down there, nothing on the page said the first makes the second dormant.
 //
-// One row per DETECTED agent, each with its own action. Deliberately not a
-// single master switch: the consent question differs per agent (a shell script
-// in ~/.claude is not the same ask as a JS module running in-process inside
-// opencode), and hiding that behind one toggle would be dishonest.
-//
-// Each row's action covers BOTH that agent's targets, host and its Docker
-// config dir. Docker needs no separate consent because termic owns that
-// directory, but a user who declines for an agent must never find hooks
-// installed for it inside a container. See docs/agent-hooks.md.
+// The coverage list stays, as rows that JUMP to the agent's card. The
+// per-agent statuses only read as coverage when they sit next to each other.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronRight, Check, CircleAlert } from "lucide-react";
-import { agentHooksInstall, agentHooksPlan, agentHooksRemove, agentHooksStatus, agentHooksAutoGet, agentHooksAutoSet, agentHooksSync, cachedHomeDir } from "@/lib/ipc";
+import { agentHooksAutoGet, agentHooksAutoSet, agentHooksSync } from "@/lib/ipc";
 import { Toggle } from "@/components/settings/Controls";
 import { useApp } from "@/store/app";
-import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
-import { tildePath } from "@/lib/pathMatch";
 import { agentDisplayName } from "@/lib/agents";
-import type { AgentHookStatus, HookPlan } from "@/lib/types";
 
 /** Anchor the Agents section's link targets, so the jump lands ON the block
  *  rather than at the top of Notifications with the reader hunting for it. */
 export const AGENT_HOOKS_HIGHLIGHT = "agent-hooks";
 
-export function AgentHooksBlock() {
+export function AgentHooksBlock({ onSelectAgent }: {
+  /** Open one agent's card on its state section. The rows and the gap line
+   *  are links to where that agent is actually configured. */
+  onSelectAgent: (id: string) => void;
+}) {
   const { t } = useTranslation("settings");
   const detectedClis = useApp(s => s.detectedClis);
   const agents = useApp(s => s.agents);
-  const [status, setStatus] = useState<Record<string, AgentHookStatus>>({});
-  const [busy, setBusy] = useState<string | null>(null);
-  const [failure, setFailure] = useState<Record<string, string>>({});
-  // Disclosure, per agent. These users read shell for a living, so the honest
-  // move is to show the actual scripts rather than describe them.
-  const [plan, setPlan] = useState<Record<string, HookPlan>>({});
-  const [open, setOpen] = useState<string | null>(null);
-  /** Which FILE of the open plan is showing, keyed by agent. An install
-   *  touches the agent's config plus one script per signal, and dumping all
-   *  of them end to end made a disclosure you had to scroll past rather than
-   *  read: codex alone is a 60-line JSON fragment followed by four scripts. */
-  const [planFile, setPlanFile] = useState<Record<string, number>>({});
-  const [home, setHome] = useState("");
-  useEffect(() => { void cachedHomeDir().then(setHome); }, []);
+  // Installed and supported come from the STORE, the same read every live tab
+  // uses to decide whether the title may still end a turn, so this block, the
+  // cards and the terminals cannot disagree about who is wired.
+  const installed = useApp(s => s.agentHooksInstalled);
+  const supported = useApp(s => s.agentHooksSupported);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState("");
   // COLLAPSED by default. Expanded, this pushed the per-agent tabs (the reason
   // anyone opens this page) below the fold behind two paragraphs of protocol
   // detail. That detail is right for someone deciding to let termic write into
@@ -83,8 +74,8 @@ export function AgentHooksBlock() {
     if (settingsHighlight !== AGENT_HOOKS_HIGHLIGHT) return;
     useApp.getState().clearSettingsHighlight();
     // Expanded as well: whoever sent the reader here (the usage chip's
-    // "Install hooks", the Notifications link) sent them to act on a row, and
-    // the rows are behind the toggle. Scrolled on the NEXT frame so the jump
+    // "Install hooks", the Notifications link) wants to see which agents are
+    // wired, and the rows that lead to each one are behind the toggle. Scrolled on the NEXT frame so the jump
     // measures the block at its expanded height, and to its top, because
     // centred the expanded block starts above the fold.
     setExpanded(true);
@@ -95,17 +86,6 @@ export function AgentHooksBlock() {
     const th = window.setTimeout(() => setFlash(false), 1600);
     return () => { window.clearTimeout(th); window.cancelAnimationFrame(raf); };
   }, [settingsHighlight]);
-
-  const toggleDetails = async (id: string) => {
-    if (open === id) { setOpen(null); return; }
-    setOpen(id);
-    if (!plan[id]) {
-      try {
-        const next = await agentHooksPlan(id);
-        setPlan(p => ({ ...p, [id]: next }));
-      } catch { /* the row still works without the disclosure */ }
-    }
-  };
 
   // Only agents actually on PATH. Offering to wire an agent the user does not
   // have is noise, and the row would have nothing true to say.
@@ -118,21 +98,15 @@ export function AgentHooksBlock() {
   // a row you can do nothing with, and there were more of those than real ones,
   // which made the list read as mostly unavailable. The unsupported agents are
   // still described in docs/agent-hooks.md, where the reasoning belongs.
-  const wirable = present.filter(id => status[id]?.supported);
-  const installedCount = wirable.filter(id => status[id]?.host.installed).length;
+  const wirable = present.filter(id => supported[id]);
+  const guessing = wirable.filter(id => !installed[id]);
+  const installedCount = wirable.length - guessing.length;
   /** Some wired, some not. A gap the user can close, which is what earns the
    *  warning colour. An agent blocked by `disableAllHooks` counts as a gap on
    *  purpose: its hooks genuinely are not reporting, and the fix (removing
    *  that setting) is theirs to make, so hiding it would be the dishonest
    *  half of "5 of 5". */
   const partial = installedCount > 0 && installedCount < wirable.length;
-
-  const refresh = useCallback(async (ids: string[]) => {
-    const rows = await Promise.all(
-      ids.map(id => agentHooksStatus(id).then(s => [id, s] as const).catch(() => null)),
-    );
-    setStatus(Object.fromEntries(rows.filter(Boolean) as (readonly [string, AgentHookStatus])[]));
-  }, []);
 
   // With "install all hooks" on, an agent that appeared since the last sync
   // (newly on PATH, or just added here) is wired before its row is read, so
@@ -144,39 +118,22 @@ export function AgentHooksBlock() {
         const wired = await agentHooksSync().catch(() => [] as string[]);
         if (wired.length) await useApp.getState().refreshAgentHooks();
       }
-      await refresh(present);
     })();
   },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [present.join(","), refresh, autoLoaded]);
+    [present.join(","), autoLoaded]);
 
   const setAutoInstall = async (on: boolean) => {
     setAuto(on);
-    setBusy("*");
+    setBusy(true);
+    setFailure("");
     try {
       await agentHooksAutoSet(on);
       await useApp.getState().refreshAgentHooks();
-      await refresh(present);
     } catch (e) {
-      setFailure(f => ({ ...f, "*": String(e) }));
+      setFailure(String(e));
     } finally {
-      setBusy(null);
-    }
-  };
-
-  const act = async (id: string, install: boolean) => {
-    setBusy(id);
-    setFailure(f => ({ ...f, [id]: "" }));
-    try {
-      const next = install ? await agentHooksInstall(id) : await agentHooksRemove(id);
-      setStatus(s => ({ ...s, [id]: next }));
-      // Live tabs read this to decide whether the title may still end a turn,
-      // so it has to change with the install rather than at the next restart.
-      await useApp.getState().refreshAgentHooks();
-    } catch (e) {
-      setFailure(f => ({ ...f, [id]: String(e) }));
-    } finally {
-      setBusy(null);
+      setBusy(false);
     }
   };
 
@@ -255,120 +212,69 @@ export function AgentHooksBlock() {
           label={t("agents.hooks.autoLabel")}
           hint={t("agents.hooks.autoHint")}
           value={!!auto}
-          onChange={v => { if (busy !== "*") void setAutoInstall(v); }}
+          onChange={v => { if (!busy) void setAutoInstall(v); }}
         />
-        {failure["*"] && (
-          <div className="mt-1 text-[12px] text-[var(--color-err)]">{failure["*"]}</div>
+        {failure && (
+          <div className="mt-1 text-[12px] text-[var(--color-err)]">{failure}</div>
         )}
       </div>
+
+      {/* The recommendation, visible without expanding and only while there
+          is something to recommend: which agents are still being guessed at,
+          each a link to the card where its hooks are installed. Amber for a
+          gap among wired agents; the untouched install gets the same sentence
+          in the ordinary dim, because a fresh install has done nothing wrong. */}
+      {guessing.length > 0 && (
+        <div
+          data-testid="agent-hooks-gap"
+          className={cn(
+            "mt-3 flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-[12.5px] leading-snug",
+            partial ? "text-[var(--color-warn)]" : "text-[var(--color-fg-dim)]",
+          )}
+        >
+          <span>{t("agents.hooks.gap", { count: guessing.length })}</span>
+          {guessing.map(id => (
+            <button
+              key={id}
+              type="button"
+              data-testid={`agent-hooks-gap-${id}`}
+              onClick={() => onSelectAgent(id)}
+              className="underline decoration-dotted underline-offset-2 hover:text-[var(--color-fg)]"
+            >
+              {agentDisplayName(id, agents)}
+            </button>
+          ))}
+        </div>
+      )}
 
       {expanded && (
         <div className="mt-3 flex flex-col gap-3">
           <p className="text-[12.5px] leading-relaxed text-[var(--color-fg-dim)]">
             {t("agents.hooks.desc")}
           </p>
-          <div className="flex flex-col gap-2">
-            {wirable.map(id => {
-              // `wirable` already filtered to supported agents, so `st` exists.
-              const st = status[id]!;
-              const err = failure[id] || st.host.error || "";
-              // `disableAllHooks` in the user's own config means an install would
-              // never fire. Saying "installed" there would be a lie.
-              const blocked = st.host.disabled_all;
-              return (
-                <div key={id} className="flex flex-col gap-1 rounded-md border border-[var(--color-border)] px-3 py-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-[14px] font-medium">{agentDisplayName(id, agents)}</span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[12.5px] text-[var(--color-fg-dim)]">
-                        {blocked ? t("agents.hooks.blocked")
-                          : st.host.installed ? t("agents.hooks.installed")
-                          : t("agents.hooks.notInstalled")}
-                      </span>
-                      {!blocked && (
-                        <Button
-                          variant={st.host.installed ? "ghost" : "primary"}
-                          disabled={busy === id}
-                          onClick={() => act(id, !st.host.installed)}
-                        >
-                          {busy === id ? "..." : st.host.installed ? t("common:remove") : t("agents.hooks.install")}
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                  {/* Name the files BEFORE writing, not after, and offer the
-                      whole thing rather than a summary of it. */}
-                  {!blocked && (
-                    <button
-                      type="button"
-                      onClick={() => void toggleDetails(id)}
-                      className="self-start text-[12.5px] text-[var(--color-fg-dim)] underline decoration-dotted hover:text-[var(--color-fg)]"
-                    >
-                      {open === id ? t("agents.hooks.hideInstalls") : t("agents.hooks.showInstalls")}
-                    </button>
-                  )}
-                  {open === id && plan[id] && (() => {
-                    // One tab per FILE. Several events share a script (a
-                    // working hook fires on both UserPromptSubmit and
-                    // PreToolUse), so the scripts are grouped by path and the
-                    // events that use them are listed on the tab's own page.
-                    const p = plan[id];
-                    const scripts: { path: string; body: string; events: string[] }[] = [];
-                    for (const en of p.entries) {
-                      const hit = scripts.find(f => f.path === en.script_path);
-                      if (hit) hit.events.push(`${en.event} (${en.reports})`);
-                      else scripts.push({
-                        path: en.script_path,
-                        body: en.script_body,
-                        events: [`${en.event} (${en.reports})`],
-                      });
-                    }
-                    const files = [
-                      { path: p.config_path, body: p.config_fragment, events: [], config: true },
-                      ...scripts.map(f => ({ ...f, config: false })),
-                    ];
-                    const active = Math.min(planFile[id] ?? 0, files.length - 1);
-                    const file = files[active];
-                    return (
-                      <div className="flex flex-col gap-2 rounded bg-[var(--color-bg-subtle)] p-2 text-[12px]">
-                        <div className="flex flex-wrap gap-1">
-                          {files.map((f, i) => (
-                            <button
-                              key={f.path}
-                              type="button"
-                              title={tildePath(f.path, home)}
-                              onClick={() => setPlanFile(m => ({ ...m, [id]: i }))}
-                              className={cn(
-                                "rounded px-2 py-1 text-[11.5px] transition-colors",
-                                i === active
-                                  ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
-                                  : "text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)]",
-                              )}
-                            >
-                              {f.path.replace(/^.*\//, "")}
-                            </button>
-                          ))}
-                        </div>
-                        <div className="break-all text-[var(--color-fg-subtle)]">
-                          <code>{tildePath(file.path, home)}</code>
-                          {file.config && p.config_is_shared && ` (${t("agents.hooks.yoursMerges")})`}
-                        </div>
-                        {file.events.length > 0 && (
-                          <div className="text-[var(--color-fg-subtle)]">
-                            {t("agents.hooks.runsOn", { events: file.events.join(", ") })}
-                          </div>
-                        )}
-                        <pre className="max-h-[320px] overflow-auto whitespace-pre">{file.body}</pre>
-                        {file.config && p.notes.map((n, i) => (
-                          <p key={i} className="text-[var(--color-fg-subtle)]">{n}</p>
-                        ))}
-                      </div>
-                    );
-                  })()}
-                  {err && <p className="text-[12.5px] text-[var(--color-danger)]">{err}</p>}
-                </div>
-                  );
-            })}
+          <div className="flex flex-col overflow-hidden rounded-md border border-[var(--color-border)]">
+            {wirable.map((id, i) => (
+              <button
+                key={id}
+                type="button"
+                data-testid={`agent-hooks-row-${id}`}
+                data-installed={installed[id] ? "1" : "0"}
+                onClick={() => onSelectAgent(id)}
+                className={cn(
+                  "flex items-center justify-between gap-3 px-3 py-2 text-left hover:bg-[var(--color-hover)]",
+                  i > 0 && "border-t border-[var(--color-border-soft)]",
+                )}
+              >
+                <span className="text-[13.5px] font-medium">{agentDisplayName(id, agents)}</span>
+                <span className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">
+                  {installed[id]
+                    ? <Check className="h-3.5 w-3.5 text-[var(--color-ok)]" aria-hidden />
+                    : <CircleAlert className="h-3.5 w-3.5 text-[var(--color-warn)]" aria-hidden />}
+                  {installed[id] ? t("agents.hooks.rowHooks") : t("agents.hooks.rowTerminal")}
+                  <ChevronRight className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" aria-hidden />
+                </span>
+              </button>
+            ))}
           </div>
         </div>
       )}
