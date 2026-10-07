@@ -27,6 +27,7 @@ import { useTaskQuery } from "@/hooks/useTaskQuery";
 import { Spinner } from "@/components/ui/Spinner";
 import { Tip } from "@/components/ui/Tooltip";
 import { boardClauseState, toggleBoardClause } from "@/lib/boardFilter";
+import { STATUS_MARK_COLOR } from "@/lib/sidebarStatus";
 import type { BoardStateColumn } from "@/lib/taskBoardState";
 import type { WorkStatePrefs } from "@/lib/taskWorkState";
 import { cn } from "@/lib/utils";
@@ -46,12 +47,13 @@ function chipLabel(chip: StatusChip, t: (k: string) => string): string {
   }
 }
 
+// Colours from STATUS_MARK_COLOR, which the status section's bucket headers
+// share. The PR glyph is the theme's fg, not a PR-state colour: the column
+// means "has a PR", and green read as "checks passed".
 const ICON: Record<StatusChip, React.ReactNode> = {
-  attention: <Bell className="h-3 w-3 text-[var(--color-warn)]" strokeWidth={2.5} />,
-  working: <span className="text-[var(--color-fg-faint)]"><Spinner size={10} /></span>,
-  // the PR glyph in the theme's fg, not a PR-state colour: the column means
-  // "has a PR", and green read as "checks passed"
-  review: <GitPullRequest className="h-3 w-3 text-[var(--color-fg)]" />,
+  attention: <Bell className="h-3 w-3" style={{ color: STATUS_MARK_COLOR.attention }} strokeWidth={2.5} />,
+  working: <span style={{ color: STATUS_MARK_COLOR.working }}><Spinner size={10} /></span>,
+  review: <GitPullRequest className="h-3 w-3" style={{ color: STATUS_MARK_COLOR.review }} />,
 };
 
 export const StatusChips = memo(function StatusChips() {

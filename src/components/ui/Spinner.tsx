@@ -32,10 +32,15 @@ const TRACK_OPACITY = 0.25;
 
 export function Spinner({
   size = 12,
+  still,
   className,
 }: {
   /** Outer diameter in px. Even numbers only (see above). */
   size?: number;
+  /** Drawn without turning: the mark as a legend (the status section's
+   *  Working header), not a live agent. A header that spins forever would
+   *  claim the same thing every row under it already says, on every frame. */
+  still?: boolean;
   /** Applied to the svg. Colour comes from `currentColor`. */
   className?: string;
 }) {
@@ -49,10 +54,11 @@ export function Spinner({
     <svg
       aria-hidden
       data-mark="spinner"
+      data-still={still || undefined}
       width={size}
       height={size}
       viewBox={`0 0 ${size} ${size}`}
-      className={`termic-spin block shrink-0 ${className ?? ""}`}
+      className={`${still ? "" : "termic-spin "}block shrink-0 ${className ?? ""}`}
     >
       <circle
         cx={size / 2}

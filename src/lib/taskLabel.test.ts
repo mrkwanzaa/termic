@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, beforeEach } from "vitest";
-import { taskLabel, taskLabelIsBranch } from "./taskLabel";
+import { taskLabel, taskLabelIsBranch, taskLabelParts } from "./taskLabel";
 import { usePrefs } from "@/store/prefs";
 
 const worktree  = { name: "fix the login bug", branch: "feature/login-bug" };
@@ -46,6 +46,36 @@ describe("taskLabel", () => {
     // this, so it has to stay false rather than "technically the branch".
     expect(taskLabel(untouched, true)).toBe("feature/login-bug");
     expect(taskLabelIsBranch(untouched, true)).toBe(false);
+  });
+});
+
+describe("taskLabelParts", () => {
+  it("splits a branch label at its last slash", () => {
+    expect(taskLabelParts(worktree, true)).toEqual({ prefix: "feature/", leaf: "login-bug" });
+    expect(taskLabelParts({ name: "x", branch: "alice/feature/login" }, true))
+      .toEqual({ prefix: "alice/feature/", leaf: "login" });
+  });
+
+  it("splits a typed name that already IS the branch, pref on or off", () => {
+    expect(taskLabelParts(untouched, false)).toEqual({ prefix: "feature/", leaf: "login-bug" });
+    expect(taskLabelParts(untouched, true)).toEqual({ prefix: "feature/", leaf: "login-bug" });
+  });
+
+  it("leaves a typed name alone, slash or not", () => {
+    expect(taskLabelParts(worktree, false)).toEqual({ prefix: "", leaf: "fix the login bug" });
+    expect(taskLabelParts({ name: "fix a/b test", branch: "fix-ab" }, false))
+      .toEqual({ prefix: "", leaf: "fix a/b test" });
+  });
+
+  it("never splits a main checkout, even one named like a branch", () => {
+    const named = { name: "feature/x", branch: "feature/x", is_main_checkout: true };
+    expect(taskLabelParts(named, true)).toEqual({ prefix: "", leaf: "feature/x" });
+  });
+
+  it("keeps a branch with no slash, or nothing after one, whole", () => {
+    expect(taskLabelParts({ name: "develop", branch: "develop" }, true)).toEqual({ prefix: "", leaf: "develop" });
+    expect(taskLabelParts({ name: "x", branch: "odd/" }, true)).toEqual({ prefix: "", leaf: "odd/" });
+    expect(taskLabelParts({ name: "x", branch: "/odd" }, true)).toEqual({ prefix: "", leaf: "/odd" });
   });
 });
 

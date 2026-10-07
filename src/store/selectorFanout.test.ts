@@ -44,7 +44,7 @@ import { useAgentUsage, usageKey } from "@/store/agentUsage";
 import {
   createSidebarFactsSelector, createRowTabsSelector, tabRenderEqual, tabListRenderEqual,
   createStatusFactsSelector, createBoardFilterFactsSelector, selectStatusRowBadge, selectStatusRowDelegated,
-  selectStatusRowTabCount, selectStatusRowActiveChild, selectStatusGroupMarks,
+  selectStatusRowTabCount, selectStatusRowActiveChild, selectRollupMarks,
 } from "@/store/sidebarTabs";
 import { parseBoardQuery } from "@/lib/boardFilter";
 import { taskQueryNeeds } from "@/hooks/useTaskQuery";
@@ -594,6 +594,79 @@ describe("sidebar under streaming output (bear traps 5, 8)", () => {
   });
 });
 
+describe("collapsed project and folder marks (bear traps 5, 8)", () => {
+  // The tree's folded headers (RollupMarks): two collapsed projects of eight
+  // tasks each, inside one collapsed folder that holds all sixteen.
+  const TASKS = 16;
+  const ids = Array.from({ length: TASKS }, (_, i) => `rm-${i}`);
+  const main = (id: string) => `${id}-main`;
+  const PREFS = { settledHighlight: true, workingIndicator: true, attentionIndicator: true };
+  const projectA = ids.slice(0, 8);
+  const projectB = ids.slice(8);
+
+  beforeEach(() => {
+    useApp.setState({
+      tabs: Object.fromEntries(ids.map(id => [id, [
+        { ...tab(main(id)), is_default: true, ptyId: `pty-${id}` } as Tab,
+        tab(`${id}-shell`),
+      ]])),
+    });
+  });
+
+  /** perSub: [project A, project B, the folder]. */
+  const mountHeaders = () => [
+    selectRollupMarks(projectA, PREFS, true),
+    selectRollupMarks(projectB, PREFS, true),
+    selectRollupMarks(ids, PREFS, true),
+  ];
+
+  it("an output stamp, a live title and a sidebar drag reach no header", () => {
+    const subs = mountHeaders();
+    const stamps = measureFanout(subs, WRITES, i => {
+      const id = ids[i % TASKS];
+      useApp.getState().patchTab(id, main(id), { lastOutputAt: 1_000 + i });
+    });
+    expect(stamps.invalidations).toBe(0);
+    expect(stamps.selectorRuns).toBe(subs.length * WRITES);
+    expect(stamps.msPerWrite).toBeLessThan(MAX_MS_PER_WRITE);
+    expect(measureFanout(subs, 100, i =>
+      useApp.getState().setTabLiveTitle(ids[2], main(ids[2]), `thinking ${i}`)).invalidations).toBe(0);
+    expect(measureFanout(subs, WRITES, i =>
+      useApp.getState().setSidebarWidth(200 + (i % 120))).invalidations).toBe(0);
+  });
+
+  it("a turn starting reaches its project and its folder, once, and not the other project", () => {
+    const r = measureFanout(mountHeaders(), 1, () =>
+      useApp.getState().patchTab(ids[2], main(ids[2]), { workState: "working" }));
+    expect(r.perSub).toEqual([1, 0, 1]);
+  });
+
+  it("a second agent working where one already is moves no header: the SET of marks is the same", () => {
+    const subs = mountHeaders();
+    measureFanout(subs, 1, () => useApp.getState().patchTab(ids[2], main(ids[2]), { workState: "working" }));
+    const r = measureFanout(subs, 1, () =>
+      useApp.getState().patchTab(ids[5], main(ids[5]), { workState: "working" }));
+    expect(r.invalidations).toBe(0);
+  });
+
+  it("an agent blocked on the user reaches its project and its folder", () => {
+    const r = measureFanout(mountHeaders(), 1, () =>
+      useApp.getState().markAttention(ids[12], main(ids[12]), "attention"));
+    expect(r.perSub).toEqual([0, 1, 1]);
+  });
+
+  it("Sidebar.tsx draws the marks only on a FOLDED header", () => {
+    // Expanded, the rows carry their own badges, and an unmounted header
+    // costs no selector run at all.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const sidebar = readFileSync(resolve(here, "../components/sidebar/Sidebar.tsx"), "utf8");
+    expect(sidebar).toMatch(/\{collapsed && taskList\.length > 0 && \(\s*<RollupMarks /);
+    expect(sidebar).toMatch(/\{collapsed && grpWs\.length > 0 && \(\s*<RollupMarks /);
+    const marks = readFileSync(resolve(here, "../components/sidebar/RollupMarks.tsx"), "utf8");
+    expect(marks).toMatch(/selectRollupMarks\(/);
+  });
+});
+
 describe("tab render equality (sidebar rows)", () => {
   const base = { ...tab("t"), ptyId: "p", lastOutputAt: 1 } as Tab;
 
@@ -653,7 +726,7 @@ describe("status section under streaming output (bear traps 5, 8)", () => {
     ...ids.map(id => selectStatusRowTabCount(id)),
     ...ids.map(id => selectStatusRowActiveChild(id)),
     // A folded group of four of them: its caption's marks.
-    selectStatusGroupMarks(ids.slice(4, 8), PREFS, true),
+    selectRollupMarks(ids.slice(4, 8), PREFS, true),
   ];
 
   const stamp = (i: number) => {
