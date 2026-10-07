@@ -1016,6 +1016,36 @@ the sandbox config get.
 It was inline above the form first. That put a 220px scrolling list inside a
 dialog you were already scrolling, and hid the effect of a pick below the fold.
 
+### The PR picker lists two things, both scoped to you
+
+"From a PR" shows your own open PRs and, under them, the open PRs waiting
+on your review (`gh pr list --search review-requested:@me`, so a request to
+a team you are on counts, as on GitHub's own Review requests tab). Still not
+a repo-wide browser: both lists are about you, so they stay short on a busy
+repo, and anything else is reached by pasting its number.
+
+The review list is a second `project_forge_prs` call (`review: true`) fired
+beside the first, never before it. It renders BELOW your own PRs, because it
+lands on its own clock and a list that arrives late must not push down a row
+you are about to click. It draws only for an `ok` status with rows: a forge
+that cannot be reached is already explained by the first list, and saying it
+twice is noise. GitHub only; GitLab has no picker list at all yet, and
+Azure's reviewer filter wants an identity id rather than `@me`, so both
+answer an empty list and the section stays hidden.
+
+Picking a PR from either list is the same pick: fetch the head, then check
+it out. Firing a review at it is the prompt library's Review entry, by hand.
+
+The issue column has the matching half as chips over the list: **All**,
+**Assigned to you** (`--assignee @me`) and **Mentions you** (`--search
+mentions:@me`, a search qualifier because `gh issue list` has no mention
+flag). Chips, not extra lists: the repo's list is long, so a list appended
+under it would sit below the fold, and a chip only changes the list when
+you click it. Each click refetches with a sequence number so a slow answer
+for a scope you already left cannot overwrite the one you picked. The
+column starts back on All every time it is entered. GitHub only, for the
+same reason as the review list.
+
 ### The new-task dialog has TWO columns and TWO widths
 
 Left is the form. Right is whatever context the chosen source needs (the issue

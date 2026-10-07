@@ -9,7 +9,7 @@ import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, CreateMultiMember, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, UpdateAllItem, FileEntry, Agent, RepoConfig,
   SandboxMode, TaskDiffSummary, TaskDiffStat, DesktopIntegration, CliInstallStatus, McpStatus, BranchContext, PrPickList, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
-  ForgeCliStatus, ForgeProvider, PrLookup, MemberPrLookup, PrComment, IssueLookup, AgentHookStatus, HookPlan,
+  ForgeCliStatus, ForgeProvider, PrLookup, MemberPrLookup, PrComment, IssueLookup, IssueScope, AgentHookStatus, HookPlan,
   ProfileView, ProfilesView, ProfileDeletePreview, AgentAccountsView, ExternalAppInfo,
   SyncStatus, SyncConnectInfo, SyncChange, SyncPrefsSnapshot, SyncRunResult,
 } from "./types";
@@ -941,14 +941,15 @@ export const projectForgeProvider = (projectId: string) =>
     "project_forge_provider", { projectId });
 /** Open issues for a PROJECT's repo (the New Task dialog runs before any
  *  task exists). Network-bound via the forge CLI. */
-export const projectForgeIssues = (projectId: string, limit?: number) =>
-  invoke<IssueLookup>("project_forge_issues", { projectId, limit: limit ?? null });
+export const projectForgeIssues = (projectId: string, limit?: number, scope?: IssueScope) =>
+  invoke<IssueLookup>("project_forge_issues", { projectId, limit: limit ?? null, scope: scope ?? null });
 
 /** YOUR open PRs for a project's repo, or one PR by number. See `ForgePr` for
- *  why the list is only yours. */
-export const projectForgePrs = (projectId: string, opts?: { limit?: number; number?: number }) =>
+ *  why the list is only yours. `review` lists the open PRs waiting on your
+ *  review instead (GitHub only; other forges answer an empty list). */
+export const projectForgePrs = (projectId: string, opts?: { limit?: number; number?: number; review?: boolean }) =>
   invoke<PrPickList>("project_forge_prs", {
-    projectId, limit: opts?.limit ?? null, number: opts?.number ?? null,
+    projectId, limit: opts?.limit ?? null, number: opts?.number ?? null, review: opts?.review ?? null,
   });
 
 /** Fetch a PR's head into a local branch and get its name back, so the

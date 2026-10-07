@@ -1662,26 +1662,64 @@ pub struct ForgeIssue {
 
 /// Open issues for `cwd`'s repo, newest-updated first. Network-bound via
 /// the forge CLI, so callers must spawn_blocking.
-pub fn issue_list(provider: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgeIssue>, ForgeError> {
+/// Which open issues the picker asks for. `All` is the repo's list; the other
+/// two are about the signed-in user, the issue half of "work somebody pulled
+/// me into" (the PR half is `pr_list_review_requested`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IssueScope {
+    All,
+    /// Assigned to the user.
+    Assigned,
+    /// The user is @-mentioned in the issue or one of its comments.
+    Mentions,
+}
+
+impl IssueScope {
+    /// The IPC spelling. Anything unknown is the whole list, so an older
+    /// webview that sends nothing keeps today's behaviour.
+    pub fn parse(s: Option<&str>) -> Self {
+        match s {
+            Some("assigned") => IssueScope::Assigned,
+            Some("mentions") => IssueScope::Mentions,
+            _ => IssueScope::All,
+        }
+    }
+}
+
+/// GitHub only. GitLab and Azure answer the narrowed scopes with an empty
+/// list, and the picker shows no scope chips for them.
+pub fn issue_list(provider: &str, cwd: &Path, limit: u32, scope: IssueScope) -> Result<Vec<ForgeIssue>, ForgeError> {
+    if scope != IssueScope::All && provider != GITHUB {
+        return Ok(Vec::new());
+    }
     let cli = cli_for_provider(provider);
     let bin = reprobe_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
     match provider {
         GITLAB => gitlab_issue_list(&bin, cwd, limit),
         AZURE => azure_issue_list(&bin, cwd, limit),
-        _ => github_issue_list(&bin, cwd, limit),
+        _ => github_issue_list(&bin, cwd, limit, scope),
     }
 }
 
-fn github_issue_list(bin: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgeIssue>, ForgeError> {
+const GITHUB_ISSUE_JSON_FIELDS: &str = "number,title,url,body,author,comments,labels,updatedAt";
+
+/// `gh issue list` arguments for a scope. Split out so each scope's query is
+/// pinned by a test without a `gh` on the machine. `mentions:` is a search
+/// qualifier, so it goes through `--search`; `--assignee @me` is a flag.
+fn github_issue_args(limit: &str, scope: IssueScope) -> Vec<&str> {
+    let mut a = vec!["issue", "list", "--state", "open", "--limit", limit];
+    match scope {
+        IssueScope::All => {}
+        IssueScope::Assigned => a.extend(["--assignee", "@me"]),
+        IssueScope::Mentions => a.extend(["--search", "mentions:@me"]),
+    }
+    a.extend(["--json", GITHUB_ISSUE_JSON_FIELDS]);
+    a
+}
+
+fn github_issue_list(bin: &str, cwd: &Path, limit: u32, scope: IssueScope) -> Result<Vec<ForgeIssue>, ForgeError> {
     let n = limit.to_string();
-    let o = run(
-        bin,
-        &[
-            "issue", "list", "--state", "open", "--limit", &n,
-            "--json", "number,title,url,body,author,comments,labels,updatedAt",
-        ],
-        Some(cwd),
-    )
+    let o = run(bin, &github_issue_args(&n, scope), Some(cwd))
     .map_err(|e| ForgeError::Other(e.to_string()))?;
     if !o.status.success() {
         let err = stderr_of(&o).to_lowercase();
@@ -1722,8 +1760,9 @@ fn parse_github_issues(v: &serde_json::Value) -> Vec<ForgeIssue> {
 
 /// One pull request, enough for the picker and for composing a prompt.
 ///
-/// Deliberately NOT a general PR search. The picker lists only the signed-in
-/// user's own open PRs, because "every open PR" is unusable at real scale: the
+/// Deliberately NOT a general PR search. The picker lists only PRs about the
+/// signed-in user (their own, and the ones waiting on their review), because
+/// "every open PR" is unusable at real scale: the
 /// maintainer's day job has ~1,300 of them, and a list that long is slower to
 /// fetch, slower to read and never what you wanted anyway. Anything else is
 /// reached by typing its number, which is one API call rather than a page.
@@ -1776,6 +1815,36 @@ pub fn pr_list_mine(provider: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgeP
             Ok(parse_github_prs(&v))
         }
     }
+}
+
+/// `gh pr list` arguments for the open PRs waiting on the signed-in user's
+/// review. `review-requested:` matches a request to the user OR to a team they
+/// are on, which is what GitHub's own "Review requests" tab shows. Split out so
+/// the query is pinned by a test without a `gh` on the machine.
+fn review_requested_args(limit: &str) -> [&str; 10] {
+    ["pr", "list", "--search", "review-requested:@me", "--state", "open",
+     "--limit", limit, "--json", PR_JSON_FIELDS]
+}
+
+/// Open PRs somebody asked the signed-in user to review. The second list the
+/// picker shows, still scoped to the user rather than the repo, so it stays
+/// small for the same reason `pr_list_mine` does. GitHub only: GitLab has no
+/// picker list at all yet, and Azure's reviewer filter wants an identity id
+/// rather than `@me`. Both answer an empty list, which the picker hides.
+pub fn pr_list_review_requested(provider: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgePr>, ForgeError> {
+    if provider != GITHUB {
+        return Ok(Vec::new());
+    }
+    let bin = reprobe_bin(cli_for_provider(provider)).ok_or(ForgeError::CliMissing(cli_for_provider(provider)))?;
+    let n = limit.to_string();
+    let o = run(&bin, &review_requested_args(&n), Some(cwd))
+        .map_err(|e| ForgeError::Other(e.to_string()))?;
+    if !o.status.success() {
+        return Err(classify_failure(GITHUB, &o));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout)
+        .map_err(|e| ForgeError::Other(format!("gh returned unparseable JSON: {e}")))?;
+    Ok(parse_github_prs(&v))
 }
 
 /// One PR by number, for the "paste a number" path. The number may be typed,
@@ -2312,6 +2381,57 @@ code.internal.acme.com configured to use ssh protocol.\n";
         assert_eq!(prs.len(), 1);
         assert_eq!(prs[0].number, 99);
         assert_eq!(prs[0].head_ref, "paste-me");
+    }
+
+    #[test]
+    fn issue_scopes_build_the_right_gh_query() {
+        let all = github_issue_args("50", IssueScope::All).join(" ");
+        assert_eq!(all, format!("issue list --state open --limit 50 --json {GITHUB_ISSUE_JSON_FIELDS}"));
+        // Assigned is a flag, mentions is a search qualifier: `gh issue list`
+        // has no --mention flag, so it can only be said through --search.
+        let assigned = github_issue_args("50", IssueScope::Assigned).join(" ");
+        assert!(assigned.contains("--state open --limit 50 --assignee @me --json"));
+        let mentions = github_issue_args("50", IssueScope::Mentions).join(" ");
+        assert!(mentions.contains("--state open --limit 50 --search mentions:@me --json"));
+    }
+
+    #[test]
+    fn issue_scope_parsing_defaults_to_all() {
+        assert_eq!(IssueScope::parse(Some("assigned")), IssueScope::Assigned);
+        assert_eq!(IssueScope::parse(Some("mentions")), IssueScope::Mentions);
+        // An older webview sends nothing, and a typo must not narrow the list.
+        assert_eq!(IssueScope::parse(None), IssueScope::All);
+        assert_eq!(IssueScope::parse(Some("mine")), IssueScope::All);
+    }
+
+    #[test]
+    fn narrowed_issue_scopes_are_github_only() {
+        let cwd = std::env::temp_dir();
+        for scope in [IssueScope::Assigned, IssueScope::Mentions] {
+            assert!(issue_list(GITLAB, &cwd, 10, scope).unwrap().is_empty());
+            assert!(issue_list(AZURE, &cwd, 10, scope).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn review_requested_asks_gh_for_open_prs_awaiting_me() {
+        // The query IS the feature: `review-requested:` (not
+        // `user-review-requested:`) so a team request counts, open only, and
+        // the same JSON fields the shared parser reads.
+        let a = review_requested_args("30");
+        let joined = a.join(" ");
+        assert!(joined.starts_with("pr list --search review-requested:@me --state open"));
+        assert!(joined.contains("--limit 30"));
+        assert!(joined.ends_with(&format!("--json {PR_JSON_FIELDS}")));
+    }
+
+    #[test]
+    fn review_requested_is_github_only_and_empty_elsewhere() {
+        // GitLab and Azure answer an empty list without ever looking for a
+        // CLI, so the picker simply shows no second section for them.
+        let cwd = std::env::temp_dir();
+        assert_eq!(pr_list_review_requested(GITLAB, &cwd, 10).unwrap(), Vec::new());
+        assert_eq!(pr_list_review_requested(AZURE, &cwd, 10).unwrap(), Vec::new());
     }
 
     #[test]

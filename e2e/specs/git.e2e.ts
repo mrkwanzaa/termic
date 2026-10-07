@@ -2721,3 +2721,133 @@ describe("the route into an issue task", () => {
     await browser.execute(() => window.__termic!.useUI.getState().closeNewTask());
   });
 });
+
+// The PR pane asks two questions at once: your open PRs, and the ones waiting
+// on your review. The fixture's remote is a local bare repo, not a forge, so
+// what can be exercised here is the pane opening, both lookups answering, and
+// the review section staying out of the way when its lookup is not "ok". The
+// `gh` query itself is pinned in forge.rs; a populated list needs a real
+// GitHub repo and is a manual check.
+describe("the forge pickers: work that pulled you in", () => {
+  let projectId!: string;
+  after(async () => {
+    await browser.execute((id) => {
+      window.__termic!.useUI.getState().closeNewTask();
+      const pr = window.__termic!.usePr;
+      const next = { ...pr.getState().providerByProject };
+      delete next[id];
+      pr.setState({ providerByProject: next });
+    }, projectId);
+  });
+
+  it("opens the PR pane with no review section on a repo with no forge", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    projectId = await browser.execute(() => {
+      const t = window.__termic!;
+      return t.useApp.getState().projects.find((p: any) => p.name === "fixture-repo")!.id as string;
+    });
+    // The "From a PR" tab only shows once a forge is known for the project.
+    // Seeded, because the fixture has none; the Rust side still resolves the
+    // provider from the real remote, which is what the pane then reports.
+    // AFTER the dialog's own resolveProvider has answered: it writes `null`
+    // for this remote, and a seed placed before it would be overwritten.
+    await browser.execute((id) => window.__termic!.useUI.getState().openNewTask(id), projectId);
+    await browser.waitUntil(
+      () => browser.execute((id) => id in window.__termic!.usePr.getState().providerByProject, projectId),
+      { timeout: 10_000, timeoutMsg: "the dialog never resolved the project's forge" },
+    );
+    await browser.execute((id) => {
+      const pr = window.__termic!.usePr;
+      pr.setState({ providerByProject: { ...pr.getState().providerByProject, [id]: "github" } });
+    }, projectId);
+    await clickWhenVisible('[data-source-tab="pr"]');
+    await waitVisible('[data-testid="pr-column"]');
+    await waitForText("Your open pull requests, and the ones waiting on your review.");
+    // The first lookup lands as a sentence, never a list...
+    await browser.waitUntil(
+      () => browser.execute(() => {
+        const col = document.querySelector('[data-testid="pr-column"]') as HTMLElement | null;
+        return !!col && /not a GitHub, GitLab, or Azure DevOps host|No git remote/.test(col.innerText);
+      }),
+      { timeout: 15_000, timeoutMsg: "the PR lookup never reported the fixture's remote" },
+    );
+    expect(await browser.execute(() => document.querySelectorAll('[data-testid="pr-row"]').length)).toBe(0);
+    // ...and the review lookup adds nothing. It may still be in flight, which
+    // does not matter: on this remote it can only answer a non-"ok" status,
+    // and the section draws for "ok" with rows and nothing else.
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="pr-review-section"]'))).toBe(false);
+    await snap("pr-pane-no-forge.png");
+  });
+
+  it("leaving the PR source closes the pane", async () => {
+    await clickWhenVisible('[data-source-tab="new"]');
+    await waitGone('[data-testid="pr-column"]');
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="pr-review-section"]'))).toBe(false);
+  });
+
+  // The issue half of "work that pulled you in": scope chips over the issue
+  // list. Still the GitHub-seeded fixture, so each scope's fetch answers the
+  // same non-forge sentence; what is under test is the chips themselves.
+  const pressedScope = () =>
+    browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="issue-scope"] [data-issue-scope]')]
+        .filter((b) => b.getAttribute("aria-pressed") === "true")
+        .map((b) => b.getAttribute("data-issue-scope")),
+    );
+  const issueColumnSays = (re: RegExp) =>
+    browser.waitUntil(
+      () => browser.execute((src) => {
+        const col = document.querySelector('[data-testid="issue-column"]') as HTMLElement | null;
+        return !!col && new RegExp(src).test(col.innerText);
+      }, re.source),
+      { timeout: 15_000, timeoutMsg: `the issue column never said ${re}` },
+    );
+
+  it("offers All / Assigned to you / Mentions you, starting on All", async () => {
+    await clickWhenVisible('[data-source-tab="issue"]');
+    await waitVisible('[data-testid="issue-scope"]');
+    const labels = await browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="issue-scope"] [data-issue-scope]')]
+        .map((b) => (b as HTMLElement).innerText.trim()),
+    );
+    expect(labels).toEqual(["All", "Assigned to you", "Mentions you"]);
+    expect(await pressedScope()).toEqual(["all"]);
+    // Pressed has to be SEEN, not just carried in aria-pressed: measured,
+    // because in a screenshot a faint fill on this pane reads as no fill.
+    const fills = await browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="issue-scope"] [data-issue-scope]')]
+        .map((b) => getComputedStyle(b as HTMLElement).backgroundColor),
+    );
+    expect(fills[0]).not.toBe(fills[1]);
+    await issueColumnSays(/not a GitHub, GitLab, or Azure DevOps host|No git remote/);
+    // Here, not after a chip click: a snap taken right after a click catches
+    // the 150ms transition-colors mid-flight and shows no pressed fill at all,
+    // which reads as a bug the measurement above says is not there.
+    await snap("issue-scope-chips.png");
+  });
+
+  it("switches scope on click, one pressed at a time, and fetches again", async () => {
+    for (const scope of ["assigned", "mentions", "all"]) {
+      await clickWhenVisible(`[data-testid="issue-scope"] [data-issue-scope="${scope}"]`);
+      await browser.waitUntil(async () => (await pressedScope()).join() === scope, {
+        timeout: 5_000, timeoutMsg: `scope ${scope} never became the pressed one`,
+      });
+      // The refetch for this scope lands as the same sentence, not an empty
+      // "nothing assigned to you", which would misreport an unreachable forge.
+      await issueColumnSays(/not a GitHub, GitLab, or Azure DevOps host|No git remote/);
+    }
+  });
+
+  it("re-entering the issue source starts back on All", async () => {
+    await clickWhenVisible('[data-testid="issue-scope"] [data-issue-scope="mentions"]');
+    await browser.waitUntil(async () => (await pressedScope()).join() === "mentions", {
+      timeout: 5_000, timeoutMsg: "mentions never pressed",
+    });
+    await clickWhenVisible('[data-source-tab="new"]');
+    await waitGone('[data-testid="issue-column"]');
+    await clickWhenVisible('[data-source-tab="issue"]');
+    await waitVisible('[data-testid="issue-scope"]');
+    expect(await pressedScope()).toEqual(["all"]);
+  });
+});
