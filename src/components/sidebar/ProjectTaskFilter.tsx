@@ -1,10 +1,14 @@
 // Project-row filter controls (GH #324). The header's hover bar carries ONE
-// filter icon, left of the settings cog, lit while any filter is on. It opens
+// filter icon, left of the project menu, lit while any filter is on. It opens
 // a bar on its own line under the header: the text input, with the
 // notifications bell to its right. Its own line so a long project name keeps
 // its room. The matching itself is in lib/taskFilter.ts; these only edit the
 // per-project filter in the ui store. Whether the bar is open is the
 // sidebar's local state, since the icon and the bar both read it.
+//
+// A non-empty sidebar query takes over from every project filter: the filter
+// is kept, its bar hidden, and its icon pinned with a slash through it until
+// the query clears (docs/ui.md "The sidebar's filter bar").
 
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
@@ -17,17 +21,19 @@ const iconBtn = "rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-
 const litBtn = "bg-[var(--color-bg-3)] text-[var(--color-accent)] hover:text-[var(--color-accent)]";
 
 /** The header's filter icon. Lit while a filter is active (bell or text),
- *  which is what tells the user rows are hidden. */
-export function ProjectFilterToggle({ projectId, active, revealed, onToggle }: {
+ *  which is what tells the user rows are hidden. Slashed and inert while
+ *  paused: the filter exists but the sidebar query has taken over. */
+export function ProjectFilterToggle({ projectId, active, paused = false, revealed, onToggle }: {
   projectId: string;
   active: boolean;
+  paused?: boolean;
   /** Keep the header's controls visible without hover. */
   revealed: boolean;
   onToggle: () => void;
 }) {
   const { t } = useTranslation("sidebar");
   return (
-    <Tip content={active ? t("taskFilter.tipActive") : t("taskFilter.tip")}>
+    <Tip content={paused ? t("taskFilter.paused") : active ? t("taskFilter.tipActive") : t("taskFilter.tip")}>
       <button
         aria-label={t("taskFilter.tip")}
         aria-pressed={active}
@@ -36,16 +42,22 @@ export function ProjectFilterToggle({ projectId, active, revealed, onToggle }: {
         // rather than computed opacity, which also depends on where the real
         // pointer happens to be.
         data-pinned={revealed}
+        data-paused={paused || undefined}
+        aria-disabled={paused || undefined}
         className={cn(
           iconBtn, "transition-opacity",
           revealed ? "opacity-100" : "opacity-0 group-hover:opacity-100",
           active && litBtn,
+          paused && "cursor-default hover:bg-transparent hover:text-[var(--color-fg-faint)]",
         )}
         // Keep focus in an open input: its blur would fold the bar away
         // before this click could decide what to do with it.
         onMouseDown={e => e.preventDefault()}
-        onClick={e => { e.stopPropagation(); onToggle(); }}
-      ><ListFilter className="h-4 w-4" /></button>
+        onClick={e => { e.stopPropagation(); if (!paused) onToggle(); }}
+      >
+        {/* the slash is drawn the way lucide draws its own -off icons */}
+        <ListFilter className="h-4 w-4">{paused && <path d="m2 2 20 20" />}</ListFilter>
+      </button>
     </Tip>
   );
 }

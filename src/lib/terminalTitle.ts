@@ -1,23 +1,40 @@
+/** A leading run of spinner frames. A frame is ONE symbol that is not a
+ *  letter, a number or ASCII punctuation, followed by whitespace: that is
+ *  the shape claude writes, and the alphabet is not stable (Braille
+ *  U+2800..U+28FF, the circle family ◐◑◒◓ and the star family ✢✶✻✽, ·
+ *  have all shipped). Requiring the space is what keeps a title's own
+ *  leading `「`, `¿`, `“` or `…`, which sit against the word they open.
+ *  Letters in any script survive, and so does ASCII punctuation (`#12 fix`,
+ *  `[wip]`). ponytail: an emoji followed by a space reads as a frame;
+ *  exclude `\p{Extended_Pictographic}` if claude titles start carrying them. */
+const SPINNER_RUN = /^\s*(?:[^\p{L}\p{N}\s\x21-\x7e]\s+)+/u;
+
 /**
- * Remove Claude Code's leading status glyphs from a live terminal title.
+ * Remove Claude Code's leading glyphs from a live terminal title, so each
+ * thing the row says, it says once (docs/ui.md "One glyph per meaning").
  *
- * Claude prefixes idle titles with ✳ and working titles with one or more
- * Braille spinner glyphs. We only hide those prefixes when Termic is already
- * showing its own working indicator, so users with the indicator disabled
- * still retain Claude's built-in state signal.
+ * Claude prefixes an idle title with ✳ and a working one with a spinner
+ * frame (see SPINNER_RUN). The ✳ only says "this is claude", which the brand icon
+ * beside every title already says, so it always goes. The spinner says
+ * "working", so it goes only while Termic draws its own working badge
+ * (`termicShowsWork`, the workingIndicator pref): with that off it is the
+ * user's only working signal. Its removal does not depend on the tab's
+ * current state, so a tab needing attention whose title still spins does not
+ * show both.
+ *
+ * `iconId` is the RESOLVED icon (`resolveIconId`), so a cloned agent such
+ * as `claude-dpf` is treated as the claude it draws as.
  */
 export function formatTerminalTitle(
   title: string,
-  cli: string,
-  hideClaudeStatusGlyph: boolean,
+  iconId: string,
+  termicShowsWork: boolean,
 ): string {
-  if (cli !== "claude" || !hideClaudeStatusGlyph) {
-    return title;
-  }
-
-  return title
-    .replace(/^\s*✳\s*/, "")
-    .replace(/^\s*[\u2800-\u28ff](?:\s+[\u2800-\u28ff])*\s*/, "");
+  if (iconId !== "claude") return title;
+  const noBrand = title.replace(/^\s*✳\s*/, "");
+  const out = termicShowsWork ? noBrand.replace(SPINNER_RUN, "") : noBrand;
+  // a title that was nothing but glyphs keeps them rather than going blank
+  return out || title;
 }
 
 /**

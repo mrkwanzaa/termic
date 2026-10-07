@@ -46,7 +46,8 @@ import {
   createStatusFactsSelector, createBoardFilterFactsSelector, selectStatusRowBadge, selectStatusRowDelegated,
   selectStatusRowTabCount, selectStatusRowActiveChild, selectStatusGroupMarks,
 } from "@/store/sidebarTabs";
-import { selectBoardColumnKey } from "@/lib/boardColumnKey";
+import { parseBoardQuery } from "@/lib/boardFilter";
+import { taskQueryNeeds } from "@/hooks/useTaskQuery";
 import type { AppState } from "@/store/app";
 import type { Tab, Task, TerminalTab } from "@/lib/types";
 
@@ -333,12 +334,11 @@ describe("selector fan-out budget (bear trap 5)", () => {
 
   // ── Board view column key (GH #318) ────────────────────────────────
   //
-  // BoardView holds ONE subscription for the whole board's column
-  // assignment (`selectBoardColumnKey`), deliberately string-keyed so the
-  // board re-renders when a card changes column and only then. These three
-  // cases pin that: unrelated writes cost nothing, per-keystroke tab writes
-  // that move no badge cost nothing, and a real column change costs exactly
-  // one invalidation.
+  // The board's columns come from useTaskQuery's column map over per-task
+  // status facts (`createStatusFactsSelector`), the same record the sidebar's
+  // status chips hold. These three cases pin it for the board's shape:
+  // unrelated writes cost nothing, tab writes that move no badge cost
+  // nothing, and a real column change costs exactly one invalidation.
 
   const boardTask = (id: string): Task => ({
     id, project_id: "p1", name: id, branch: id, base_branch: "main",
@@ -351,7 +351,7 @@ describe("selector fan-out budget (bear trap 5)", () => {
       tasks: [boardTask("b1"), boardTask("b2")],
       tabs: { b1: [tab("b1-t")], b2: [tab("b2-t")] },
     });
-    const subs = [selectBoardColumnKey({ settledHighlight: true, workingIndicator: true })];
+    const subs = [createStatusFactsSelector()];
 
     const r = measureFanout(subs, WRITES, i =>
       useApp.getState().setSidebarWidth(200 + (i % 120)));
@@ -365,11 +365,11 @@ describe("selector fan-out budget (bear trap 5)", () => {
       tasks: [boardTask("b1")],
       tabs: { b1: [tab("b1-t")] },
     });
-    const subs = [selectBoardColumnKey({ settledHighlight: true, workingIndicator: true })];
+    const subs = [createStatusFactsSelector()];
 
     // A title churn (the per-keystroke case: liveTitle updates land here)
-    // changes the tab object but not the work badge, so the string key is
-    // identical and the board does not re-render.
+    // changes the tab object but not the work facts, so the record keeps its
+    // identity and the board does not re-render.
     const r = measureFanout(subs, 100, i => {
       const s = useApp.getState();
       useApp.setState({ tabs: { ...s.tabs, b1: [{ ...tab("b1-t"), title: `t${i}` }] } });
@@ -383,7 +383,7 @@ describe("selector fan-out budget (bear trap 5)", () => {
       tasks: [boardTask("b1")],
       tabs: { b1: [tab("b1-t")] },
     });
-    const subs = [selectBoardColumnKey({ settledHighlight: true, workingIndicator: true })];
+    const subs = [createStatusFactsSelector()];
 
     const r = measureFanout(subs, 1, () => {
       const s = useApp.getState();
@@ -735,6 +735,154 @@ describe("status section under streaming output (bear traps 5, 8)", () => {
     // Mounted only with the pref on and never on the icon rail, so the off
     // state costs no subscription at all.
     const sidebar = readFileSync(resolve(here, "../components/sidebar/Sidebar.tsx"), "utf8");
-    expect(sidebar).toMatch(/!compact && showStatusSection && <StatusSection \/>/);
+    expect(sidebar).toMatch(/!compact && showStatusSection && <StatusSection[ />]/);
+  });
+});
+
+// ── The status chips while agents stream ───────────────────────────────
+//
+// The chips count tasks by board column, and one of the facts behind a
+// column (`untouched`) reads `lastInputAt`, a field the tree's rows hold back.
+// So they keep a facts record of their own, and these counts pin what that
+// buys: timestamps and titles reach nothing, a real column change reaches the
+// chips, and the Sidebar BODY never pays for their facts.
+
+describe("status chips under streaming output (bear traps 5, 8)", () => {
+  const TASKS = 16;
+  const ids = Array.from({ length: TASKS }, (_, i) => `st-${i}`);
+  const main = (id: string) => `${id}-main`;
+  const OWNER = 5;
+  const owner = ids[OWNER];
+
+  beforeEach(() => {
+    useApp.setState({
+      tabs: Object.fromEntries(ids.map(id => [id, [
+        { ...tab(main(id)), is_default: true, ptyId: `pty-${id}` } as Tab,
+        tab(`${id}-shell`),
+      ]])),
+    });
+  });
+
+  /** The mounted chips: one facts selector (inside useTaskQuery), and
+   *  nothing per task. */
+  const mountChips = () => [createStatusFactsSelector()];
+
+  const stamp = (i: number) => {
+    const id = ids[i % TASKS];
+    useApp.getState().patchTab(id, main(id), { lastOutputAt: 1_000 + i });
+  };
+
+  it("an output stamp invalidates nothing", () => {
+    const subs = mountChips();
+    const r = measureFanout(subs, WRITES, stamp);
+    expect(r.invalidations).toBe(0);
+    expect(r.msPerWrite).toBeLessThan(MAX_MS_PER_WRITE);
+  });
+
+  it("a live title reaches nothing", () => {
+    const r = measureFanout(mountChips(), 100, i =>
+      useApp.getState().setTabLiveTitle(owner, main(owner), `thinking ${i}`));
+    expect(r.invalidations).toBe(0);
+  });
+
+  it("a sidebar drag invalidates nothing", () => {
+    const r = measureFanout(mountChips(), WRITES, i =>
+      useApp.getState().setSidebarWidth(200 + (i % 120)));
+    expect(r.invalidations).toBe(0);
+  });
+
+  it("a task's FIRST input moves its column, and only the first", () => {
+    // The fact useRowTabs cannot see: lastInputAt is in ROW_HIDDEN_TAB_FIELDS.
+    const subs = mountChips();
+    const first = measureFanout(subs, 1, () =>
+      useApp.getState().patchTab(owner, main(owner), { lastInputAt: 2_000 }));
+    expect(first.invalidations).toBe(1);
+    const again = measureFanout(subs, 50, i =>
+      useApp.getState().patchTab(owner, main(owner), { lastInputAt: 3_000 + i }));
+    expect(again.invalidations).toBe(0);
+  });
+
+  it("an agent starting a turn reaches the chips once", () => {
+    const r = measureFanout(mountChips(), 1, () =>
+      useApp.getState().patchTab(owner, main(owner), { workState: "working" }));
+    expect(r.invalidations).toBe(1);
+  });
+
+  it("an agent starting a turn does NOT reach the Sidebar body", () => {
+    // Why the chips' facts are a record of their own: as fields on
+    // SidebarTaskFacts, every idle -> working flip would re-render the body.
+    const r = measureFanout([createSidebarFactsSelector()], 1, () =>
+      useApp.getState().patchTab(owner, main(owner), { workState: "working" }));
+    expect(r.invalidations).toBe(0);
+  });
+
+  it("an agent blocked on the user reaches the chips", () => {
+    const r = measureFanout(mountChips(), 1, () =>
+      useApp.getState().markAttention(owner, main(owner), "attention"));
+    expect(r.invalidations).toBe(1);
+  });
+
+  it("StatusChips.tsx holds its own facts and never the tabs map", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(resolve(here, "../components/sidebar/StatusChips.tsx"), "utf8");
+    expect(src).not.toMatch(/=>\s*s\.tabs\s*\)/);
+    expect(src).not.toMatch(/selectTaskTabs|useRowTabs/);
+    // its columns come from useTaskQuery, whose column facts are the record above
+    expect(src).toMatch(/useTaskQuery\(\{[^}]*alwaysColumns: true/);
+    const hook = readFileSync(resolve(here, "../hooks/useTaskQuery.tsx"), "utf8");
+    expect(hook).toMatch(/useState\(createStatusFactsSelector\)/);
+    // Its own memoized component, so a count moving re-renders the chips and
+    // not the Sidebar body; never on the icon rail.
+    expect(src).toMatch(/export const StatusChips = memo\(/);
+    const sidebar = readFileSync(resolve(here, "../components/sidebar/Sidebar.tsx"), "utf8");
+    // Never alongside the section, which lists the same buckets, and inside
+    // the row that is itself gated off the icon rail.
+    expect(sidebar).toMatch(/\{!compact && \(\s*<div[^>]*>\s*\{!showStatusSection && <StatusChips \/>\}/);
+  });
+});
+
+describe("sidebar filter bar with no query (bear trap 5)", () => {
+  // The Sidebar body calls useTaskQuery on every render, query or not. Each
+  // subscription it adds must select a constant until the query (or the
+  // open menu) reads it, or an empty bar would re-render the body on every
+  // PR poll, diffstat and tab write. `taskQueryNeeds` is the gate every one
+  // of those subscriptions goes through.
+  const needs = (text: string, menuOpen = false, alwaysColumns = false) =>
+    taskQueryNeeds(parseBoardQuery(text), menuOpen, alwaysColumns);
+
+  it("an empty, closed bar needs nothing", () => {
+    expect(needs("")).toEqual({
+      filtering: false, watching: false, columns: false, pr: false, checks: false, changes: false, freeText: false,
+    });
+  });
+
+  it("free text needs the PR trigger and text facts, and no columns", () => {
+    expect(needs("login")).toMatchObject({ watching: true, pr: true, freeText: true, columns: false, changes: false });
+  });
+
+  it("columns only for `status:`, the open menu, or a caller that lays them out", () => {
+    expect(needs("status:working").columns).toBe(true);
+    expect(needs("project:web").columns).toBe(false);
+    expect(needs("", true).columns).toBe(true);
+    expect(needs("", false, true)).toMatchObject({ columns: true, pr: true, watching: false, changes: false });
+  });
+
+  it("checks and diffstats only while something reads them", () => {
+    expect(needs("pr:open").checks).toBe(false);
+    expect(needs("checks:failing").checks).toBe(true);
+    expect(needs("has:changes").changes).toBe(true);
+    expect(needs("", true)).toMatchObject({ checks: true, changes: true });
+  });
+
+  it("every subscription in the hook goes through the gate", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const hook = readFileSync(resolve(here, "../hooks/useTaskQuery.tsx"), "utf8");
+    expect(hook).toMatch(/usePr\(s => needs\.pr\s*\?/);
+    expect(hook).toMatch(/useDiffStat\(s => usesChanges\s*\?/);
+    expect(hook).toMatch(/useApp\(needs\.columns \? selectStatusFacts : selectNoStatusFacts\)/);
+    expect(hook).toMatch(/useApp\(!facts && needs\.freeText \? selectFilterFacts : selectNoFilterFacts\)/);
+    // the sidebar reuses the tab facts its body already holds
+    const sidebar = readFileSync(resolve(here, "../components/sidebar/Sidebar.tsx"), "utf8");
+    expect(sidebar).toMatch(/facts: tabFacts/);
   });
 });

@@ -8,11 +8,11 @@ import { listen } from "@tauri-apps/api/event";
 import { logWorkState } from "@/lib/workStateLog";
 import { useApp, useActiveTabId } from "@/store/app";
 import { useRowTabs, useSidebarTabFacts } from "@/store/sidebarTabs";
-import { usePrefs, scheduledNavVisible } from "@/store/prefs";
+import { usePrefs, scheduledNavVisible, taskLocationIconShown } from "@/store/prefs";
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
-import { LayoutGrid, History, Columns3, CalendarClock, FolderPlus, Settings, Plus, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play } from "lucide-react";
+import { LayoutGrid, History, Columns3, CalendarClock, FolderPlus, Settings, Plus, MoreHorizontal, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -51,7 +51,11 @@ import { ProjectFilterBar, ProjectFilterToggle } from "./ProjectTaskFilter";
 import { filterTasks, isFilterActive } from "@/lib/taskFilter";
 import { collectTaskProps, collectedText } from "@/lib/tabProps";
 import { TaskGroupBlock } from "./TaskGroupBlock";
+import { StatusChips } from "./StatusChips";
 import { StatusSection } from "./StatusSection";
+import { BoardFilterBar } from "@/components/views/BoardFilterBar";
+import { useTaskQuery } from "@/hooks/useTaskQuery";
+import { setTreeFold, treeFoldKey, type TreeFold } from "@/lib/treeFold";
 import { SpawnedFromMark, SpawnLinksOverlay } from "./SpawnLinks";
 import { crossProjectStrays, flattenSegments, groupColorCss as taskGroupColorCss, groupLabel, layoutTaskList, liveGroups, nextGroupColor } from "@/lib/taskGroups";
 import { taskNeedsAttention, taskWorkDone, taskWorking, taskDelegated } from "@/lib/taskWorkState";
@@ -146,11 +150,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const openNewProject = useUI(s => s.openNewProject);
   const openNewTask = useUI(s => s.openNewTask);
   const collapsedProjects = useApp(s => s.collapsedProjects);
-  const setProjectCollapsed = useApp(s => s.setProjectCollapsed);
   const collapsedGroups = useApp(s => s.collapsedGroups);
-  const setGroupCollapsed = useApp(s => s.setGroupCollapsed);
   const collapsedTaskGroups = useApp(s => s.collapsedTaskGroups);
-  const setTaskGroupCollapsed = useApp(s => s.setTaskGroupCollapsed);
   const groupColors = useApp(s => s.groupColors);
   const setGroupColor = useApp(s => s.setGroupColor);
   const setAllTasksCollapsed = useApp(s => s.setAllTasksCollapsed);
@@ -174,6 +175,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const hideInactiveProjects = usePrefs(s => s.hideInactiveProjects);
   const setHideInactiveProjects = usePrefs(s => s.setHideInactiveProjects);
   const showStatusSection = usePrefs(s => s.showStatusSection);
+  const taskLocationIcon = usePrefs(s => s.taskLocationIcon);
+  const setTaskLocationIcon = usePrefs(s => s.setTaskLocationIcon);
   const showBoard = usePrefs(s => s.showBoard);
   const scheduledNav = usePrefs(s => s.scheduledNav);
   // A boolean out of the selector, so a task write that leaves the answer
@@ -194,6 +197,53 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // whenever the hide pref flips off so the "Show N inactive" row starts
   // collapsed next time the user re-enables hiding.
   const [showInactive, setShowInactive] = useState(false);
+
+  // The sidebar's filter bar (docs/ui.md "The sidebar's filter bar"): the
+  // board's bar and query engine over every task the tree lists. Absent on
+  // the icon rail, so a query typed in the full sidebar filters nothing
+  // there, and neither does a menu left open when ⌘B folded the bar away.
+  // With no query every subscription below holds a constant (useTaskQuery),
+  // so this costs the body nothing.
+  const sidebarQuery = useUI(s => s.sidebarQuery);
+  const setSidebarQuery = useUI(s => s.setSidebarQuery);
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+  const queryText = compact ? "" : sidebarQuery;
+  const filterWorkingIndicator = usePrefs(s => s.workingIndicator);
+  const filterAttentionIndicator = usePrefs(s => s.attentionIndicator);
+  const filterWorkPrefs = useMemo(
+    () => ({ settledHighlight, workingIndicator: filterWorkingIndicator, attentionIndicator: filterAttentionIndicator }),
+    [settledHighlight, filterWorkingIndicator, filterAttentionIndicator],
+  );
+  // What the tree can list: unarchived, in a project of this profile.
+  const queryLiveTasks = useMemo(() => {
+    const ids = new Set(projects.map(p => p.id));
+    return tasks.filter(w => !w.archived && ids.has(w.project_id));
+  }, [tasks, projects]);
+  const taskQuery = useTaskQuery({
+    text: queryText, menuOpen: !compact && filterMenuOpen, live: queryLiveTasks, workPrefs: filterWorkPrefs, facts: tabFacts,
+  });
+  /** Ids the query lets through, or null while nothing is filtering. */
+  const queryMatchIds = useMemo(
+    () => (taskQuery.filtering ? new Set(queryLiveTasks.filter(taskQuery.matches).map(w => w.id)) : null),
+    [taskQuery.filtering, taskQuery.matches, queryLiveTasks],
+  );
+  const queryOn = queryMatchIds !== null;
+  // While filtering, matching projects, folders and task groups render open
+  // whatever their stored fold says: results behind a chevron read as
+  // "nothing matched". Their chevrons still work, through the throwaway
+  // folds every write reaches via setTreeFold, so a filter never rewrites
+  // the user's layout and clearing it puts every fold back as it was.
+  const queryFolds = useUI(s => s.sidebarQueryFolds);
+  /** A fold as the tree draws it: the throwaway one while the query filters
+   *  (open unless folded during this query), else `stored`. */
+  const foldOf = (kind: TreeFold, id: string, stored: boolean) =>
+    queryOn ? queryFolds[treeFoldKey(kind, id)] === true : stored;
+  // Expand / collapse all: folders go through setTreeFold like every other
+  // fold, so under a query they fold the throwaway way too.
+  const setAllFolders = (folded: boolean) => {
+    if (!queryOn) { setAllGroupsCollapsed(folded); return; }
+    for (const g of new Set(projects.map(groupOf))) if (g) setTreeFold("folder", g, folded, compact);
+  };
 
   /** Build a mailto: URL with prefilled subject + body and hand it to
    *  the OS's default mail handler via `open_path` (the same Rust
@@ -268,6 +318,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   // Projects whose filter bar the user opened (GH #324), valued by a counter
   // that bumps on every open so the bar's input re-takes focus.
   const [filterInputs, setFilterInputs] = useState<Record<string, number>>({});
+  // a sidebar query closes every open bar: one holding a filter comes back on
+  // its own when the query clears (it is still set), an empty one has nothing
+  // to come back for
+  useEffect(() => {
+    if (queryOn) setFilterInputs(prev => Object.keys(prev).length === 0 ? prev : {});
+  }, [queryOn]);
   // Inline name-prompt state for repo-root task creation. When the
   // user picks an agent from the project's `+` menu, we stash the choice
   // here and render a focused input row under the project — Enter creates
@@ -432,7 +488,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         const via = target && all.find(t => t.group?.id === target.id && t.id !== armed.id && !t.archived && t.project_id === armed.projectId)?.id;
         // Dropped into a collapsed group: open it, or the task you just
         // placed disappears from view the moment you let go.
-        if (target) useApp.getState().setTaskGroupCollapsed(target.id, false);
+        if (target) setTreeFold("taskGroup", target.id, false, compact);
         // AFTER the reorder, not beside it: task_reorder re-saves every task
         // whose order moved, the dropped one included, from a list it loaded
         // before the join landed, so a concurrent join could be written and
@@ -731,7 +787,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         // folder to the end of the list.
         list.splice(firstIdx === -1 ? idx : firstIdx, 0, dragged);
         useApp.setState({ projects: list });
-        setGroupCollapsed(hoverGroup, false);
+        setTreeFold("folder", hoverGroup, false, compact);
       }
       // Group changed during the drag (live adoption between rows, or the
       // header drop above) → persist it before the reorder. projectSetGroup
@@ -1074,7 +1130,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
       if (reorderIds) await projectReorder(reorderIds);
       // Expand the destination so the project doesn't silently vanish
       // into a collapsed folder.
-      if (group) setGroupCollapsed(group, false);
+      if (group) setTreeFold("folder", group, false, compact);
       await loadAll();
       return true;
     } catch (e) {
@@ -1132,7 +1188,19 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     tasks.some(w => w.project_id === pid && !w.archived);
   const shownInline = (p: typeof projects[number]) =>
     !hideInactiveProjects || projectIsActive(p.id) || !!groupOf(p);
-  const activeProjects = projects.filter(shownInline);
+  // While filtering: a project shows when a task of its matches (the open
+  // task counts, the tree keeps it listed), or when `project:` names it, so
+  // an empty project can still be found to start a task in. The inactive
+  // fold is not drawn: the filter already removed the clutter it hides.
+  const queryProjectIds = queryMatchIds && new Set(
+    queryLiveTasks.filter(w => queryMatchIds.has(w.id) || w.id === activeTask).map(w => w.project_id),
+  );
+  const queryNamed = queryOn
+    ? new Set(taskQuery.query.clauses.filter(c => c.key === "project" && !c.negated).flatMap(c => c.values))
+    : null;
+  const activeProjects = queryProjectIds
+    ? projects.filter(p => queryProjectIds.has(p.id) || !!queryNamed?.has(p.name.toLowerCase()))
+    : projects.filter(shownInline);
   const inactiveProjects = projects.filter(p => !shownInline(p));
   const inactiveCount = inactiveProjects.length;
   // If hiding is disabled (or nothing is hidden), keep the reveal latch off so
@@ -1153,8 +1221,11 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
       style={sidebarWash ? { backgroundImage: sidebarWash } : undefined}
       className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)]"
     >
-      {/* Primary nav: Dashboard / History (no top chrome — that's the unified bar's job now) */}
-      <nav className={cn("flex flex-col gap-0.5", compact ? "p-1.5 pt-2" : "p-2 pt-3")}>
+      {/* Primary nav: Dashboard / History / Kanban / Scheduled. One strip of
+          icons in the full sidebar (docs/ui.md "One glyph per meaning"): four
+          full-width rows took the top of the sidebar before anything about
+          your work showed. The rail keeps its column. */}
+      <nav className={cn("flex gap-0.5", compact ? "flex-col p-1.5 pt-2" : "p-2 pt-3")}>
         <NavItem icon={<LayoutGrid className={iconSize(compact)} />} label={t("navDashboard")}
           active={currentView === "dashboard" && !activeTask} compact={compact}
           onClick={() => setView("dashboard")}
@@ -1177,6 +1248,39 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         )}
       </nav>
 
+      {/* The filter bar: above STATUS and PROJECTS, outside their scroller,
+          because it scopes both and must not scroll away from them. */}
+      {!compact && (
+        <BoardFilterBar
+          variant="sidebar"
+          text={sidebarQuery}
+          onTextChange={setSidebarQuery}
+          shown={queryMatchIds?.size ?? queryLiveTasks.length}
+          total={queryLiveTasks.length}
+          unknownKeys={taskQuery.query.unknownKeys}
+          valuesFor={taskQuery.valuesFor}
+          sections={taskQuery.sections}
+          menuOpen={filterMenuOpen}
+          onMenuOpenChange={setFilterMenuOpen}
+        />
+      )}
+      {/* One row under the bar: the status chips, then the filter's count at
+          the far end. The count shares their line so turning a filter on
+          never pushes the chips out from under the pointer. The chips stand
+          in for the STATUS section while it is off; with it on they would
+          count the same buckets the section lists. `empty:hidden` drops the
+          row when neither has anything to say. */}
+      {!compact && (
+        <div className="flex shrink-0 items-center gap-2 px-2 pt-1.5 empty:hidden">
+          {!showStatusSection && <StatusChips />}
+          {queryOn && (
+            <span data-testid="sidebar-filter-count" className="ml-auto shrink-0 text-[11.5px] tabular-nums text-[var(--color-fg-faint)]">
+              {t("filterBar.count", { shown: queryMatchIds?.size ?? 0, total: queryLiveTasks.length })}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Projects section */}
       <div className="relative flex min-h-0 flex-1 flex-col">
       <div
@@ -1189,7 +1293,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
         {/* STATUS above PROJECTS, in the same scroller (docs/ui.md "The
             sidebar's status section"). Not on the icon rail: the hover
             overlay is a full sidebar and shows it there instead. */}
-        {!compact && showStatusSection && <StatusSection />}
+        {!compact && showStatusSection && <StatusSection matchIds={queryMatchIds} />}
         <div className={cn(
           "flex items-center justify-between text-[12px] uppercase tracking-wider text-[var(--color-fg-dim)]",
           compact ? "flex-col gap-1.5 py-1" : "px-2 py-1",
@@ -1216,12 +1320,14 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               <DropdownMenu side="right" align="start" sideOffset={4} className="w-[280px]" onCloseAutoFocus={(e) => e.preventDefault()}>
                 {/* Both actions cover group folders too — expanding agents
                     under a still-collapsed folder would look like a no-op,
-                    and "collapse all" means the whole tree tidies up. */}
-                <DropdownItem onSelect={() => { setAllTasksCollapsed(false); setAllGroupsCollapsed(false); }}>
+                    and "collapse all" means the whole tree tidies up. Task rows
+                    have no throwaway fold, so while the query filters they are
+                    left alone rather than rewriting the stored layout. */}
+                <DropdownItem onSelect={() => { if (!queryOn) setAllTasksCollapsed(false); setAllFolders(false); }}>
                   <ChevronsUpDown className="h-5 w-5 text-[var(--color-fg-dim)]" />
                   <span>{t("expandAll")}</span>
                 </DropdownItem>
-                <DropdownItem onSelect={() => { setAllTasksCollapsed(true); setAllGroupsCollapsed(true); }}>
+                <DropdownItem onSelect={() => { if (!queryOn) setAllTasksCollapsed(true); setAllFolders(true); }}>
                   <ChevronsDownUp className="h-5 w-5 text-[var(--color-fg-dim)]" />
                   <span>{t("collapseAll")}</span>
                 </DropdownItem>
@@ -1251,6 +1357,30 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     </DropdownItem>
                   );
                 })}
+                {/* Mirrored in Settings > Appearance > Sidebar, which writes
+                    the same pref. */}
+                <DropdownSub>
+                  <DropdownSubTrigger data-testid="sidebar-task-git-icon" className="justify-between">
+                    <span className="flex items-center gap-2">
+                      <span className="h-5 w-5 shrink-0" />
+                      {t("taskGitIcon")}
+                    </span>
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+                  </DropdownSubTrigger>
+                  <DropdownSubContent>
+                    {([
+                      ["both",     "taskGitIconBoth"],
+                      ["main",     "taskGitIconMain"],
+                      ["worktree", "taskGitIconWorktree"],
+                      ["none",     "taskGitIconNone"],
+                    ] as const).map(([id, labelKey]) => (
+                      <DropdownItem key={id} data-value={id} onSelect={() => setTaskLocationIcon(id)}>
+                        <Check className={cn("h-4 w-4 shrink-0 text-[var(--color-accent)]", taskLocationIcon === id ? "opacity-100" : "opacity-0")} />
+                        <span className={taskLocationIcon === id ? "text-[var(--color-accent)] font-medium" : undefined}>{t(labelKey)}</span>
+                      </DropdownItem>
+                    ))}
+                  </DropdownSubContent>
+                </DropdownSub>
                 <DropdownSeparator />
                 <DropdownItem
                   onSelect={() => setHideInactiveProjects(!hideInactiveProjects)}
@@ -1309,16 +1439,24 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // as "nothing matched". Once, not for as long as it is on, or the
             // chevron would stop working while a filter is up.
             const filter = taskFilters[p.id];
-            const filterOn = !compact && isFilterActive(filter);
-            const visibleTasks = filterOn ? filterTasks(taskList, filter, tabFacts, agents, activeTask) : taskList;
+            // A non-empty sidebar query takes over: the project's own filter
+            // is kept but not applied, its bar hidden and its icon slashed,
+            // and comes back as it was when the query clears.
+            const filterSet = !compact && isFilterActive(filter);
+            const filterOn = filterSet && !queryOn;
+            const filterPaused = filterSet && queryOn;
+            const queryTasks = queryMatchIds
+              ? taskList.filter(w => queryMatchIds.has(w.id) || w.id === activeTask)
+              : taskList;
+            const visibleTasks = filterOn ? filterTasks(queryTasks, filter, tabFacts, agents, activeTask) : queryTasks;
             // "No matching tasks" only when the filter left the list EMPTY. The
             // active task is kept on screen even when it does not match, and a
             // hint saying nothing matched under a visible row contradicts it.
-            const noMatches = filterOn && taskList.length > 0 && visibleTasks.length === 0;
+            const noMatches = (filterOn || queryOn) && taskList.length > 0 && visibleTasks.length === 0;
             const notifCount = compact ? 0 : taskList.filter(w => tabFacts[w.id]?.notification).length;
             // An active filter keeps its bar on screen on its own; otherwise
             // the bar is open only while the user put it there.
-            const filterBarOpen = !compact && (filterOn || filterInputs[p.id] !== undefined);
+            const filterBarOpen = !compact && !queryOn && (filterSet || filterInputs[p.id] !== undefined);
             const closeFilterBar = () => setFilterInputs(prev => {
               if (prev[p.id] === undefined) return prev;
               const next = { ...prev };
@@ -1332,7 +1470,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // "picking the project up"; persisted collapse state is
             // untouched, so the rows return on drop exactly as they were.
             const collapsed = dragProjectId === p.id
-              || (explicit !== undefined ? explicit : taskList.length === 0 && pendingForProject.length === 0);
+              || foldOf("project", p.id, explicit !== undefined ? explicit : taskList.length === 0 && pendingForProject.length === 0);
             // Compact + collapsed: surface aggregated activity on the
             // project monogram so a collapsed project still signals that
             // something underneath wants attention (attention > done).
@@ -1361,7 +1499,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     // Compact mode has no drag-to-reorder (the pointer
                     // handler below bails), so a plain click handles the
                     // collapse toggle the monogram represents.
-                    onClick={compact ? () => setProjectCollapsed(p.id, !collapsed) : undefined}
+                    onClick={compact ? () => setTreeFold("project", p.id, !collapsed, compact) : undefined}
                     // Project header is the drag handle. Pointer-down
                     // arms it (doesn't commit to "we're dragging" yet);
                     // a pointer-move past the threshold flips into
@@ -1406,7 +1544,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                           // real click would behave.
                           const header = (ev.target as HTMLElement).closest('[data-project-id]') as HTMLElement | null;
                           if (header?.dataset.projectId === p.id) {
-                            setProjectCollapsed(p.id, !collapsed);
+                            setTreeFold("project", p.id, !collapsed, compact);
                           }
                         }
                       };
@@ -1480,18 +1618,17 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                             </Tip>
                           )}
                         </div>
-                        {/* Trio of project-row actions revealed on hover.
-                            Settings + Open-repo-as-task are hover-only
-                            so the row stays clean; New-task stays
-                            visible because it's the headline action. */}
+                        {/* Hover shows the filter (GH #324), the menu and
+                            `+` (docs/ui.md "One glyph per meaning"). An
+                            active filter pins its icon so the user can see
+                            why rows are missing. `+` stays visible because
+                            it's the headline action. */}
                         <div className="flex items-center gap-0.5">
-                          {/* Filter controls (GH #324), left of the cog. An
-                              active filter pins the whole bar so the user
-                              can see why rows are missing. */}
                           <ProjectFilterToggle
                             projectId={p.id}
                             active={filterOn}
-                            revealed={menuOpenProjectId === p.id || filterBarOpen}
+                            paused={filterPaused}
+                            revealed={menuOpenProjectId === p.id || filterBarOpen || filterPaused}
                             // Open (or re-focus) the bar; an open bar with
                             // nothing filtering closes instead.
                             onToggle={() => {
@@ -1499,20 +1636,26 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                               else setFilterInputs(prev => ({ ...prev, [p.id]: (prev[p.id] ?? 0) + 1 }));
                             }}
                           />
-                          <Tip content={t("projectSettingsTip")}>
+                          <Tip content={t("projectMenuTip")}>
                             <button
+                              data-testid={`project-menu-${p.id}`}
                               className={cn(
                                 "rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)] transition-opacity",
-                                // Stay visible while the `+` dropdown is
-                                // open (otherwise the gear vanishes the
-                                // moment the user opens the menu), and
-                                // while the filter bar is open.
-                                menuOpenProjectId === p.id || filterBarOpen
-                                  ? "opacity-100"
-                                  : "opacity-0 group-hover:opacity-100",
+                                // Stays while the `+` dropdown is open, or it
+                                // vanishes the moment the user opens it.
+                                menuOpenProjectId === p.id ? "opacity-100" : "opacity-0 group-hover:opacity-100",
                               )}
-                              onClick={(e) => { e.stopPropagation(); useApp.getState().openSettings("repositories", p.id); }}
-                            ><Cog className="h-4 w-4" /></button>
+                              // The row's right-click menu IS the project
+                              // menu; open that one at the button rather
+                              // than keeping a second copy of its items.
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const r = e.currentTarget.getBoundingClientRect();
+                                e.currentTarget.dispatchEvent(new MouseEvent("contextmenu", {
+                                  bubbles: true, cancelable: true, clientX: r.left, clientY: r.bottom,
+                                }));
+                              }}
+                            ><MoreHorizontal className="h-4 w-4" /></button>
                           </Tip>
                           {/* Single `+` trigger → instant dropdown with the
                               two project-level actions. Replaces the two
@@ -1568,7 +1711,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                                   // The inline name prompt only renders under an
                                   // expanded project, so expand first or the row
                                   // would be invisible on a collapsed one.
-                                  setProjectCollapsed(p.id, false);
+                                  setTreeFold("project", p.id, false, compact);
                                   const value = defaultTaskName(cli, taskList);
                                   setPendingRepoRoot({
                                     projectId: p.id,
@@ -1642,7 +1785,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   </ContextMenuItem>
                   {!compact && (
                     <ContextMenuItem onSelect={() => {
-                      setProjectCollapsed(p.id, false);
+                      setTreeFold("project", p.id, false, compact);
                       setRenaming({ kind: "proj", id: p.id, value: p.name });
                     }}>
                       <Pencil />
@@ -1729,7 +1872,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     notifCount={notifCount}
                     focusKey={filterInputs[p.id] ?? 0}
                     onClose={closeFilterBar}
-                    onActivate={() => { if (collapsed) setProjectCollapsed(p.id, false); }}
+                    onActivate={() => { if (collapsed) setTreeFold("project", p.id, false, compact); }}
                   />
                 )}
 
@@ -1763,7 +1906,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                                   // The inline name prompt only renders under an
                                   // expanded project, so expand first or the row
                                   // would be invisible on a collapsed one.
-                                  setProjectCollapsed(p.id, false);
+                                  setTreeFold("project", p.id, false, compact);
                                   const value = defaultTaskName(cli, taskList);
                                   setPendingRepoRoot({
                                     projectId: p.id,
@@ -1809,15 +1952,18 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   // otherwise searching for a task that sits in one would
                   // leave the match hidden behind the caption. (The layout
                   // already runs over the FILTERED rows, so a group with no
-                  // matches is not drawn at all.)
+                  // matches is not drawn at all.) The sidebar query does it
+                  // the way it opens projects, through foldOf: the group
+                  // draws open unless folded during this query.
                   //
-                  // Two facts, kept apart: `groupCollapsed` is the STORED state,
-                  // which the chevron always shows and toggles; `rowsHidden` is
-                  // whether this render hides members. Folding the filter into
+                  // Two facts, kept apart: `groupCollapsed` is the fold the
+                  // chevron shows and toggles (stored, or the query's);
+                  // `rowsHidden` is whether this render hides members. For
+                  // the per-project filter they differ. Folding the filter into
                   // the first made the chevron point "expanded" while filtering,
                   // so a click collapsed the group invisibly and it snapped shut
                   // the moment the filter cleared, looking like lost tasks.
-                  const groupCollapsed = !compact && !!collapsedTaskGroups[seg.group.id];
+                  const groupCollapsed = !compact && foldOf("taskGroup", seg.group.id, !!collapsedTaskGroups[seg.group.id]);
                   const rowsHidden = groupCollapsed && !filterOn;
                   // (And the row being dragged: it must not vanish from under
                   // the cursor while it hovers a collapsed group.)
@@ -1837,7 +1983,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       summarized={rowsHidden}
                       onToggleCollapsed={() => {
                         if (blockClickSuppressed.current) { blockClickSuppressed.current = false; return; }
-                        setTaskGroupCollapsed(seg.group.id, !useApp.getState().collapsedTaskGroups[seg.group.id]);
+                        const id = seg.group.id;
+                        setTreeFold("taskGroup", id, !foldOf("taskGroup", id, !!useApp.getState().collapsedTaskGroups[id]), compact);
                       }}
                       dragging={dragBlockId === seg.group.id && blockDragArmed.current?.projectId === p.id}
                       dragTy={dragBlockTy}
@@ -1856,6 +2003,9 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     <button
                       className="shrink-0 rounded px-1 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
                       onClick={() => {
+                        // The project's own filter is the nearer cause when
+                        // both are on; clear that first.
+                        if (!filterOn) { setSidebarQuery(""); return; }
                         setTaskFilterText(p.id, "");
                         if (filter?.bell) toggleTaskFilterBell(p.id);
                         closeFilterBar();
@@ -1952,9 +2102,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // Object.hasOwn: the record round-trips through JSON.parse, so a
             // group named "toString"/"constructor" would otherwise read an
             // inherited function off the prototype and render collapsed.
-            const collapsed = Object.hasOwn(collapsedGroups, name)
-              ? collapsedGroups[name] === true
-              : false;
+            const collapsed = foldOf("folder", name, Object.hasOwn(collapsedGroups, name) && collapsedGroups[name] === true);
+            const toggleGroup = () => setTreeFold("folder", name, !collapsed, compact);
             // Count ALL members (hidden inactive ones included) — the header
             // count is also what Rename/Ungroup operate on, so it must not
             // understate the group while "Hide inactive projects" is on.
@@ -1983,7 +2132,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     <button
                       type="button"
                       aria-expanded={!collapsed}
-                      onClick={() => setGroupCollapsed(name, !collapsed)}
+                      onClick={() => setTreeFold("folder", name, !collapsed, compact)}
                       // Inline color deliberately beats the hover class — a
                       // colored folder stays its color under the cursor.
                       style={accent ? { color: accent } : undefined}
@@ -2057,12 +2206,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       }}
                       onClick={() => {
                         if (suppressGroupToggle.current) { suppressGroupToggle.current = false; return; }
-                        setGroupCollapsed(name, !collapsed);
+                        toggleGroup();
                       }}
                       onKeyDown={(ev) => {
                         if (ev.key === "Enter" || ev.key === " ") {
                           ev.preventDefault();
-                          setGroupCollapsed(name, !collapsed);
+                          toggleGroup();
                         }
                       }}
                       // Accent yields to the drag/drop states below — their
@@ -2170,7 +2319,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   the PROJECTS header above. Clicking it toggles the fold; the
                   inactive group renders BELOW it so revealing never reshuffles
                   the active rows. */}
-              {hideInactiveProjects && inactiveCount > 0 && (
+              {!queryOn && hideInactiveProjects && inactiveCount > 0 && (
                 <button
                   key="inactive-header"
                   type="button"
@@ -2204,9 +2353,28 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               {/* data-inactive-fold marks this as a separate drag domain:
                   rows here are ungrouped inactive projects, so drags across
                   the fold reorder only and never touch group labels. */}
-              {hideInactiveProjects && showInactive && (
+              {!queryOn && hideInactiveProjects && showInactive && (
                 <div data-inactive-fold className="flex flex-col gap-0.5">
                   {inactiveProjects.map(renderProject)}
+                </div>
+              )}
+              {/* What the filter took away, said once at the bottom instead
+                  of as a row of empty project headers. */}
+              {queryOn && activeProjects.length === 0 && (
+                <div
+                  data-testid="sidebar-filter-empty"
+                  className="flex h-[var(--task-row-h)] items-center justify-center gap-1.5 px-2 text-[13px] text-[var(--color-fg-faint)]"
+                >
+                  <span className="truncate">{t("filterBar.noMatches")}</span>
+                  <button
+                    className="shrink-0 rounded px-1 text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+                    onClick={() => setSidebarQuery("")}
+                  >{t("filterBar.clear")}</button>
+                </div>
+              )}
+              {queryOn && activeProjects.length > 0 && projects.length > activeProjects.length && (
+                <div data-testid="sidebar-filter-hidden" className="px-2 pt-1.5 text-[11.5px] tabular-nums text-[var(--color-fg-faint)]">
+                  {t("filterBar.hidden", { count: projects.length - activeProjects.length })}
                 </div>
               )}
             </>
@@ -2590,6 +2758,9 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // rewrites and no row draws (ROW_HIDDEN_TAB_FIELDS).
   const tabs = useRowTabs(w.id);
   const activeTabId = useActiveTabId(w.id);
+  // a boolean out of the selector, so flipping the pref re-renders only the
+  // rows whose glyph comes or goes
+  const showLocation = usePrefs(s => taskLocationIconShown(s.taskLocationIcon, w.is_main_checkout));
   const activeTaskId = useApp(s => s.activeTaskId);
   const setActive = useApp(s => s.setActiveTask);
   const setActiveTabId = useApp(s => s.setActiveTabId);
@@ -2958,7 +3129,9 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               >
                 {label}
               </span>
-              <TaskLocationIcon isMainCheckout={w.is_main_checkout} size="h-3.5 w-3.5" />
+              {/* Which locations get a glyph is the taskLocationIcon pref
+                  (docs/ui.md "One glyph per meaning"). */}
+              {showLocation && <TaskLocationIcon isMainCheckout={w.is_main_checkout} size="h-3.5 w-3.5" />}
               {w.spawned_by && <SpawnedFromMark task={w} />}
               {/* The task's tab properties, collected (GH #358): after the
                   name on the LEFT, never in the trailing badge/kebab slot.
@@ -2976,12 +3149,6 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               )}
             </>
           )}
-          {/* PR/MR state: tiny pull-request glyph colored by live state
-              (green open / purple merged / red closed / gray draft or
-              unknown-yet). Falls back to the persisted pr_url for
-              tasks not visited this session - state unknown, but
-              the link out (issue #21) still works. Click opens the PR. */}
-          {!taskRenaming && <TaskPrBadge task={w} />}
           {/* Spotlight active indicator: just the animated wave icon.
               No branch text — avoids any truncation of the task name. */}
           {!taskRenaming && isSpotlighted ? (
@@ -3017,114 +3184,52 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
           ))}
         </div>
 
-        {/* Trailing slot: status badge by default, single kebab (⋮)
-            menu dropdown on hover. Replaces the prior archive + shield
-            pair — a single icon hosts Sandbox + Archive in a Radix
-            DropdownMenu. Instant hover swap (no 2s delay): the kebab is
-            unobtrusive enough that revealing it immediately doesn't
-            crowd the row. The badge only renders when collapsed
-            (expanded rows put per-tab badges on their children). */}
+        {/* PR/MR state, right-aligned and carrying its number so it reads
+            as a link and not one more icon. Falls back to the persisted
+            pr_url for tasks not visited this session. Click opens the PR. */}
+        {!taskRenaming && <TaskPrBadge task={w} showNumber />}
+
+        {/* Three fixed slots, each with ONE meaning, never swapped on hover
+            (docs/ui.md "One glyph per meaning"): mode (sandbox, docker,
+            dangerous YOLO; absent when there is none), the task menu (hover
+            only, its width reserved so nothing shifts), and work state (the
+            badge while collapsed; expanded rows put it on their children).
+            The state slot is always rightmost, so it lines up down the tree. */}
+        {(() => {
+          const wMode = effectiveSandboxMode(w);
+          const isLaunched = terminalTabs.length > 0;
+          // A LIVE pty, not merely "this task has tabs": a tab outlives its
+          // process, and the YOLO mark must not warn about an agent that is
+          // gone. The board's badge uses the same signal.
+          const hasLivePty = terminalTabs.some(t => t.ptyId);
+          // Docker stores sandbox_mode as off (the cages are exclusive), so
+          // it is checked first or a Docker task would show no mark.
+          const mark = w.docker_sandbox_enabled
+            ? <DockerSandboxIcon active={isLaunched} className="h-3.5 w-3.5" />
+            : !!w.yolo && !isSandboxEnforced(wMode) && hasLivePty
+              ? <Zap data-testid="task-yolo-badge" className="h-3.5 w-3.5 text-[var(--color-err)]" fill="none" />
+              : wMode !== "off" ? <SandboxIcon mode={wMode} active={isLaunched} className="h-3.5 w-3.5" /> : null;
+          return mark && (
+            <span data-testid="task-mode-slot" className="flex h-[18px] w-[18px] shrink-0 items-center justify-center">{mark}</span>
+          );
+        })()}
         <span className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center">
-          {collapsed && (hasAttention || hasDone || hasWorking || hasDelegated) && (
-            // `translate3d(0,0,0)` pins it to its own compositing layer for
-            // good. Without it the layer exists only WHILE the opacity
-            // transition runs, and WebKit pixel-snaps a layer: the badge
-            // sits at a fractional offset (a `py-[3px]` row and a truncating
-            // flex name both land on half pixels), so it jumped up and to
-            // the right on hover and back on leave. Same reason Dialog pins
-            // its content box.
-            <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover/wsrow:opacity-0 [transform:translate3d(0,0,0)]">
-              {hasAttention ? <TaskWorkBadge reason="attention" />
-                : hasDone ? <TaskWorkBadge reason="done" delegated={rowDelegated} />
-                : hasWorking ? <TaskWorkBadge reason="working" delegated={rowDelegated} />
-                : <TaskWorkBadge reason="delegated" delegated={rowDelegated} />}
-            </span>
-          )}
           <DropdownRoot open={menuOpen} onOpenChange={setMenuOpen}>
             <Tip content={t("taskMenu")}>
             <DropdownTrigger asChild>
               <button
                 data-no-drag
+                data-testid="task-menu-trigger"
                 onClick={(e) => e.stopPropagation()}
                 className={cn(
                   "absolute inset-0 flex items-center justify-center rounded hover:bg-[var(--color-bg-3)]",
-                  // A persistent badge (sandbox on OR dangerous YOLO) keeps
-                  // the button visible; unless the collapsed attention/done
-                  // badge is active — it lives in the same slot and the
-                  // status icon would cover it.
-                  (w.sandbox_enabled || w.docker_sandbox_enabled || (!!w.yolo && !isSandboxEnforced(effectiveSandboxMode(w)))) && !(collapsed && (hasAttention || hasDone || hasWorking))
-                    ? "opacity-100 pointer-events-auto"
+                  menuOpen
+                    ? "opacity-100"
                     : "opacity-0 group-hover/wsrow:opacity-100 pointer-events-none group-hover/wsrow:pointer-events-auto",
                   taskRenaming !== null && "pointer-events-none",
                 )}
               >
-                {/* Idle badge, hidden on row hover so the cog shows through.
-                    Precedence: dangerous YOLO (red, no cage) → sandbox mode.
-                    Running state is shown via COLOR (gray when idle, the
-                    mode's real color once an agent is running) - a same-
-                    color-just-dimmer badge read as "caged" even for a task
-                    that wasn't actually running anything. The icon's FILL
-                    still encodes the MODE regardless of state - full
-                    enforce = filled shield, FS-only / monitor = outline -
-                    so the two enforce modes stay distinguishable even gray. */}
-                {(() => {
-                  const wMode = effectiveSandboxMode(w);
-                  const isLaunched = terminalTabs.length > 0;
-                  // A LIVE pty, not merely "this task has tabs". A tab
-                  // outlives the process it spawned, so `isLaunched` stays
-                  // true after the agent is gone and the YOLO mark below
-                  // would warn about an agent that no longer exists. The
-                  // board's badge already uses this signal; the two have to
-                  // agree or one task reads dangerous in one surface and
-                  // quiet in the other.
-                  const hasLivePty = terminalTabs.some(t => t.ptyId);
-                  // Docker mode always stores sandbox_mode as off (the two
-                  // cages are mutually exclusive), so it has to be checked
-                  // FIRST or a Docker-sandboxed task would show no badge at
-                  // all - "off" reads as "no cage" everywhere else, but here
-                  // it can mean "caged a different way".
-                  if (w.docker_sandbox_enabled) {
-                    return (
-                      <DockerSandboxIcon
-                        active={isLaunched}
-                        className="absolute h-3.5 w-3.5 transition-opacity group-hover/wsrow:opacity-0"
-                      />
-                    );
-                  }
-                  // Only while the task is actually RUNNING, and outline
-                  // rather than filled. See the board's TaskSandboxBadge for
-                  // both reasons; the two surfaces have to agree or the same
-                  // task reads as dangerous in one and quiet in the other.
-                  if (!!w.yolo && !isSandboxEnforced(wMode) && hasLivePty) {
-                    return (
-                      <Zap
-                        data-testid="task-yolo-badge"
-                        className="absolute h-3.5 w-3.5 text-[var(--color-err)] transition-opacity group-hover/wsrow:opacity-0"
-                        fill="none"
-                      />
-                    );
-                  }
-                  if (wMode !== "off") {
-                    return (
-                      <SandboxIcon
-                        mode={wMode}
-                        active={isLaunched}
-                        className="absolute h-3.5 w-3.5 transition-opacity group-hover/wsrow:opacity-0"
-                      />
-                    );
-                  }
-                  return null;
-                })()}
-                {/* Kebab: always visible on hover (badge or not). A
-                    "⋮" menu affordance, distinct from the project-level
-                    Settings cog above so the two don't read as the same
-                    action. */}
-                <MoreVertical
-                  className={cn(
-                    "h-3.5 w-3.5 text-[var(--color-fg-faint)] transition-opacity",
-                    (w.sandbox_enabled || w.docker_sandbox_enabled || (!!w.yolo && !isSandboxEnforced(effectiveSandboxMode(w)))) && "opacity-0 group-hover/wsrow:opacity-100",
-                  )}
-                />
+                <MoreVertical className="h-3.5 w-3.5 text-[var(--color-fg-faint)]" />
               </button>
             </DropdownTrigger>
             </Tip>
@@ -3380,7 +3485,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                             onSelect={() => {
                               if (current || !via) return;
                               // Open it so the moved task stays in view.
-                              useApp.getState().setTaskGroupCollapsed(g.id, false);
+                              setTreeFold("taskGroup", g.id, false, compact);
                               run(taskGroupJoin(w.id, via));
                             }}
                           >
@@ -3483,6 +3588,13 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
             </DropdownMenu>
           </DropdownRoot>
         </span>
+        <span data-testid="task-state-slot" className="flex h-[18px] w-[18px] shrink-0 items-center justify-center">
+          {collapsed && (hasAttention ? <TaskWorkBadge reason="attention" />
+            : hasDone ? <TaskWorkBadge reason="done" delegated={rowDelegated} />
+            : hasWorking ? <TaskWorkBadge reason="working" delegated={rowDelegated} />
+            : hasDelegated ? <TaskWorkBadge reason="delegated" delegated={rowDelegated} />
+            : null)}
+        </span>
       </div>
 
       {/* Tab children — terminal tabs only; edit/diff are transient file views */}
@@ -3499,7 +3611,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
         const rawTitle = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
         const title = tab.customTitle
           ? rawTitle
-          : formatTerminalTitle(rawTitle, tab.cli, showWorking);
+          : formatTerminalTitle(rawTitle, resolveIconId(tab.cli, agents), workingIndicator);
         const isTabRenaming = tabRenaming?.id === tab.id;
 
         return (
@@ -3624,23 +3736,24 @@ function NavItem({ icon, label, active, compact, onClick, testId }: {
   // it left of the project/task icons below it.
   // font-medium (500) gives the sidebar labels enough weight to read crisp
   // against the bg without looking shouty.
+  // Icon-only in both modes; the label is the tooltip, and stays in the DOM
+  // for screen readers (and for anything that finds the entry by its name).
   const btn = (
     <button
       onClick={onClick}
       data-testid={testId}
+      aria-label={label}
       className={cn(
-        "flex items-center rounded-md text-[13px] font-medium",
-        compact
-          ? "mx-auto h-9 w-9 justify-center"
-          : "gap-2 px-2.5 py-1.5",
-        active ? "bg-[var(--color-sel)] text-[var(--color-fg)]" : "text-[var(--color-fg)] hover:bg-[var(--color-hover)]",
+        "flex items-center justify-center rounded-md",
+        compact ? "mx-auto h-9 w-9" : "h-[30px] flex-1",
+        active ? "bg-[var(--color-sel)] text-[var(--color-fg)]" : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
       )}
     >
       {icon}
-      {!compact && <span>{label}</span>}
+      <span className="sr-only">{label}</span>
     </button>
   );
-  return compact ? <Tip content={label}>{btn}</Tip> : btn;
+  return <Tip content={label} side={compact ? "right" : "bottom"}>{btn}</Tip>;
 }
 
 /** Inline name-prompt row rendered above the task list while the
@@ -3750,17 +3863,17 @@ function PendingRepoRootRow({ mode, cli, value, branch, onChange, onBranchChange
 function CompactTaskTip({ name, tabs }: { name: string; tabs: TerminalTab[] }) {
   const { t } = useTranslation("sidebar");
   const agents = useApp(s => s.agents);
+  const workingIndicator = usePrefs(s => s.workingIndicator);
   return (
     <div data-testid="compact-task-tip" className="flex max-w-[320px] flex-col gap-1">
       <div className="truncate font-medium">{name}</div>
       {tabs.map(tab => {
         const rawTitle = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
-        const working = tab.workState === "working";
-        const title = tab.customTitle ? rawTitle : formatTerminalTitle(rawTitle, tab.cli, working);
+        const title = tab.customTitle ? rawTitle : formatTerminalTitle(rawTitle, resolveIconId(tab.cli, agents), workingIndicator);
         // A KEY, not the rendered word: the colour logic below compares it.
         const stateKey = tab.unread?.reason === "attention" ? "compactNeedsYou"
           : tab.workState === "done" ? "compactDone"
-          : working ? "compactWorking"
+          : tab.workState === "working" ? "compactWorking"
           : "";
         return (
           <div key={tab.id} data-testid="compact-task-tip-tab" className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-[var(--color-fg-dim)]">

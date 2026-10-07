@@ -57,7 +57,10 @@ function bucketLabel(bucket: StatusBucket, t: TFunction<"sidebar">): string {
   }
 }
 
-export function StatusSection() {
+/** `matchIds`: the sidebar filter bar's result, or null while it is empty.
+ *  The section lists only those tasks, so a filter means the same thing
+ *  here as in the tree below. */
+export function StatusSection({ matchIds = null }: { matchIds?: ReadonlySet<string> | null }) {
   const { t } = useTranslation("sidebar");
   const projects = useApp(s => s.projects);
   const tasks = useApp(s => s.tasks);
@@ -81,11 +84,15 @@ export function StatusSection() {
   // merged transition moves a task out of In review. Same key as BoardView.
   const prKey = usePr(s => Object.values(s.byTask).map(e => e.lookup?.pr?.state ?? "?").join("|"));
 
+  const listed = useMemo(
+    () => (matchIds ? tasks.filter(w => matchIds.has(w.id)) : tasks),
+    [tasks, matchIds],
+  );
   const groups = useMemo(
-    () => statusBuckets(projects, tasks, facts, usePr.getState().byTask, workPrefs),
+    () => statusBuckets(projects, listed, facts, usePr.getState().byTask, workPrefs),
     // prKey stands in for the snapshot read above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [projects, tasks, facts, workPrefs, prKey],
+    [projects, listed, facts, workPrefs, prKey],
   );
   const projectName = useMemo(() => new Map(projects.map(p => [p.id, p.name])), [projects]);
 
@@ -400,10 +407,11 @@ function StatusTaskTabs({ taskId, agents, workPrefs }: {
       {terminalTabs.map(tab => {
         const hot = isActive && tab.id === activeTabId;
         const reason = taskWorkBadge([tab], workPrefs);
-        const working = reason === "working";
         const raw = tab.customTitle ? tab.title : (tab.liveTitle || tab.title);
-        const title = tab.customTitle ? raw : formatTerminalTitle(raw, tab.cli, working);
         const icon = resolveIconId(tab.cli, agents);
+        // The tree's rule: the brand glyph always goes, the spinner whenever
+        // Termic draws its own working badge.
+        const title = tab.customTitle ? raw : formatTerminalTitle(raw, icon, !!workPrefs.workingIndicator);
         return (
           <div
             key={tab.id}
