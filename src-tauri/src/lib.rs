@@ -10136,6 +10136,8 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
     dlog(&format!("[profile] build {label}: builder.build"));
     let win = without_browser_accelerators(with_grayscale_text(builder)).build()?;
     dlog(&format!("[profile] build {label}: built"));
+    #[cfg(all(target_os = "macos", feature = "e2e"))]
+    hide_window_from_user_in_e2e(&win);
 
     // Restore saved bounds ourselves (the plugin skips "main" via
     // skip_initial_state) so the ordering is deterministic. SIZE +
@@ -10408,6 +10410,62 @@ fn focus_window_unless_e2e(win: &tauri::WebviewWindow) {
     }
 }
 
+/// Whether this e2e run should leave nothing on the screen (the default).
+/// `TERMIC_E2E_VISIBLE=1` is the way to watch a spec drive the window.
+#[cfg(all(target_os = "macos", feature = "e2e"))]
+fn e2e_runs_unseen() -> bool {
+    !std::env::var_os("TERMIC_E2E_VISIBLE").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// Make a window invisible to the person at the machine, e2e only.
+///
+/// Never taking focus (above) was half of it. `show()` on macOS is
+/// `makeKeyAndOrderFront`, so every spec file still put a 1500x1000 window on
+/// the current Space, in front of everything but the app being typed in, and
+/// took it away again a few seconds later. Nothing was stolen and it still
+/// reads as an interruption, seventeen times a run.
+///
+/// The window stays SHOWN and goes fully transparent instead of staying
+/// hidden: an ordered-in window keeps its backing store, so the webview lays
+/// out, runs and snapshots exactly as before (`takeSnapshot` renders the web
+/// content, not the window, so screenshots are unaffected by the alpha).
+/// Click-through, because a transparent window that still swallows clicks is
+/// worse than a visible one. Transient + IgnoresCycle keeps it out of Mission
+/// Control and the ⌘` cycle.
+///
+/// `TERMIC_E2E_VISIBLE=1` turns this off, for watching a spec run.
+#[cfg(all(target_os = "macos", feature = "e2e"))]
+fn hide_window_from_user_in_e2e(win: &tauri::WebviewWindow) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    if !e2e_runs_unseen() {
+        return;
+    }
+    let Ok(ns_window) = win.ns_window() else { return };
+    let ns_window = ns_window as *mut AnyObject;
+    if ns_window.is_null() {
+        return;
+    }
+    // NSWindowCollectionBehavior bits. Managed/Transient and
+    // ParticipatesInCycle/IgnoresCycle are exclusive pairs, so the default of
+    // each is cleared rather than left to fight the one being set.
+    const MANAGED: usize = 1 << 2;
+    const TRANSIENT: usize = 1 << 3;
+    const PARTICIPATES_IN_CYCLE: usize = 1 << 5;
+    const IGNORES_CYCLE: usize = 1 << 6;
+    // SAFETY: every caller builds its window on the main thread, and the
+    // pointer is the live NSWindow owned by tao. Only public NSWindow
+    // setters are sent.
+    unsafe {
+        let _: () = msg_send![ns_window, setAlphaValue: 0.0_f64];
+        let _: () = msg_send![ns_window, setIgnoresMouseEvents: true];
+        let behavior: usize = msg_send![ns_window, collectionBehavior];
+        let behavior = (behavior & !(MANAGED | PARTICIPATES_IN_CYCLE)) | TRANSIENT | IGNORES_CYCLE;
+        let _: () = msg_send![ns_window, setCollectionBehavior: behavior];
+    }
+}
+
 /// `(async)` for the same reason as `profile_open`: building a window from a
 /// synchronous command deadlocks on Windows.
 #[tauri::command(async)]
@@ -10436,6 +10494,8 @@ fn procmon_open_window_main(app: &AppHandle) -> Result<(), String> {
     let win = without_browser_accelerators(with_grayscale_text(win))
     .build()
     .map_err(|e| e.to_string())?;
+    #[cfg(all(target_os = "macos", feature = "e2e"))]
+    hide_window_from_user_in_e2e(&win);
     // Remember WHERE the monitor was, never how big. The window-state plugin
     // puts saved bounds back verbatim and does not honour min_inner_size, and
     // its saved 880x620 came back as 440x310 logical on a 2x display, under
@@ -24271,7 +24331,11 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .build(app)?;
     // Permanent chrome by default, not a windowless-only affordance, unless
     // the user turned it off in Settings > General.
-    let _ = tray.set_visible(tray_enabled());
+    let visible = tray_enabled();
+    // Same rule as `set_tray_visible`: an e2e run draws no menu-bar item.
+    #[cfg(all(target_os = "macos", feature = "e2e"))]
+    let visible = visible && !e2e_runs_unseen();
+    let _ = tray.set_visible(visible);
     Ok(())
 }
 
@@ -24400,6 +24464,13 @@ fn window_close_choice(app: AppHandle, action: String, remember: bool) -> Result
 /// the ONLY way back from an Accessory (dock-iconless) windowless state, so
 /// `enter_windowless` refuses to drop the dock icon without it.
 fn set_tray_visible(app: &AppHandle, visible: bool) -> bool {
+    // E2E: the item is never drawn, and the answer is the one a real run
+    // would give. Each spec file launches its own instance, so a visible item
+    // is an icon blinking in and out of the user's menu bar all run long. No
+    // spec can see the menu bar, and the callers only need to know the item
+    // EXISTS (see above), which it does.
+    #[cfg(all(target_os = "macos", feature = "e2e"))]
+    let visible = visible && !e2e_runs_unseen();
     match app.tray_by_id("main") {
         Some(tray) => tray.set_visible(visible).is_ok(),
         None => false,

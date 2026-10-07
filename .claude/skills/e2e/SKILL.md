@@ -32,6 +32,14 @@ Iterating on spec files only? Skip the rebuild:
 npm run test:e2e    # just runs wdio against the last-built binary
 ```
 
+On macOS the run is invisible: the window is fully transparent and
+click-through, and never takes focus. To watch a spec drive the window:
+
+```sh
+make e2e_visible                        # make e2e, with the window on screen
+TERMIC_E2E_VISIBLE=1 npm run test:e2e   # same, without the rebuild
+```
+
 Rebuild (`npm run e2e:build`, or `make e2e`) **after any Rust or frontend
 change** — the frontend is embedded in the e2e binary. Screenshots land in
 `.e2e/artifacts/` (gitignored, local only — no-op in CI via `snap()`). Runs

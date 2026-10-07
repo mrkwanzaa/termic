@@ -197,7 +197,7 @@ lsp-smoke-record: ## Same, plus refresh the recorded workspace/symbol answers th
 	@node scripts/lsp-smoke.mjs --record
 .PHONY: lsp-smoke-record
 
-e2e: ## Build the e2e binary (--features e2e) and run the WebdriverIO suite. Real window, local Mac only. See docs/e2e-tests.md.
+e2e: ## Build the e2e binary (--features e2e) and run the WebdriverIO suite. Real window, invisible on macOS (see e2e_visible). See docs/e2e-tests.md.
 	@# Self-sufficient: install JS deps + (re)seed the throwaway fixture profile
 	@# if needed, so a fresh checkout can `make e2e` with no manual steps. Uses
 	@# the embedded WebDriver (tauri-plugin-wdio-webdriver, compiled in by the
@@ -208,6 +208,13 @@ e2e: ## Build the e2e binary (--features e2e) and run the WebdriverIO suite. Rea
 	@npm run e2e:build
 	@npm run test:e2e
 .PHONY: e2e
+
+e2e_visible: ## Same as `make e2e`, with the window on screen so you can watch the specs drive it. It still never takes focus.
+	@# The default run is transparent and click-through on macOS so it does not
+	@# interrupt whoever is at the machine. The app reads this at runtime, so
+	@# both targets share one binary.
+	@TERMIC_E2E_VISIBLE=1 $(MAKE) e2e
+.PHONY: e2e_visible
 
 perf: ## Run both performance suites locally and report each separately.
 	@# Section 1 is the same suite the nightly workflow runs (startup marks +

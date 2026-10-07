@@ -292,6 +292,35 @@ frontmost, and the window was already occluded anyway (see below). Do not add a
 this path to make a spec pass: the spec is reaching for OS focus it should not
 need, and the cost is the user's attention every time the suite runs.
 
+### The e2e build draws nothing on screen (macOS)
+
+Not taking focus was half of it. `show()` on macOS is `makeKeyAndOrderFront`,
+so each spec file still put a 1500x1000 window on the current Space, in front
+of everything but the app being typed in, and removed it seconds later. Nothing
+was stolen and it still reads as an interruption on every launch.
+
+So under `--features e2e` every window the app builds goes through
+`hide_window_from_user_in_e2e` (`lib.rs`): alpha 0, click-through
+(`ignoresMouseEvents`), and Transient + IgnoresCycle so it stays out of Mission
+Control and the window cycle. The menu-bar item is never drawn either
+(`set_tray_visible`), since it would otherwise blink in and out of the menu bar
+once per spec file.
+
+The window is still SHOWN, deliberately. An ordered-in window keeps its
+backing store, so layout, script and `takeSnapshot` behave exactly as before:
+`snap()` and the failure screenshot render the web content, not the window, and
+come out opaque. Measured with `CGWindowListCopyWindowInfo` during a run: the
+main and Activity windows report `kCGWindowAlpha` 0, and 1 with the override
+below.
+
+**To watch a spec run, use `make e2e_visible`**, which is `make e2e` with
+`TERMIC_E2E_VISIBLE=1` set (`TERMIC_E2E_VISIBLE=1 npm run test:e2e` to skip the
+rebuild). The app reads it at runtime, so both targets share one binary. The
+window still does not take focus.
+
+A window built by a NEW code path (a third `WebviewWindowBuilder`) has to call
+the helper too, or it is the one window that pops up.
+
 ### The window is hidden, so nothing animates
 
 `document.hidden` is `true` for the whole run: the harness never brings the
