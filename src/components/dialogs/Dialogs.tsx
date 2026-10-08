@@ -27,6 +27,7 @@ import { DeleteProfileDialog } from "./DeleteProfileDialog";
 import { TerminalDropDialog } from "./TerminalDropDialog";
 import { DockerRebuildPromptDialog } from "./DockerRebuildPromptDialog";
 import { FileFinderDialog } from "./FileFinderDialog";
+import { TaskFinderDialog } from "./TaskFinderDialog";
 import { FindInFilesDialog } from "./FindInFilesDialog";
 import { ProjectPickerDialog } from "./ProjectPickerDialog";
 import { CommandPalette } from "./CommandPalette";
@@ -72,6 +73,7 @@ export function Dialogs() {
       <TerminalDropDialog />
       <DockerRebuildPromptDialog />
       <FileFinderDialog />
+      <TaskFinderDialog />
       <FindInFilesDialog />
       <ProjectPickerDialog />
       <CommandPalette />

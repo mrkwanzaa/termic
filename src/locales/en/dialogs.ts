@@ -63,6 +63,7 @@ export default {
     toastUpToDate: "You're up to date",
     cmd: {
       newTask: "New task…",
+      taskFinder: "Open task finder…",
       newTaskIssue: "New task from an issue…",
       addProject: "Add project…",
       filePicker: "File picker",
@@ -528,6 +529,20 @@ export default {
     placeholderIssue: "Search a project to pick an issue from",
     noMatching: "No matching projects",
     noProjects: "No projects",
+  },
+  taskFinder: {
+    srTitle: "Task search",
+    srDesc: "Search and switch tasks across projects.",
+    placeholder: "Search tasks by name, project, branch, or agent…",
+    clear: "Clear search query",
+    noMatching: "No matching tasks",
+    noTasks: "No tasks yet",
+    current: "current",
+    navigate: "navigate",
+    switch: "switch",
+    dismiss: "close",
+    count_one: "{{count}} task",
+    count_other: "{{count}} tasks",
   },
   promptDestination: {
     title: "Run \"{{title}}\"",
