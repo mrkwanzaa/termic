@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.14.0] - 2026-10-08
+## [1.14.1] - 2026-10-08
 
 A sidebar filter bar and status chips, HTML preview, and review requests in New Task.
 
@@ -49,6 +49,10 @@ A sidebar filter bar and status chips, HTML preview, and review requests in New 
   [@nvkvin](https://github.com/nvkvin).
 
 ### Improvements
+- **Open an HTML file in your browser.** The preview runs without scripts, so
+  a report that needs JavaScript (charts, for instance) has an "Open in
+  default browser" button, in the file's header and beside Editor / Preview /
+  Split. Thanks to [@nvkvin](https://github.com/nvkvin).
 - **The sidebar is easier to scan.** Status section headers carry the glyph
   and colour of their rows, a branch name draws its leading path
   (`feature/`) faint so rows differ where your eye lands, and a collapsed
