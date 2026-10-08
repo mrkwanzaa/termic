@@ -1591,7 +1591,7 @@ const TOOLS: &[ToolDef] = &[
         cli_verb: "schedule set",
         description: "Create or update a recurring schedule on a parent task (cadence, prompt, retention, enable/disable).",
         params: &[
-            P_SCHEDULE_TASK,
+            P_TASK,
             P_PROJECT,
             ParamDef { name: "name", json_type: "string", required: false, description: "Schedule display name (defaults to the task name).", cli_flag: Some("--name") },
             ParamDef { name: "cadence", json_type: "string", required: false, description: "\"daily\", \"weekdays\", or \"weekly\".", cli_flag: Some("--cadence") },
@@ -1622,7 +1622,7 @@ const TOOLS: &[ToolDef] = &[
                 None => None,
             };
             Ok(Command::ScheduleSet {
-                task: arg_str(a, "task")?,
+                task: Some(need_str(a, "task")?),
                 project: arg_str(a, "project")?,
                 name: arg_str(a, "name")?,
                 cadence,
@@ -1804,7 +1804,7 @@ fn tools_call(server: &McpServer, id: serde_json::Value, params: &serde_json::Va
 const SELF_DEFAULT_TOOLS: &[&str] = &[
     "task_rename", "task_group", "task_tab", "task_prop",
     "scratchpad_new", "scratchpad_write", "scratchpad_read", "scratchpad_list",
-    "schedule_show", "schedule_set", "schedule_run", "schedule_delete",
+    "schedule_show", "schedule_run", "schedule_delete",
 ];
 
 /// `args` with the caller's task filled in where the CLI would have used
@@ -4211,6 +4211,7 @@ command = \"/bin/true\"\n";
         // Verbs the CLI never aims at "your own task" are left alone.
         assert!(with_caller_defaults("task_archive", &empty, Some("me")).is_empty());
         assert!(with_caller_defaults("task_send", &empty, Some("me")).is_empty());
+        assert!(with_caller_defaults("schedule_set", &empty, Some("me")).is_empty());
         // No header, no defaults.
         assert!(with_caller_defaults("task_new", &empty, None).is_empty());
     }

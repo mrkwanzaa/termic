@@ -288,7 +288,7 @@ Address pads by id: a title works when it is unique, but titles change.
 
 ### Recurring task schedules
 
-Termic supports recurring schedules on tasks: recurring runs cut child tasks at specified cadences (daily, weekdays, weekly), run the configured prompt or prompt library template, and generate markdown reports under `.termic/reports/`. Every `schedule` verb targets your own task by default when `$TERMIC_TASK_ID` is set, or accepts `<TASK>` / `--task`. Over MCP the corresponding tools are `schedule_list`, `schedule_show`, `schedule_set`, `schedule_run`, and `schedule_delete`.
+Termic supports recurring schedules on tasks: recurring runs cut child tasks at specified cadences (daily, weekdays, weekly), run the configured prompt or prompt library template, and generate markdown reports under `.termic/reports/`. Every `schedule` verb targets your own task by default when `$TERMIC_TASK_ID` is set, or accepts `<TASK>` / `--task`. Over MCP the corresponding tools are `schedule_list`, `schedule_show`, `schedule_set` (explicit `task` required), `schedule_run`, and `schedule_delete`.
 
 - `"$TERMIC_CLI" schedule list --json` - list recurring schedules with cadence, enabled state, next run, and last outcome.
 - `"$TERMIC_CLI" schedule show <task> --json` - detailed schedule configuration, history, and report files.
