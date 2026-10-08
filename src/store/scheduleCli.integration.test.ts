@@ -27,19 +27,45 @@ import { useApp } from "@/store/app";
 import { scheduleHandler } from "@/lib/scheduleCli";
 import type { Project, Task, TaskSchedule } from "@/lib/types";
 
-const PROJ: Project = {
+function project(over: Partial<Project> & { id: string; name: string }): Project {
+  return {
+    root_path: `/repo/${over.name}`,
+    tasks_path: `/repo/${over.name}/tasks`,
+    base_branch: "main",
+    remote: "",
+    preview_url: "",
+    files_to_copy: [],
+    setup_script: "",
+    run_script: "",
+    archive_script: "",
+    default_cli: "claude",
+    created: "2026-01-01T00:00:00Z",
+    ...over,
+  } as Project;
+}
+
+function task(over: Partial<Task> & { id: string; name: string; project_id: string }): Task {
+  return {
+    branch: "main",
+    base_branch: "main",
+    path: `/repo/web/tasks/${over.name}`,
+    cli: "claude",
+    port: 0,
+    created: "2026-01-01T00:00:00Z",
+    archived: false,
+    ...over,
+  } as Task;
+}
+
+const PROJ = project({
   id: "proj-1",
   name: "web",
-  path: "/repo/web",
-};
+});
 
-const TASK: Task = {
+const TASK = task({
   id: "task-1",
   project_id: "proj-1",
   name: "daily-sync",
-  cli: "claude",
-  path: "/repo/web/tasks/daily-sync",
-  created_at: 1000,
   schedule: {
     enabled: true,
     name: "daily sync",
@@ -54,26 +80,20 @@ const TASK: Task = {
       { slot: 1728300000, outcome: "fired", report: "2026-10-07_0900.md", title: "Sync summary" },
     ],
   },
-};
+});
 
-const DOCKER_TASK: Task = {
+const DOCKER_TASK = task({
   id: "task-docker",
   project_id: "proj-1",
   name: "docker-job",
-  cli: "claude",
-  path: "/repo/web/tasks/docker-job",
-  sandbox: "docker",
-  created_at: 1000,
-};
+  docker_sandbox_enabled: true,
+});
 
-const BARE_TASK: Task = {
+const BARE_TASK = task({
   id: "task-bare",
   project_id: "proj-1",
   name: "bare-task",
-  cli: "claude",
-  path: "/repo/web/tasks/bare-task",
-  created_at: 1000,
-};
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

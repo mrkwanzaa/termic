@@ -142,7 +142,8 @@ function normalizeCadence(wire: ScheduleCadenceWire): ScheduleCadence {
   return { kind, time };
 }
 
-export async function scheduleHandler(params: ScheduleParams): Promise<unknown> {
+export async function scheduleHandler(raw: unknown): Promise<unknown> {
+  const params = (raw ?? {}) as ScheduleParams;
   const s = useApp.getState();
   const now = Date.now();
   const projectsById = new Map(s.projects.map(p => [p.id, p.name]));
@@ -198,7 +199,7 @@ export async function scheduleHandler(params: ScheduleParams): Promise<unknown> 
 
   if (params.op === "set") {
     // Docker check: Seatbelt and uncaged tasks only (docs/sandbox.md).
-    if (task.sandbox === "docker") {
+    if (task.docker_sandbox_enabled) {
       throw new Error("cannot schedule a Docker task (Seatbelt and uncaged tasks only)");
     }
 
@@ -259,6 +260,7 @@ export async function scheduleHandler(params: ScheduleParams): Promise<unknown> 
         catch_up: input.catch_up,
         keep_runs: input.keep_runs,
         report_days: input.report_days,
+        last_slot: null,
         history: [],
       });
       updated = useApp.getState().tasks.find(t => t.id === taskId);
