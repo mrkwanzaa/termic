@@ -1444,6 +1444,16 @@ export function cliBinary(): string {
   const triple = process.platform === "darwin" ? `${arch}-apple-darwin`
     : process.platform === "win32" ? `${arch}-pc-windows-msvc`
     : `${arch}-unknown-linux-gnu`;
+  // The e2e build's OWN sidecar first: the debug one `build.rs` leaves in
+  // `target/cli-sidecar` when it builds the debug app. `src-tauri/binaries`
+  // is shared with every other build on the machine, and a release build
+  // (`make beta`, `make build`) overwrites the copy there with a RELEASE
+  // sidecar, which ignores TERMIC_DATA_DIR and talks to the installed app.
+  // That happened mid-run: the suite's `termic new` went to the developer's
+  // real Termic, and every CLI-driven describe failed from that point on.
+  const own = path.resolve("src-tauri/target/cli-sidecar", triple, "debug",
+    process.platform === "win32" ? "termic-cli.exe" : "termic-cli");
+  if (fs.existsSync(own)) return own;
   const candidates = process.platform === "darwin"
     ? [`termic-cli-universal-apple-darwin`, `termic-cli-${triple}`]
     : process.platform === "win32" ? [`termic-cli-${triple}.exe`]
@@ -1468,11 +1478,25 @@ export function cliBinary(): string {
  *  actual reason - a missing binary, a non-zero exit, whatever the CLI wrote
  *  to stderr - never reaches the log. That masked this exact bug through a
  *  full CI run and a local one. */
+/** Pin the CLI to the socket of the data dir the caller named.
+ *
+ *  A debug CLI derives the socket from TERMIC_DATA_DIR by itself. A release
+ *  one does not: it goes to the installed app's data dir, so a suite run with
+ *  a release sidecar staged drives whatever Termic the developer has open.
+ *  TERMIC_SOCKET is honoured by both, so naming it makes the suite talk to
+ *  its own app whichever sidecar it was handed, or fail to connect; it can
+ *  no longer reach a real one. Unix only (Windows uses the loopback
+ *  transport, see docs/windows.md), and a caller's own TERMIC_SOCKET wins. */
+function ownSocket(env: Record<string, string>): Record<string, string> {
+  if (process.platform === "win32" || env.TERMIC_SOCKET || !env.TERMIC_DATA_DIR) return {};
+  return { TERMIC_SOCKET: path.join(env.TERMIC_DATA_DIR, "termic.sock") };
+}
+
 export function runCli(args: string[], env: Record<string, string>): string {
   try {
     return execFileSync(cliBinary(), args, {
       cwd: path.resolve("."),
-      env: { ...process.env, ...env },
+      env: { ...process.env, ...ownSocket(env), ...env },
       encoding: "utf8",
     });
   } catch (e: any) {

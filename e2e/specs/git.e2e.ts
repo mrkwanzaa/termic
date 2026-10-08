@@ -2752,15 +2752,37 @@ describe("the forge pickers: work that pulled you in", () => {
     // provider from the real remote, which is what the pane then reports.
     // AFTER the dialog's own resolveProvider has answered: it writes `null`
     // for this remote, and a seed placed before it would be overwritten.
-    await browser.execute((id) => window.__termic!.useUI.getState().openNewTask(id), projectId);
+    //
+    // The key is DROPPED first, so "the key is there" means this open's
+    // resolve answered. An earlier block in this file resolves the same
+    // project, and with its answer still in the map the wait below passed at
+    // once, the seed went in early, and the dialog's own resolve then wrote
+    // `null` over it: no source tabs, and all four cases here failed. Seen in
+    // two full runs out of six, never with the file run alone.
+    await browser.execute((id) => {
+      const pr = window.__termic!.usePr;
+      const next = { ...pr.getState().providerByProject };
+      delete next[id];
+      pr.setState({ providerByProject: next });
+      window.__termic!.useUI.getState().openNewTask(id);
+    }, projectId);
     await browser.waitUntil(
       () => browser.execute((id) => id in window.__termic!.usePr.getState().providerByProject, projectId),
       { timeout: 10_000, timeoutMsg: "the dialog never resolved the project's forge" },
     );
-    await browser.execute((id) => {
-      const pr = window.__termic!.usePr;
-      pr.setState({ providerByProject: { ...pr.getState().providerByProject, [id]: "github" } });
-    }, projectId);
+    // Seeded until it STICKS: more than one component resolves a project, and
+    // a second answer landing after the seed would undo it the same way.
+    await browser.waitUntil(
+      () => browser.execute((id) => {
+        const pr = window.__termic!.usePr;
+        if (pr.getState().providerByProject[id] !== "github") {
+          pr.setState({ providerByProject: { ...pr.getState().providerByProject, [id]: "github" } });
+          return false;
+        }
+        return !!document.querySelector('[data-source-tab="pr"]');
+      }, projectId),
+      { timeout: 10_000, timeoutMsg: "the seeded forge never produced the From a PR tab" },
+    );
     await clickWhenVisible('[data-source-tab="pr"]');
     await waitVisible('[data-testid="pr-column"]');
     await waitForText("Your open pull requests, and the ones waiting on your review.");

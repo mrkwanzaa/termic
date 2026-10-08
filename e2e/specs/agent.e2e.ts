@@ -3471,11 +3471,19 @@ describe("agent messages wait for your draft", () => {
 // itself and quit: the exited banner over a tab that kept spinning, in the
 // tab strip, the sidebar and the Working chip.
 describe("an agent that exits mid-turn", () => {
+  let taskId: string | null = null;
+  // Archived like every other block's task. The profile is shared by every
+  // spec file in a run, and this one left behind took 35 cases in four later
+  // files with it: they find "the" task by position and found this one.
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+
   it("stops showing as working once its process is gone", async () => {
     await waitForAppShell();
     await requireTermicApi();
     await requireWorkBadges();
-    const taskId = await openTask("e2e-exit-midturn");
+    taskId = await openTask("e2e-exit-midturn");
     await waitForAgentReady(taskId);
 
     await submitToAgent(taskId, "work");
