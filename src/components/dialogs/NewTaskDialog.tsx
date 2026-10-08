@@ -28,7 +28,7 @@ import { SandboxPicker, DockerEngineNote } from "@/components/SandboxPicker";
 import { ListField } from "@/components/settings/Controls";
 import { memberSandboxUnion, projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
 import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
-import { selectionToFields, isTaskCaged, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type BranchContext, type Settings, type PrPickList, type ForgePr } from "@/lib/types";
+import { selectionToFields, isTaskCaged, type MemberMode, type ImportableWorktree, type SandboxSelection, type ForgeIssue, type IssueLookup, type IssueScope, type BranchContext, type Settings, type PrPickList, type ForgePr } from "@/lib/types";
 import { BRANCH_CHOICES_MAX, branchChoices, checkoutTaskName, isKnownBranch, remoteNames } from "@/lib/existingBranch";
 import { projectForgeIssues } from "@/lib/ipc";
 import { buildIssuesPrompt, issueBranch, issueRef, issueTaskName } from "@/lib/issuePrompt";
@@ -411,6 +411,13 @@ export function NewTaskDialog() {
   const canIssues = !isMulti && !project?.non_git;
   const [issueMode, setIssueMode] = useState(false);
   const [issueLookup, setIssueLookup] = useState<IssueLookup | null>(null);
+  // Which open issues the column lists: the repo's, or only the ones that
+  // pulled YOU in (assigned, or an @-mention). GitHub only; see IssueScope in
+  // forge.rs. Per-entry: re-entering the column starts back on "all".
+  const [issueScope, setIssueScope] = useState<IssueScope>("all");
+  // Bumped per fetch so a slow answer for a scope you already left cannot
+  // overwrite the list for the one you clicked last.
+  const issueFetchSeq = useRef(0);
   const [issueLoading, setIssueLoading] = useState(false);
   const [issuePicks, setIssuePicks] = useState<ForgeIssue[]>([]);
   const [issueQuery, setIssueQuery] = useState("");
@@ -424,13 +431,17 @@ export function NewTaskDialog() {
   const [checkoutBranch, setCheckoutBranch] = useState("");
   const [checkoutRefs, setCheckoutRefs] = useState<BranchContext | null>(null);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
-  // Pull request mode. Deliberately not a general PR browser: the list is only
-  // YOUR open PRs, and anything else is reached by typing its number. "Every
+  // Pull request mode. Deliberately not a general PR browser: the lists are
+  // only YOUR open PRs and the ones waiting on your review, and anything else
+  // is reached by typing its number. "Every
   // open PR" does not scale (1,300 of them on the maintainer's work repo), and
   // a list that long is slower to fetch, slower to read and rarely the one you
   // came for.
   const [prMode, setPrMode] = useState(false);
   const [prLookup, setPrLookup] = useState<PrPickList | null>(null);
+  // The second list: open PRs waiting on YOUR review. Still scoped to you, so
+  // it stays as small as the first. Fetched beside it, never blocking it.
+  const [prReviewLookup, setPrReviewLookup] = useState<PrPickList | null>(null);
   const [prLoading, setPrLoading] = useState(false);
   const [prQuery, setPrQuery] = useState("");
   const [prBusy, setPrBusy] = useState(0);
@@ -682,6 +693,7 @@ export function NewTaskDialog() {
     setIssueMode(false);
     setIssuePicks([]);
     setIssueLookup(null);
+    setIssueScope("all");
     // The filter text is per-open too: a query typed against one project's
     // list must not silently carry into the next project's picker.
     setIssueQuery("");
@@ -691,6 +703,7 @@ export function NewTaskDialog() {
     // the PREVIOUS project's cached list.
     setPrMode(false);
     setPrLookup(null);
+    setPrReviewLookup(null);
     setPrQuery("");
     setPrLoading(false);
     setPrBusy(0);
@@ -902,11 +915,18 @@ export function NewTaskDialog() {
       .then(l => { if (!stale()) setPrLookup(l); })
       .catch(e => { if (!stale()) setErr(String(e)); })
       .finally(() => { if (!stale()) setPrLoading(false); });
+    // A failure here only hides the section: the list above already says
+    // why the forge cannot be reached, and saying it twice is noise.
+    setPrReviewLookup(null);
+    projectForgePrs(projectId, { review: true })
+      .then(l => { if (!stale()) setPrReviewLookup(l); })
+      .catch(() => {});
   }
 
   function exitPrs() {
     setPrMode(false);
     setPrLookup(null);
+    setPrReviewLookup(null);
     setPrQuery("");
     setErr(null);
   }
@@ -1002,6 +1022,35 @@ export function NewTaskDialog() {
     }
   }
 
+  /** One clickable PR in either list. Picking one from "waiting for your
+   *  review" is the same pick as one of yours: fetch the head, then check it
+   *  out into the task. */
+  const prRow = (pr: ForgePr) => (
+    <li key={pr.number}>
+      <button
+        type="button"
+        data-testid="pr-row"
+        data-pr-number={pr.number}
+        disabled={prBusy > 0}
+        onClick={() => void pickPr(pr)}
+        className="flex w-full flex-col gap-0.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-left transition-colors hover:border-[var(--color-accent)] disabled:opacity-60"
+      >
+        <span className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-fg)]">
+          <span className="shrink-0 font-mono text-[11.5px] text-[var(--color-fg-faint)]">{prRef(pr.provider, pr.number)}</span>
+          <span className="min-w-0 truncate">{pr.title}</span>
+          {pr.draft && (
+            <span className="shrink-0 rounded bg-[var(--color-bg-3)] px-1 py-px text-[10.5px] text-[var(--color-fg-faint)]">
+              {t("newTask.prDraft")}
+            </span>
+          )}
+        </span>
+        <span className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">
+          {pr.head_ref}{pr.cross_repository ? ` · ${t("newTask.prFork")}` : ""}
+        </span>
+      </button>
+    </li>
+  );
+
   async function pickPrByNumber() {
     if (!projectId) return;
     const n = parsePrQuery(prQuery);
@@ -1038,17 +1087,32 @@ export function NewTaskDialog() {
     if (prMode) exitPrs();
     setErr(null);
     if (!projectId) return;
+    setIssueScope("all");
+    loadIssues("all");
+  }
+
+  function loadIssues(scope: IssueScope) {
+    if (!projectId) return;
     setIssueLoading(true);
     // The fetch outlives a close: a stale lookup landing in a re-opened
     // dialog would seed the wrong project's issues (and its provider into
-    // the pane copy and prompts). Same guard as projectBranchContext above.
-    const stale = staleFor(projectId, useUI.getState().newTaskSeed);
-    projectForgeIssues(projectId, 50)
+    // the pane copy and prompts). Same guard as projectBranchContext above,
+    // plus the sequence check for a scope clicked away from mid-fetch.
+    const reopened = staleFor(projectId, useUI.getState().newTaskSeed);
+    const seq = ++issueFetchSeq.current;
+    const stale = () => reopened() || seq !== issueFetchSeq.current;
+    projectForgeIssues(projectId, 50, scope)
       .then(l => { if (!stale()) setIssueLookup(l); })
       .catch(e => { if (!stale()) setIssueLookup({
         provider: null, remote_url: "", status: "error", message: String(e), issues: [],
       }); })
       .finally(() => { if (!stale()) setIssueLoading(false); });
+  }
+
+  function chooseIssueScope(next: IssueScope) {
+    if (next === issueScope) return;
+    setIssueScope(next);
+    loadIssues(next);
   }
 
   // Resolve the project's forge up front. Backed by a cached, network-free
@@ -2193,32 +2257,21 @@ export function NewTaskDialog() {
             </div>
           ) : (
             <ul className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
-              {(prLookup?.prs ?? []).map(pr => (
-                <li key={pr.number}>
-                  <button
-                    type="button"
-                    data-testid="pr-row"
-                    data-pr-number={pr.number}
-                    disabled={prBusy > 0}
-                    onClick={() => void pickPr(pr)}
-                    className="flex w-full flex-col gap-0.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-left transition-colors hover:border-[var(--color-accent)] disabled:opacity-60"
-                  >
-                    <span className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-fg)]">
-                      <span className="shrink-0 font-mono text-[11.5px] text-[var(--color-fg-faint)]">{prRef(pr.provider, pr.number)}</span>
-                      <span className="min-w-0 truncate">{pr.title}</span>
-                      {pr.draft && (
-                        <span className="shrink-0 rounded bg-[var(--color-bg-3)] px-1 py-px text-[10.5px] text-[var(--color-fg-faint)]">
-                          {t("newTask.prDraft")}
-                        </span>
-                      )}
-                    </span>
-                    <span className="truncate font-mono text-[11px] text-[var(--color-fg-faint)]">
-                      {pr.head_ref}{pr.cross_repository ? ` · ${t("newTask.prFork")}` : ""}
-                    </span>
-                  </button>
-                </li>
-              ))}
+              {(prLookup?.prs ?? []).map(prRow)}
             </ul>
+          )}
+          {/* BELOW yours, not above: it lands on its own clock, and a list
+              that arrives late must not push down the rows you may be
+              about to click. Shown only when there is something in it. */}
+          {prReviewLookup?.status === "ok" && prReviewLookup.prs.length > 0 && (
+            <div data-testid="pr-review-section" className="flex min-w-0 flex-col gap-1.5">
+              <div className="text-[11px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
+                {t("newTask.prReviewTitle")}
+              </div>
+              <ul className="flex min-h-0 flex-col gap-1 overflow-y-auto">
+                {prReviewLookup.prs.map(prRow)}
+              </ul>
+            </div>
           )}
           {prBusy > 0 && (
             <div className="flex items-center gap-2 text-[12px] text-[var(--color-fg-faint)]">
@@ -2260,6 +2313,34 @@ export function NewTaskDialog() {
           <p className="-mt-1 text-[12px] leading-snug text-[var(--color-fg-dim)]">
             {t("newTask.issueColumnIntro", { noun: paneNouns.noun, nouns: paneNouns.nouns })}
           </p>
+          {/* Scope chips: chosen, never arriving on their own, so the list
+              below only changes when you click. GitHub only, the one forge
+              whose CLI can say "assigned to me" and "mentions me". */}
+          {paneProvider === "github" && (
+            <div data-testid="issue-scope" className="flex flex-wrap items-center gap-1">
+              {([
+                ["all", t("newTask.issueScopeAll")],
+                ["assigned", t("newTask.issueScopeAssigned")],
+                ["mentions", t("newTask.issueScopeMentions")],
+              ] as const).map(([sv, label]) => (
+                <button
+                  key={sv}
+                  type="button"
+                  data-issue-scope={sv}
+                  aria-pressed={issueScope === sv}
+                  onClick={() => chooseIssueScope(sv)}
+                  className={cn(
+                    "rounded-md px-2 py-1 text-[12px] transition-colors",
+                    issueScope === sv
+                      ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
+                      : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           {issueLoading ? (
             <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
               <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingIssues", { nouns: paneNouns.nouns })}
@@ -2291,7 +2372,11 @@ export function NewTaskDialog() {
             </div>
           ) : (issueLookup?.issues.length ?? 0) === 0 ? (
             <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-4 text-center text-[12px] text-[var(--color-fg-faint)]">
-              {t("newTask.noOpenIssues", { nouns: paneNouns.nouns })}
+              {issueScope === "assigned"
+                ? t("newTask.noIssuesAssigned", { nouns: paneNouns.nouns })
+                : issueScope === "mentions"
+                  ? t("newTask.noIssuesMentioned", { nouns: paneNouns.nouns })
+                  : t("newTask.noOpenIssues", { nouns: paneNouns.nouns })}
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col">

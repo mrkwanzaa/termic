@@ -13918,7 +13918,7 @@ fn cli_missing_message(provider: &str, cli: &str, purpose: &str) -> String {
     }
 }
 
-fn issue_lookup_blocking(project_id: &str, limit: u32) -> Result<IssueLookup, String> {
+fn issue_lookup_blocking(project_id: &str, limit: u32, scope: forge::IssueScope) -> Result<IssueLookup, String> {
     let p = load_projects_all()
         .into_iter()
         .find(|p| p.id == project_id)
@@ -13951,7 +13951,7 @@ fn issue_lookup_blocking(project_id: &str, limit: u32) -> Result<IssueLookup, St
         message,
         issues,
     };
-    match forge::issue_list(provider, &cwd, limit) {
+    match forge::issue_list(provider, &cwd, limit, scope) {
         Ok(issues) => Ok(with("ok", String::new(), issues)),
         Err(forge::ForgeError::CliMissing(cli)) => Ok(with(
             "cli-missing",
@@ -13980,7 +13980,9 @@ struct PrPickList {
 /// reporting "no remote" / "cli missing" as a STATUS rather than an error: the
 /// New Task dialog draws a sentence, never a red banner, for a repo that simply
 /// has no forge.
-fn pr_picker_blocking(project_id: &str, limit: u32, number: Option<u64>) -> Result<PrPickList, String> {
+/// `review` swaps the list for the PRs waiting on the user's review (see
+/// `forge::pr_list_review_requested`); the number path ignores it.
+fn pr_picker_blocking(project_id: &str, limit: u32, number: Option<u64>, review: bool) -> Result<PrPickList, String> {
     let p = load_projects_all()
         .into_iter()
         .find(|p| p.id == project_id)
@@ -14011,6 +14013,7 @@ fn pr_picker_blocking(project_id: &str, limit: u32, number: Option<u64>) -> Resu
         // One number: `pr view`. Not found is a status, not an error, because
         // a mistyped number is the ordinary case on this path.
         Some(n) => forge::pr_by_number(provider, &cwd, n).map(|o| o.into_iter().collect::<Vec<_>>()),
+        None if review => forge::pr_list_review_requested(provider, &cwd, limit),
         None => forge::pr_list_mine(provider, &cwd, limit),
     };
     match result {
@@ -14029,9 +14032,10 @@ fn pr_picker_blocking(project_id: &str, limit: u32, number: Option<u64>) -> Resu
 }
 
 #[tauri::command]
-async fn project_forge_prs(project_id: String, limit: Option<u32>, number: Option<u64>) -> Result<PrPickList, String> {
+async fn project_forge_prs(project_id: String, limit: Option<u32>, number: Option<u64>, review: Option<bool>) -> Result<PrPickList, String> {
     let limit = limit.unwrap_or(30).clamp(1, 100);
-    tauri::async_runtime::spawn_blocking(move || pr_picker_blocking(&project_id, limit, number))
+    let review = review.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || pr_picker_blocking(&project_id, limit, number, review))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -14139,9 +14143,10 @@ async fn project_forge_provider(project_id: String) -> Result<ForgeProvider, Str
 /// Open issues for a PROJECT (not a task): the New Task dialog runs before
 /// any task exists, so this resolves the repo from the project root.
 #[tauri::command]
-async fn project_forge_issues(project_id: String, limit: Option<u32>) -> Result<IssueLookup, String> {
+async fn project_forge_issues(project_id: String, limit: Option<u32>, scope: Option<String>) -> Result<IssueLookup, String> {
     let limit = limit.unwrap_or(50).clamp(1, 200);
-    tauri::async_runtime::spawn_blocking(move || issue_lookup_blocking(&project_id, limit))
+    let scope = forge::IssueScope::parse(scope.as_deref());
+    tauri::async_runtime::spawn_blocking(move || issue_lookup_blocking(&project_id, limit, scope))
         .await
         .map_err(|e| e.to_string())?
 }
