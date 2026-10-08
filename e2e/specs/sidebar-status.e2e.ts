@@ -1,7 +1,10 @@
 // The sidebar's status section (docs/ui.md "The sidebar's status section"):
 // the toggle in both of its places, bucket membership from the board's own
-// derivation, the row identity rules the tree depends on, the click, the
-// folds that persist, and the icon rail that does not carry it.
+// derivation, the bucket marks in the board's colours, the row identity rules
+// the tree depends on, the click, the folds that persist, and the icon rail
+// that does not carry it. Alongside it, two things the tree's rows share with
+// the section's: a folded project or folder carrying its hidden rows' marks,
+// and a branch label drawn with its leading path faint.
 //
 // Deterministic by construction, like board.e2e.ts: every task here is filed
 // by a state the spec seeds on an IDLE agent (attention, a held PR lookup) or
@@ -38,6 +41,35 @@ const TOGGLE_ROW = '[data-testid="sidebar-toggle-status-section"]';
 const SETTINGS_LABEL = "Status section";
 
 const present = (sel: string) => browser.execute(s => !!document.querySelector(s), sel);
+
+/** The colour a theme token resolves to in this window, measured on a probe of
+ *  our own so it compares in getComputedStyle's own format. */
+const tokenColor = (token: string) =>
+  browser.execute(tk => {
+    const probe = document.createElement("span");
+    probe.style.color = `var(${tk})`;
+    document.body.appendChild(probe);
+    const c = getComputedStyle(probe).color;
+    probe.remove();
+    return c;
+  }, token);
+
+/** What a bucket header's mark and count actually render. */
+const bucketMark = (b: string) =>
+  browser.execute(sel => {
+    const mark = document.querySelector(`${sel} [data-testid="status-bucket-mark"]`) as HTMLElement | null;
+    const count = document.querySelector(`${sel} [data-testid="status-bucket-count"]`) as HTMLElement | null;
+    if (!mark || !count) return null;
+    const glyph = mark.querySelector("svg")?.getAttribute("class")?.match(/lucide-([a-z-]+)/)?.[1]
+      ?? (mark.querySelector("svg") ? "svg" : "dot");
+    return {
+      bucket: mark.dataset.bucket ?? null,
+      glyph,
+      color: getComputedStyle(mark).color,
+      hidden: mark.getAttribute("aria-hidden"),
+      tint: getComputedStyle(count).backgroundColor,
+    };
+  }, BUCKET_HEADER(b));
 
 const ariaExpanded = (sel: string) =>
   browser.execute(s => document.querySelector(s)?.getAttribute("aria-expanded") ?? null, sel);
@@ -103,6 +135,9 @@ describe("sidebar status section", () => {
   let groupLead = "";
   let groupMember = "";
   let multi = "";
+  let labelled = "";
+  let folderName = "";
+  let widthWas = 0;
   let hoverRevealWas = false;
 
   /** Every pref this spec touches, back to the shipped defaults. */
@@ -110,6 +145,7 @@ describe("sidebar status section", () => {
     browser.execute(() => {
       const p = window.__termic!.usePrefs.getState();
       p.setShowStatusSection(false);
+      p.setUseBranchAsTaskName(false);
       const defaults = [["attention", false], ["working", false], ["review", false], ["settled", true], ["backlog", true]] as const;
       for (const [b, c] of defaults) p.setStatusBucketCollapsed(b, c);
     });
@@ -120,6 +156,7 @@ describe("sidebar status section", () => {
     await dismissOverlays();
     await resetPrefs();
     hoverRevealWas = await browser.execute(() => window.__termic!.usePrefs.getState().sidebarHoverReveal);
+    widthWas = await browser.execute(() => window.__termic!.useApp.getState().sidebarWidth as number);
     projectId = await browser.execute(() =>
       window.__termic!.useApp.getState().projects.find((p: any) => p.name === "fixture-repo").id as string);
   });
@@ -131,8 +168,17 @@ describe("sidebar status section", () => {
       t.usePrefs.getState().setSidebarHoverReveal(was);
       t.useApp.getState().closeSettings();
     }, hoverRevealWas);
+    await browser.execute(async (pid, folder, w) => {
+      const t = window.__termic!;
+      t.useApp.getState().setSidebarWidth(w);
+      if (folder) {
+        t.useApp.getState().setGroupCollapsed(folder, false);
+        await t.ipc.projectSetGroup([pid], null);
+        await t.useApp.getState().loadAll();
+      }
+    }, projectId, folderName, widthWas);
     await resetPrefs();
-    for (const id of [fresh, blocked, reviewed, groupLead, groupMember, multi]) if (id) await archiveTask(id);
+    for (const id of [fresh, blocked, reviewed, groupLead, groupMember, multi, labelled]) if (id) await archiveTask(id);
   });
 
   it("is off by default, and the list options menu turns it on above PROJECTS", async () => {
@@ -243,6 +289,84 @@ describe("sidebar status section", () => {
     await click(TOGGLE_ROW);
     await waitVisible(SECTION);
     expect(await present(CHIPS)).toBe(false);
+  });
+
+  it("marks each bucket with its rows' glyph in the status chips' colour, and tints its count", async () => {
+    // Needs attention and Not started are both on screen here. The colours
+    // are STATUS_MARK_COLOR, the map the chips draw from too, measured
+    // against the tokens rather than looked at.
+    const attention = await bucketMark("attention");
+    const backlog = await bucketMark("backlog");
+    expect(attention).toMatchObject({
+      bucket: "attention", glyph: "bell", hidden: "true", color: await tokenColor("--color-warn"),
+    });
+    expect(backlog).toMatchObject({
+      bucket: "backlog", glyph: "moon", hidden: "true", color: await tokenColor("--color-fg-faint"),
+    });
+    // Each count wears its own bucket's tint, and a visible one.
+    expect(attention!.tint).not.toBe(backlog!.tint);
+    expect(attention!.tint).not.toBe("rgba(0, 0, 0, 0)");
+    // The label still says which bucket it is: the mark is decoration.
+    expect(await textOf(BUCKET_HEADER("attention"))).toMatch(/^Needs attention/);
+
+    // The chips, which take the section's place while it is off, draw the
+    // same bucket in the same colour.
+    await browser.execute(() => window.__termic!.usePrefs.getState().setShowStatusSection(false));
+    const chipIcon = '[data-testid="status-chips"] [data-status-chip="attention"] svg';
+    await waitVisible(chipIcon);
+    expect(await browser.execute(sel => getComputedStyle(document.querySelector(sel)!).color, chipIcon))
+      .toBe(attention!.color);
+    await browser.execute(() => window.__termic!.usePrefs.getState().setShowStatusSection(true));
+    await waitVisible(SECTION);
+  });
+
+  it("a folded project or folder carries its hidden rows' marks, and drops them open", async () => {
+    // `blocked` still holds the bell from the cases above.
+    const header = `[data-project-id="${projectId}"]`;
+    const marks = `${header} [data-testid="project-marks"]`;
+    const bell = '[data-testid="rollup-work-badge"][data-work-state="attention"]';
+    await browser.execute(pid => window.__termic!.useApp.getState().setProjectCollapsed(pid, true), projectId);
+    await waitGone(`[data-sidebar-task-id="${blocked}"]`);
+    await waitVisible(`${marks} ${bell}`);
+    expect(await browser.execute(sel =>
+      (document.querySelector(sel) as HTMLElement).dataset.kinds?.split(",").includes("attention"), marks)).toBe(true);
+    // Under its own testid: a folded header must not add a `work-badge` that
+    // a bare query would find before any row's.
+    expect(await present(`${header} [data-testid="work-badge"]`)).toBe(false);
+    await snap("sidebar-project-marks.png");
+
+    // Open, the rows carry their own badges and the header none.
+    await browser.execute(pid => window.__termic!.useApp.getState().setProjectCollapsed(pid, false), projectId);
+    await waitVisible(`[data-sidebar-task-id="${blocked}"]`);
+    await waitGone(marks);
+
+    // Inside a folder, the folder's header takes them over when it folds.
+    folderName = await browser.execute(async pid => {
+      const t = window.__termic!;
+      await t.ipc.projectSetGroup([pid], "E2E-STATUS");
+      await t.useApp.getState().loadAll();
+      return t.useApp.getState().projects.find((p: any) => p.id === pid).group as string;
+    }, projectId);
+    const folder = `[data-group-name="${folderName}"]`;
+    const folderMarks = `${folder} [data-testid="folder-marks"]`;
+    await waitVisible(folder);
+    expect(await present(folderMarks)).toBe(false);
+    await browser.execute(g => window.__termic!.useApp.getState().setGroupCollapsed(g, true), folderName);
+    await waitGone(header);
+    await waitVisible(`${folderMarks} ${bell}`);
+    expect(await present(`${folder} [data-testid="work-badge"]`)).toBe(false);
+    await snap("sidebar-folder-marks.png");
+    await browser.execute(g => window.__termic!.useApp.getState().setGroupCollapsed(g, false), folderName);
+    await waitVisible(header);
+    await waitGone(folderMarks);
+
+    await browser.execute(async pid => {
+      const t = window.__termic!;
+      await t.ipc.projectSetGroup([pid], null);
+      await t.useApp.getState().loadAll();
+    }, projectId);
+    await waitGone(folder);
+    folderName = "";
   });
 
   it("a click opens the task and reveals it in the tree; the row leaves Needs attention only when you answer", async () => {
@@ -377,6 +501,10 @@ describe("sidebar status section", () => {
 
     const chip = `${ROW_IN("review", reviewed)} [data-testid="status-pr-badge"][data-pr-state="open"]`;
     await holdUntil("open", () => present(chip), "the task never showed under In review with an open PR chip");
+    expect(await bucketMark("review")).toMatchObject({
+      // The theme's fg, not the PR-open green, which read as "checks passed".
+      bucket: "review", glyph: "git-pull-request", color: await tokenColor("--color-fg"),
+    });
     // The tree's chip keeps its testid and stays the first in the document,
     // so the specs that query `task-pr-badge` bare still read the tree's.
     expect(await present(`${ROW(reviewed)} [data-testid="task-pr-badge"]`)).toBe(false);
@@ -389,6 +517,70 @@ describe("sidebar status section", () => {
     "a merged PR never left In review");
     await setBucketOpen("backlog", true);
     await waitVisible(ROW_IN("backlog", reviewed));
+  });
+
+  it("draws a branch label's leading path faint in the tree, squeezes it before the leaf, and drops it in the section", async () => {
+    labelled = await createWorktreeTask("teach the parser", "e2e/a-shared-leading-path/ab-parser", false);
+    await browser.execute(pid => window.__termic!.useApp.getState().setProjectCollapsed(pid, false), projectId);
+    const treeRow = `[data-sidebar-task-id="${labelled}"]`;
+    const statusRow = ROW_IN("backlog", labelled);
+    await waitVisible(treeRow);
+    await waitVisible(statusRow);
+    // Labelled by its typed name, nothing is split.
+    expect(await present(`${treeRow} [data-testid="task-label-prefix"]`)).toBe(false);
+    expect(await present(`${statusRow} [data-testid="task-label-prefix"]`)).toBe(false);
+
+    // Labelled by its branch, the leading path goes faint in the tree...
+    await browser.execute(() => window.__termic!.usePrefs.getState().setUseBranchAsTaskName(true));
+    await waitVisible(`${treeRow} [data-testid="task-label-prefix"]`);
+    // ...and the section's row, which also names the project, draws the leaf
+    // alone and keeps the whole branch in its tooltip.
+    const section = await browser.execute(sel => {
+      const el = document.querySelector(`${sel} [data-testid="task-label"]`) as HTMLElement | null;
+      return el && {
+        text: el.textContent, dropped: el.dataset.droppedPrefix ?? null,
+        title: el.getAttribute("title"),
+        prefixEl: !!document.querySelector(`${sel} [data-testid="task-label-prefix"]`),
+      };
+    }, statusRow);
+    expect(section).toMatchObject({ text: "ab-parser", dropped: "e2e/a-shared-leading-path/", prefixEl: false });
+    expect(section!.title!.split("\n")).toEqual(["e2e/a-shared-leading-path/ab-parser", "Task name: teach the parser"]);
+    // Truncation measured in fractional px: the text's own width (a Range
+    // over it) against the box it sits in. scrollWidth / clientWidth round to
+    // integers, and a leaf shrunk by 0.03px reads as whole to them while
+    // WebKit already paints its ellipsis.
+    const parts = (row: string) => browser.execute(sel => {
+      const prefix = document.querySelector(`${sel} [data-testid="task-label-prefix"]`) as HTMLElement | null;
+      const leaf = prefix?.nextElementSibling as HTMLElement | null;
+      if (!prefix || !leaf) return null;
+      const textWidth = (el: HTMLElement) => {
+        const r = document.createRange();
+        r.selectNodeContents(el);
+        return r.getBoundingClientRect().width;
+      };
+      return {
+        prefix: prefix.textContent, leaf: leaf.textContent,
+        prefixColor: getComputedStyle(prefix).color, leafColor: getComputedStyle(leaf).color,
+        leafCut: textWidth(leaf) - leaf.getBoundingClientRect().width,
+        prefixSqueezed: textWidth(prefix) - prefix.getBoundingClientRect().width > 1,
+      };
+    }, row);
+    const faint = await tokenColor("--color-fg-faint");
+    const got = await parts(treeRow);
+    expect(got).toMatchObject({ prefix: "e2e/a-shared-leading-path/", leaf: "ab-parser", prefixColor: faint });
+    expect(got!.leafColor).not.toBe(faint);
+
+    // Too narrow for the whole label: the prefix gives way, the leaf stays
+    // whole, since the leaf is what tells two rows apart.
+    await browser.execute(() => window.__termic!.useApp.getState().setSidebarWidth(240));
+    await browser.waitUntil(async () => (await parts(treeRow))?.prefixSqueezed === true, {
+      timeout: 5_000, timeoutMsg: "the label never overflowed the narrowed sidebar, so the squeeze was not exercised",
+    });
+    expect((await parts(treeRow))!.leafCut).toBeLessThan(0.01);
+    await snap("sidebar-branch-label.png");
+    await browser.execute(w => window.__termic!.useApp.getState().setSidebarWidth(w), widthWas);
+    await browser.execute(() => window.__termic!.usePrefs.getState().setUseBranchAsTaskName(false));
+    await waitGone(`${treeRow} [data-testid="task-label-prefix"]`);
   });
 
   it("keeps a task group whole, in its colour, under its most urgent member's bucket", async () => {

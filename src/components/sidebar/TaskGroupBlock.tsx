@@ -14,7 +14,7 @@ import { GroupActionsMenuItems } from "./GroupActionsMenuItems";
 import { accentCss } from "@/lib/accents";
 import { groupBadgeKinds, groupColorCss } from "@/lib/taskGroups";
 import { usePrefs } from "@/store/prefs";
-import { TaskWorkBadge } from "@/components/TaskWorkBadge";
+import { WorkMarkList } from "./RollupMarks";
 import { taskGroupDissolve, taskGroupUpdate } from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
@@ -221,7 +221,6 @@ export function TaskGroupBlock({ group, projectId, label, compact, count, member
  *  the caption re-renders when the SET of marks changes, not on every tab
  *  write (docs/performance.md, selector fanout). */
 function GroupBadges({ groupId, memberIds, count }: { groupId: string; memberIds: string[]; count: number }) {
-  const { t } = useTranslation("sidebar");
   const settledHighlight = usePrefs(s => s.settledHighlight);
   const workingIndicator = usePrefs(s => s.workingIndicator);
   const attentionIndicator = usePrefs(s => s.attentionIndicator);
@@ -244,15 +243,7 @@ function GroupBadges({ groupId, memberIds, count }: { groupId: string; memberIds
       data-kinds={key}
       className="ml-auto flex shrink-0 items-center gap-1 pr-1"
     >
-      {key.split(",").map(k => k === "partial" ? (
-        // TaskWorkBadge's partial mark needs a report to title it; the group
-        // stands for several, so it draws the same outlined dot directly.
-        <span key={k} title={t("taskGroup.delegatedPartialTip")} aria-label={t("taskGroup.delegatedPartialAria")} className="flex items-center justify-center">
-          <span className="block h-2 w-2 rounded-full border-[1.5px]" style={{ borderColor: "var(--color-info)" }} />
-        </span>
-      ) : (
-        <TaskWorkBadge key={k} reason={k as "attention" | "done" | "working" | "delegated"} />
-      ))}
+      <WorkMarkList kinds={key} />
       <span className="ml-0.5" data-testid={`task-group-count-${groupId}`}>{countEl}</span>
     </span>
   );

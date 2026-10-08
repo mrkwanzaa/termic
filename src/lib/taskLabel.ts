@@ -58,6 +58,24 @@ export function taskLabelIsBranch(task: TaskLike, useBranch: boolean): boolean {
   return taskLabel(task, useBranch) !== task.name;
 }
 
+/** The label split for drawing: the branch's leading path (`feature/`) and
+ *  the part after its LAST slash. A sidebar of branches mostly starts with the
+ *  same word, so the leaf is what tells one row from the next, and the row
+ *  draws the prefix faint. `prefix` is "" when there is nothing to split.
+ *
+ *  Only a label that IS the task's identifying branch is split, whether the
+ *  pref put it there or the typed name already equals it. A typed name with a
+ *  slash in it ("fix a/b test") is prose, not a path. A trailing slash is not
+ *  a leaf either, so that label stays whole. */
+export function taskLabelParts(task: TaskLike, useBranch: boolean): { prefix: string; leaf: string } {
+  const label = taskLabel(task, useBranch);
+  const cut = label.lastIndexOf("/");
+  if (label !== identifyingBranch(task) || cut <= 0 || cut === label.length - 1) {
+    return { prefix: "", leaf: label };
+  }
+  return { prefix: label.slice(0, cut + 1), leaf: label.slice(cut + 1) };
+}
+
 /** Component-side sugar: subscribes to the one boolean, nothing else. */
 export function useTaskLabel(task: TaskLike | null | undefined): string {
   const useBranch = usePrefs(s => s.useBranchAsTaskName);

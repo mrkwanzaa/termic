@@ -40,7 +40,8 @@ import { agentDisplayName, workDoneCapable } from "@/lib/agents";
 import { effectiveSandboxMode, isSandboxEnforced, isTaskCaged } from "@/lib/types";
 import { SandboxIcon, sandboxModeText, DockerSandboxIcon } from "@/components/SandboxIcon";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
-import { useTaskLabel } from "@/lib/taskLabel";
+import { taskLabel, useTaskLabel } from "@/lib/taskLabel";
+import { TaskLabelText } from "@/components/TaskLabelText";
 import { useProfilesSync } from "@/components/ProfileChip";
 import { useProfiles } from "@/store/profiles";
 import { accentCss, profileSidebarWashCss } from "@/lib/accents";
@@ -53,6 +54,7 @@ import { collectTaskProps, collectedText } from "@/lib/tabProps";
 import { TaskGroupBlock } from "./TaskGroupBlock";
 import { StatusChips } from "./StatusChips";
 import { StatusSection } from "./StatusSection";
+import { RollupMarks } from "./RollupMarks";
 import { BoardFilterBar } from "@/components/views/BoardFilterBar";
 import { useTaskQuery } from "@/hooks/useTaskQuery";
 import { setTreeFold, treeFoldKey, type TreeFold } from "@/lib/treeFold";
@@ -1617,6 +1619,15 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                               <Layers className="h-3 w-3 shrink-0 text-[var(--color-accent)]" />
                             </Tip>
                           )}
+                          {/* Collapsed, the header carries what its hidden
+                              rows would draw, as a folded task group's
+                              caption does. After the name, not in the action
+                              cluster: its hover-only menu button holds its
+                              space while invisible, which would strand the
+                              marks away from the edge. */}
+                          {collapsed && taskList.length > 0 && (
+                            <RollupMarks ids={taskList.map(w => w.id).join(",")} testId="project-marks" />
+                          )}
                         </div>
                         {/* Hover shows the filter (GH #324), the menu and
                             `+` (docs/ui.md "One glyph per meaning"). An
@@ -2108,15 +2119,16 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
             // count is also what Rename/Ungroup operate on, so it must not
             // understate the group while "Hide inactive projects" is on.
             const totalCount = projects.filter(x => groupOf(x) === name).length;
-            // Aggregated activity for a collapsed folder (attention > done)
-            // so hidden members can still call for the user — same signal
-            // the compact project monogram carries.
+            // Aggregated activity for a collapsed folder, so hidden members
+            // can still call for the user. The rail has room for one corner
+            // dot (attention > done), the signal the compact project
+            // monogram carries; the full header carries the marks.
             const memberIds = new Set(members.map(m => m.id));
             const grpWs = collapsed
               ? tasks.filter(w => memberIds.has(w.project_id) && !w.archived)
               : [];
-            const grpAttention = collapsed && grpWs.some(w => needsAttention(w.id));
-            const grpDone = collapsed && !grpAttention && grpWs.some(w => isWorkDone(w.id));
+            const grpAttention = compact && collapsed && grpWs.some(w => needsAttention(w.id));
+            const grpDone = compact && collapsed && !grpAttention && grpWs.some(w => isWorkDone(w.id));
             // User-assigned accent (Object.hasOwn: JSON-parsed record, see
             // `collapsed` above). Unknown keys resolve to undefined = default.
             const accent = groupColorCss(
@@ -2266,11 +2278,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       ) : (
                         <span className="truncate">{name}</span>
                       )}
-                      {(grpAttention || grpDone) && (
-                        <span
-                          className="block h-2 w-2 shrink-0 rounded-full"
-                          style={{ backgroundColor: grpAttention ? "var(--color-warn)" : "var(--color-info)" }}
-                        />
+                      {/* One of each mark its hidden rows would draw, the
+                          collapsed project's own rule. It used to be one dot
+                          (attention, else done), which said nothing about an
+                          agent still working in there. */}
+                      {collapsed && grpWs.length > 0 && (
+                        <RollupMarks ids={grpWs.map(w => w.id).join(",")} testId="folder-marks" />
                       )}
                       {!isGroupRenaming && (
                         <span className="ml-auto shrink-0 tabular-nums text-[11px] text-[var(--color-fg-faint)]">{totalCount}</span>
@@ -2800,7 +2813,8 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // Row label: the typed name, or the branch when the pref is on (GH #260).
   // The typed name is still what rename edits and what the row tooltip shows,
   // so switching the pref on never hides which task this is.
-  const label = useTaskLabel(w);
+  const useBranchAsTaskName = usePrefs(s => s.useBranchAsTaskName);
+  const label = taskLabel(w, useBranchAsTaskName);
   const labelIsBranch = label !== w.name;
 
   const project = useApp(s => s.projects.find(p => p.id === w.project_id) ?? null);
@@ -3120,15 +3134,12 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                   per row would add a provider each and put its own pointer
                   handlers between the row and the drag that starts on it.
                   Mono matches how a branch reads everywhere else. */}
-              <span
+              <TaskLabelText
+                task={w}
+                useBranch={useBranchAsTaskName}
                 title={labelIsBranch ? t("taskNameTitle", { name: w.name }) : undefined}
-                className={cn(
-                  "min-w-0 truncate font-medium",
-                  labelIsBranch && "font-mono text-[12px]",
-                )}
-              >
-                {label}
-              </span>
+                className={cn("font-medium", labelIsBranch && "font-mono text-[12px]")}
+              />
               {/* Which locations get a glyph is the taskLocationIcon pref
                   (docs/ui.md "One glyph per meaning"). */}
               {showLocation && <TaskLocationIcon isMainCheckout={w.is_main_checkout} size="h-3.5 w-3.5" />}

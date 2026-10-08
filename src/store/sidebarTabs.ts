@@ -38,8 +38,10 @@ import type { Tab, TerminalTab } from "@/lib/types";
 // ─── Sidebar body: per-task facts ───────────────────────────────────────
 
 export interface SidebarTaskFacts extends TaskFilterFacts {
-  /** A terminal tab is blocked on the user. No pref applies: the collapsed
-   *  project and group rollup dots never took the attention switch. */
+  /** A terminal tab is blocked on the user. No pref applies: the icon rail's
+   *  corner dots on a collapsed project or folder never took the attention
+   *  switch. (The full sidebar's folded headers draw RollupMarks instead,
+   *  which do.) */
   readonly attention: boolean;
   /** A terminal tab settled. Raw: the Sidebar gates it on `settledHighlight`,
    *  so a pref flip never has to re-run this selector. */
@@ -196,10 +198,11 @@ export const selectStatusRowBadge = (taskId: string, prefs: WorkStatePrefs) =>
 export const selectStatusRowDelegated = (taskId: string, prefs: WorkStatePrefs) =>
   (s: AppState) => taskDelegatedWork(s.tabs[taskId] ?? EMPTY_TABS, prefs);
 
-/** A folded group caption's marks, as one string (`groupBadgeKinds`, the
- *  tree's helper), so the caption re-renders when the SET of marks changes,
- *  not on every tab write. */
-export const selectStatusGroupMarks = (memberIds: readonly string[], prefs: WorkStatePrefs, partialPref: boolean) =>
+/** The marks a folded container shows for the rows it hides (a status
+ *  section group caption, a collapsed project or project folder in the tree),
+ *  as one string (`groupBadgeKinds`, the tree's helper), so the header
+ *  re-renders when the SET of marks changes, not on every tab write. */
+export const selectRollupMarks = (memberIds: readonly string[], prefs: WorkStatePrefs, partialPref: boolean) =>
   (s: AppState): string =>
     groupBadgeKinds(memberIds.map(id => s.tabs[id] ?? EMPTY_TABS), prefs, partialPref).join(",");
 

@@ -26,6 +26,21 @@ import type { WorkStatePrefs } from "./taskWorkState";
 export const STATUS_BUCKETS = ["attention", "working", "review", "settled", "backlog"] as const satisfies readonly BoardStateColumn[];
 export type StatusBucket = (typeof STATUS_BUCKETS)[number];
 
+/** The colour of a bucket's mark in the sidebar, all @theme tokens. One map
+ *  for both places that draw one: the status chips' icons and the status
+ *  section's bucket headers, so the two cannot drift apart. It follows the
+ *  board's column colours (COL_ACCENT in hooks/useTaskQuery.tsx) except on two
+ *  buckets, settled in #371: In review is the theme's fg, since a green PR
+ *  glyph read as "checks passed", and Working is the faint the rows' own
+ *  spinners are drawn in. */
+export const STATUS_MARK_COLOR: Readonly<Record<StatusBucket, string>> = {
+  attention: "var(--color-warn)",
+  working: "var(--color-fg-faint)",
+  review: "var(--color-fg)",
+  settled: "var(--color-info)",
+  backlog: "var(--color-fg-faint)",
+};
+
 /** The two buckets that show a count and nothing else until opened: Settled
  *  is the largest and least urgent, and Not started is session-scoped (after
  *  a relaunch every unopened task sits there), so both are mostly noise. */

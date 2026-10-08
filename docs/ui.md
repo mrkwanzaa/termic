@@ -414,6 +414,37 @@ twin of the project-folder drag: it hit-tests only top-level items (loose
 rows and other blocks), moves the members through the store as one run,
 and writes the display order through `task_reorder` on drop.
 
+## What a folded header shows
+
+Four containers fold task rows away: a task group in the tree and in the
+status section, a project, and a project folder. Folded, all four carry the
+same marks for the rows they hide: one of each that a member's row would
+draw, in the fixed order above (`groupBadgeKinds`, drawn by `WorkMarkList` in
+[src/components/sidebar/RollupMarks.tsx](../src/components/sidebar/RollupMarks.tsx)).
+Open, they carry none, because the rows show their own.
+
+A project's marks sit after its name, NOT in the action cluster on the right:
+the filter toggle and the cog there keep their space while invisible, which
+would strand the marks some 50px from the edge. A folder's sit after its name
+too, before its count. The folder used to carry ONE dot (attention, else
+done), which said nothing about an agent still working inside it, and a
+collapsed project in the full sidebar carried nothing at all. The marks take
+the work prefs the way the rows do, so `attentionIndicator` off hides the bell
+here as well (the old folder dot ignored it).
+
+The icon rail keeps its corner dot on the project monogram and the folder
+chevron: there is no room there for a row of marks.
+
+Rendering: a folded project or folder mounts `RollupMarks` and only while
+folded, so an open header costs no selector run. It subscribes through one
+joined string (`selectRollupMarks`), so it re-renders when the SET of marks
+changes, never on a live title or an output stamp, and a second agent starting
+a turn where one already works moves nothing. Its member ids arrive joined
+too, so the Sidebar body re-rendering passes its memo. The badges carry
+`rollup-work-badge`, not `work-badge`: a folded header sits above the rows in
+document order, and a bare `work-badge` query must keep finding a row's.
+`selectorFanout.test.ts` pins all of it.
+
 ## Spawn links
 
 Every task an agent creates carries `spawned_by`, its DIRECT parent's id,
@@ -743,6 +774,20 @@ bucket and its column cannot be called two different things. The work prefs
 gate it as they gate the board: `attentionIndicator` off empties Needs
 attention, `workingIndicator` off empties Working.
 
+Each bucket header carries a mark before its label, the glyph its rows draw
+(bell, the spinner's ring, the PR glyph, the done dot, the dormant moon), in
+the colour the status chips give the same bucket: `STATUS_MARK_COLOR`
+([src/lib/sidebarStatus.ts](../src/lib/sidebarStatus.ts)), one map that the
+chips' icons read too, so the two cannot drift. It is the board's column
+colours except where the chips settled otherwise: In review in the text colour
+(see "The sidebar's status chips" below) and Working in the faint the rows'
+spinners use. The count sits on a tint of the same colour, with the digit left
+`fg-dim`: amber or blue digits on the light theme's cream were too faint to
+read. Two rules: the Working ring is drawn `still` (a header that spins
+forever says what every row under it already says, on every frame), and the
+mark is `aria-hidden`, since the label names the bucket. Before this, all five
+headers were the same grey text and Working read exactly like Settled.
+
 ### Rows
 
 A lighter row than the tree's: chevron, label, project name in the faint
@@ -917,6 +962,25 @@ Three rules the helper encodes, all load-bearing:
   record), so a task whose HEAD has moved still shows the branch it was cut
   on. Resolving live HEAD instead would mean a git call per sidebar row on
   every render, which is not a trade this app makes.
+
+**A branch label draws its leading path faint.** A sidebar of branches mostly
+starts with the same word (`feature/`), so the rows differ only after it.
+`taskLabelParts` splits the label at its last slash, and `TaskLabelText`
+(shared by the tree's rows and the status section's) draws the prefix in
+`fg-faint` and the leaf at full strength. Only a label that IS the task's
+identifying branch is split, whether the pref put it there or the typed name
+already equals it: a typed name with a slash in it is prose. Squeezed, the
+prefix takes all of the shortfall and shrinks to nothing before the leaf
+loses a character, since the leaf is what tells two rows apart: the leaf is
+`shrink-0` capped at `max-w-full`. Weighting the shrink instead
+(`shrink-[1000]` on the prefix) still hands the leaf a sliver, and a leaf
+0.02px short paints its ellipsis; integer `scrollWidth`/`clientWidth` call
+that whole, so the spec measures the text with a Range. The status
+section's rows draw the leaf ALONE (`leafOnly`), with the whole branch in the
+tooltip: they also carry the project name, and a prefix squeezed there came
+out a different length on every row (`fea…`, `featu…`). The tree right below
+still shows it. Other surfaces (breadcrumb, palette, dashboard) still draw the
+label whole.
 
 Where the label already sat next to the branch, it collapses rather than
 repeats it: the breadcrumb's `<name> on <branch>` and the Dashboard row's

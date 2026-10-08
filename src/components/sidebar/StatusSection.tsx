@@ -24,21 +24,24 @@
 import { memo, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { ChevronDown, ChevronRight, Moon } from "lucide-react";
+import { Bell, ChevronDown, ChevronRight, GitPullRequest, Moon } from "lucide-react";
 import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { usePr } from "@/store/pr";
 import {
-  selectStatusGroupMarks, selectStatusRowActiveChild, selectStatusRowBadge, selectStatusRowDelegated,
+  selectRollupMarks, selectStatusRowActiveChild, selectStatusRowBadge, selectStatusRowDelegated,
   selectStatusRowTabCount,
   useRowTabs, useStatusTabFacts,
 } from "@/store/sidebarTabs";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
 import { TaskPrBadge } from "@/components/TaskPrBadge";
+import { TaskLabelText } from "@/components/TaskLabelText";
+import { Spinner } from "@/components/ui/Spinner";
+import { WorkMarkList } from "./RollupMarks";
 import { cn } from "@/lib/utils";
-import { taskLabel } from "@/lib/taskLabel";
-import { isStatusBucketCollapsed, statusBuckets, type StatusBucket } from "@/lib/sidebarStatus";
+import { taskLabel, taskLabelParts } from "@/lib/taskLabel";
+import { isStatusBucketCollapsed, STATUS_MARK_COLOR, statusBuckets, type StatusBucket } from "@/lib/sidebarStatus";
 import { groupColorCss, groupLabel } from "@/lib/taskGroups";
 import { formatTerminalTitle } from "@/lib/terminalTitle";
 import { taskDelegatedWork, taskWorkBadge } from "@/lib/taskWorkState";
@@ -55,6 +58,30 @@ function bucketLabel(bucket: StatusBucket, t: TFunction<"sidebar">): string {
     case "settled": return t("chrome:board.colSettled");
     case "backlog": return t("chrome:board.colBacklog");
   }
+}
+
+/** The mark before a bucket's label: the glyph its rows draw, in the colour
+ *  the status chips give it (STATUS_MARK_COLOR, one map for both), so each
+ *  header reads as a legend for the rows under it and the buckets tell apart
+ *  before a word is read. The Working ring is still: a header that spins
+ *  forever would say what every row under it already says, on every frame.
+ *  Decorative, since the label names the bucket. */
+function StatusBucketMark({ bucket }: { bucket: StatusBucket }) {
+  return (
+    <span
+      data-testid="status-bucket-mark"
+      data-bucket={bucket}
+      aria-hidden
+      className="flex h-3.5 w-3.5 shrink-0 items-center justify-center"
+      style={{ color: STATUS_MARK_COLOR[bucket] }}
+    >
+      {bucket === "attention" ? <Bell className="h-3 w-3" strokeWidth={2.5} />
+        : bucket === "working" ? <Spinner size={12} still />
+        : bucket === "review" ? <GitPullRequest className="h-3 w-3" />
+        : bucket === "settled" ? <span className="block h-2 w-2 rounded-full bg-current" />
+        : <Moon className="h-3 w-3" />}
+    </span>
+  );
 }
 
 /** `matchIds`: the sidebar filter bar's result, or null while it is empty.
@@ -126,12 +153,17 @@ export function StatusSection({ matchIds = null }: { matchIds?: ReadonlySet<stri
               {open
                 ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
                 : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />}
+              <StatusBucketMark bucket={g.bucket} />
               <span className="min-w-0 truncate font-medium">{bucketLabel(g.bucket, t)}</span>
+              {/* Tinted with the bucket's colour, the text left neutral: an
+                  amber or blue digit on the light theme's cream is too faint
+                  to read, a tint behind a dim one is not. */}
               <span
                 data-testid="status-bucket-count"
                 title={countLabel}
                 aria-label={countLabel}
-                className="ml-auto pr-1 text-[11px] tabular-nums text-[var(--color-fg-faint)]"
+                className="ml-auto min-w-[18px] rounded-full px-1.5 text-center text-[11px] leading-[16px] tabular-nums text-[var(--color-fg-dim)]"
+                style={{ backgroundColor: `color-mix(in srgb, ${STATUS_MARK_COLOR[g.bucket]} 16%, transparent)` }}
               >
                 {count}
               </span>
@@ -257,23 +289,16 @@ function StatusGroupMarks({ memberIds, count, workPrefs }: {
   count: number;
   workPrefs: WorkStatePrefs;
 }) {
-  const { t } = useTranslation("sidebar");
   const partialPref = usePrefs(s => s.partialDoneIndicator);
   const ids = memberIds.join(",");
   const select = useMemo(
-    () => selectStatusGroupMarks(ids.split(","), workPrefs, partialPref),
+    () => selectRollupMarks(ids.split(","), workPrefs, partialPref),
     [ids, workPrefs, partialPref],
   );
   const key = useApp(select);
   return (
     <span data-testid="status-group-marks" data-kinds={key} className="ml-auto flex shrink-0 items-center gap-1 pr-1">
-      {key && key.split(",").map(k => k === "partial" ? (
-        <span key={k} title={t("taskGroup.delegatedPartialTip")} aria-label={t("taskGroup.delegatedPartialAria")} className="flex items-center justify-center">
-          <span className="block h-2 w-2 rounded-full border-[1.5px]" style={{ borderColor: "var(--color-info)" }} />
-        </span>
-      ) : (
-        <TaskWorkBadge key={k} reason={k as "attention" | "done" | "working" | "delegated"} testId="status-work-badge" />
-      ))}
+      {key && <WorkMarkList kinds={key} badgeTestId="status-work-badge" />}
       <span data-testid="status-group-count" className="ml-0.5 shrink-0 text-[11px] font-normal tabular-nums text-[var(--color-fg-faint)]">{count}</span>
     </span>
   );
@@ -309,6 +334,7 @@ const StatusTaskRow = memo(function StatusTaskRow({ task: w, projectName, agents
   const open = expanded && tabCount > 0;
   const label = taskLabel(w, useBranchAsTaskName);
   const labelIsBranch = label !== w.name;
+  const droppedPrefix = taskLabelParts(w, useBranchAsTaskName).prefix !== "";
   const toggle = () => setExpanded(w.id, !expanded,
     useApp.getState().tasks.filter(x => !x.archived).map(x => x.id));
 
@@ -354,12 +380,19 @@ const StatusTaskRow = memo(function StatusTaskRow({ task: w, projectName, agents
             </button>
           )}
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
-          <span
-            title={labelIsBranch ? t("taskNameTitle", { name: w.name }) : undefined}
-            className={cn("min-w-0 shrink truncate font-medium", labelIsBranch && "font-mono text-[12px]")}
-          >
-            {label}
-          </span>
+          {/* The leaf alone: this row also names the project, and a
+              squeezed prefix came out a different length on every row. The
+              whole branch is in the tooltip, and in the tree below. */}
+          <TaskLabelText
+            task={w}
+            useBranch={useBranchAsTaskName}
+            leafOnly
+            title={[
+              droppedPrefix ? label : null,
+              labelIsBranch ? t("taskNameTitle", { name: w.name }) : null,
+            ].filter(Boolean).join("\n") || undefined}
+            className={cn("shrink font-medium", labelIsBranch && "font-mono text-[12px]")}
+          />
           {/* Which project, since a bucket mixes them. Faint and shrinks
               first: the task's own name is what the row is for. A group
               member has it on its caption instead. */}
