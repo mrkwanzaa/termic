@@ -155,16 +155,26 @@ describe("scratchpads", () => {
     // behind the dialog. Wait for the row, not for the frame around it.
     const markdownRow = '[data-testid="syntax-palette"] [data-lang="Markdown"]';
     await waitVisible(markdownRow);
-    await browser.execute((sel) => {
-      // Keyed by CodeMirror's registry NAME, which is also the label.
-      (document.querySelector(sel) as HTMLElement).click();
-    }, markdownRow);
-
+    // Pick until the pick TAKES, for the reason the button above is clicked
+    // until the picker opens: the rows are re-rendered when the languageExts
+    // chunk lands, and a click on a row that is being replaced is lost. One
+    // click and a wait failed a full run with "the manual pick never reached
+    // the syntax button", on a picker that was open with the row in it. Each
+    // pass re-opens the picker if the lost click's dialog has gone, then
+    // clicks the row that is there now. Keyed by CodeMirror's registry NAME,
+    // which is also the label.
     await browser.waitUntil(
-      () => browser.execute((id) => (
-        document.querySelector(`[data-task-id="${id}"] [data-testid="syntax-button"]`)?.textContent ?? ""
-      ).toLowerCase().includes("markdown"), taskId),
-      { timeout: 10_000, timeoutMsg: "the manual pick never reached the syntax button" },
+      () => browser.execute((id, sel) => {
+        const btn = document.querySelector(
+          `[data-task-id="${id}"] [data-testid="syntax-button"]`,
+        ) as HTMLElement | null;
+        if ((btn?.textContent ?? "").toLowerCase().includes("markdown")) return true;
+        const row = document.querySelector(sel) as HTMLElement | null;
+        if (row) row.click();
+        else if (!window.__termic!.useUI.getState().syntaxPaletteFor) btn?.click();
+        return false;
+      }, taskId, markdownRow),
+      { timeout: 10_000, interval: 250, timeoutMsg: "the manual pick never reached the syntax button" },
     );
 
     // Picking Markdown also earns the pad the source / preview / split shell

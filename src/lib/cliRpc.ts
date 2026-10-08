@@ -430,6 +430,8 @@ interface SendPromptParams {
   resume?: boolean;
   fresh?: boolean;
   wait?: boolean;
+  /** Skip the queue (`send --now`): deliver into a busy agent at once. */
+  now?: boolean;
   /** Explicit target (GH #138 part 2): a tab ID, already resolved from
    *  the user's `--tab` selector by the server's resolver. The store is
    *  re-checked here because it is ground truth and the server's cache
@@ -491,6 +493,7 @@ async function deliverOrQueue(
     delegatedIdle: !!tab.delegatedIdle,
     queued: tab.queue?.length ?? 0,
     composing: !!tab.composing,
+    now: !!p.now,
   });
   if (how !== "deliver") {
     useApp.getState().enqueueAgentMessage(p.taskId, tab.id, p.prompt, 1, p.promptId);
@@ -501,7 +504,15 @@ async function deliverOrQueue(
     if (how === "queue-flush") useApp.getState().flushAgentQueue(p.taskId, tab.id);
     return { mode: how === "queue-flush" ? "queued-flushed" : "queued", capable };
   }
-  useApp.getState().patchTab(p.taskId, tab.id, { workState: "idle", unread: null });
+  // A message typed INTO a running turn (`--now`) leaves the turn's state
+  // alone: the agent is still working, and calling it idle here would drop
+  // its spinner and let the next queued message drain into the same turn.
+  // Only that case: a delegated-idle agent is also "working" in the store and
+  // has always been reset here, since its own loop has stopped.
+  const intoLiveTurn = !!p.now && tab.workState === "working" && !tab.delegatedIdle;
+  if (!intoLiveTurn) {
+    useApp.getState().patchTab(p.taskId, tab.id, { workState: "idle", unread: null });
+  }
   await deliverMessage(ptyId, p.prompt);
   const still = agentTabFor(p.taskId, tab.id);
   const samePty = still?.id === tab.id && still.ptyId === ptyId;

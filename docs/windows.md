@@ -176,6 +176,10 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
   not the file finder), and Ctrl+V pastes, as in every Windows terminal.
   Ctrl+Shift+F in a terminal opens that terminal's find, as in Windows
   Terminal, rather than find-in-files, which has the same keys there.
+  Ctrl+Shift+W closes the tab from inside a terminal, for the same reason:
+  close-tab is Ctrl+W, and in a terminal that is the shell's
+  delete-previous-word. Outside a terminal Ctrl+W closes as before. The same
+  holds on Linux (`isTerminalCloseCombo`, `lib/terminalFind.ts`).
 - **Agent hooks.** There is no PTY slave to write to, so each PTY gets a
   named pipe the app serves (`hook_pipe.rs`), exported as `TERMIC_PTY`;
   whatever a hook writes there joins that PTY's output. Git Bash cannot open

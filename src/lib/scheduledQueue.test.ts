@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  queueLoopRunning,
   dateInputValue, hasDueScheduled, hydrateScheduled, lateBy, localDateValue,
   pickQueueItem, scheduledOf, startOfDayIn,
 } from "@/lib/scheduledQueue";
@@ -74,5 +75,26 @@ describe("dates", () => {
     expect(lateBy(NOW, NOW + 5 * HOUR)).toBe("5 hours");
     expect(lateBy(NOW, NOW + DAY + HOUR)).toBe("1 day");
     expect(lateBy(NOW, NOW + 3 * DAY)).toBe("3 days");
+  });
+});
+
+describe("queueLoopRunning", () => {
+  const item = (extra: Partial<QueueItem> = {}): QueueItem =>
+    ({ id: "a", text: "t", repeat: 1, remaining: 1, ...extra }) as QueueItem;
+
+  it("is running only while active with an ordinary message still waiting", () => {
+    expect(queueLoopRunning({ queueActive: true, queue: [item()] })).toBe(true);
+    // The stored flag outlives the queue: it is dropped at the NEXT turn end,
+    // so an emptied queue must not read as running in the meantime.
+    expect(queueLoopRunning({ queueActive: true, queue: [] })).toBe(false);
+    expect(queueLoopRunning({ queueActive: true })).toBe(false);
+    // Waiting but paused is not running either.
+    expect(queueLoopRunning({ queueActive: false, queue: [item()] })).toBe(false);
+  });
+
+  it("a message scheduled for later does not keep the loop running", () => {
+    const later = item({ notBefore: Date.now() + 60_000 });
+    expect(queueLoopRunning({ queueActive: true, queue: [later] })).toBe(false);
+    expect(queueLoopRunning({ queueActive: true, queue: [later, item({ id: "b" })] })).toBe(true);
   });
 });

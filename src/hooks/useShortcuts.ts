@@ -40,6 +40,7 @@ import { jumpToNextWaiting } from "@/lib/waitingAgents";
 import { newScratchTab } from "@/lib/scratchTabs";
 import { dirHistoryTarget, goDirHistory } from "@/lib/dirTabs";
 import { bindingMatches, eventKeyToken, IS_MAC, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
+import { isTerminalCloseCombo } from "@/lib/terminalFind";
 import { visualProjectOrder } from "@/lib/projectGroups";
 import type { TerminalTab } from "@/lib/types";
 import { findAdjacentPane, findLeaf, computeLeafBounds, getAllLeaves, treeHasDir } from "@/lib/splitTree";
@@ -153,6 +154,10 @@ export function useShortcuts() {
       for (const def of SHORTCUT_DEFS) {
         if (bindingMatches(e, binds[def.id])) { cmd = def.id; break; }
       }
+      // Off macOS, Ctrl+Shift+W is close-tab's second chord: the one that
+      // works from inside a terminal, where plain Ctrl+W is the shell's. Only
+      // when no binding claimed the chord, so a user's own Ctrl+Shift+W wins.
+      if (!cmd && isTerminalCloseCombo(e, IS_MAC)) cmd = "close-tab";
       if (!cmd) return;
 
       const state = useApp.getState();

@@ -87,7 +87,11 @@ use std::io::{self, BufRead, Read, Write};
 /// v18 (GH #358): the `prop` verb sets, clears and lists the key/value
 /// properties agents put on their tabs, and `status` carries them (per
 /// tab, and the task's collected view).
-pub const PROTOCOL_VERSION: u32 = 18;
+///
+/// v19: `send` gains `now`, which types the prompt into a busy agent at once
+/// instead of queueing it behind the turn. A v18 server would drop the field
+/// and quietly queue, the opposite of what an urgent message asked for.
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// The argv `new` pins to a task's agent: the generic `--arg` values, then
 /// `--model <m>` LAST, so an explicit model wins when the agent parses
@@ -757,6 +761,13 @@ pub enum Command {
         /// a selector targets something already open).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tab: Option<String>,
+        /// Skip the queue (`--now`, v19): type the prompt into the agent at
+        /// once even when it is mid-turn or has messages waiting, for the
+        /// message that cannot wait for the turn to end. The one thing it
+        /// does not override is a draft the USER is typing in that prompt,
+        /// which still queues the message behind it.
+        #[serde(default)]
+        now: bool,
         /// The CLI's working directory, for worktree-first resolution.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
@@ -2224,6 +2235,7 @@ mod tests {
                 wait: true,
                 timeout_ms: Some(60_000),
                 tab: Some("claude".into()),
+                now: true,
                 cwd: None,
             },
             Command::Send {
@@ -2236,6 +2248,7 @@ mod tests {
                 wait: false,
                 timeout_ms: None,
                 tab: None,
+                now: false,
                 cwd: Some("/repo/web".into()),
             },
             Command::Apply { task: "fix-auth".into(), project: Some("web".into()) },

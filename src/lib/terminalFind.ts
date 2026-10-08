@@ -21,6 +21,20 @@ export function isTerminalFindCombo(e: KeyboardEvent, isMac: boolean): boolean {
     : f && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey;
 }
 
+/** Close-tab from INSIDE a terminal, off macOS: Ctrl+Shift+W.
+ *
+ *  The app's Cmd is Ctrl there, so close-tab is Ctrl+W, and outside a
+ *  terminal that already works. Inside one, plain Ctrl+W is the shell's
+ *  delete-previous-word and is left to it (the rule above, and the one
+ *  Windows Terminal and GNOME Terminal follow), which made close-tab
+ *  unreachable from the place focus nearly always is. So the shifted chord
+ *  is taken from the terminal and closes the tab. Never on macOS: ⌘W is not
+ *  a key the shell uses, and it already reaches the app. */
+export function isTerminalCloseCombo(e: KeyboardEvent, isMac: boolean): boolean {
+  return !isMac && e.key.toLowerCase() === "w"
+    && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey;
+}
+
 /** `#rgb`, `#rrggbb` or `#rrggbbaa` (alpha dropped) to channels. */
 export function parseHex(hex: string): Rgb | null {
   const m = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(hex.trim());

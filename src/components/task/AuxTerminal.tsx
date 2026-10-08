@@ -32,7 +32,7 @@ import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import { SudoTouchIdBanner } from "@/components/task/SudoTouchIdBanner";
 import { TerminalFindBar } from "@/components/task/TerminalFindBar";
-import { isTerminalFindCombo } from "@/lib/terminalFind";
+import { isTerminalCloseCombo, isTerminalFindCombo } from "@/lib/terminalFind";
 import { usePrefs, useResolvedThemeFull, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
 import { useApp } from "@/store/app";
 import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
@@ -206,6 +206,8 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
           return false;
         }
       }
+      // Ctrl+Shift+W off macOS closes the tab; see isTerminalCloseCombo.
+      if (e.type === "keydown" && isTerminalCloseCombo(e, IS_MAC)) return false;
       if (e.type === "keydown" && isTerminalFindCombo(e, IS_MAC)) {
         setSearchOpen(true);
         e.preventDefault();

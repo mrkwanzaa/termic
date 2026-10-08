@@ -61,7 +61,7 @@ import { SandboxIcon, DockerSandboxIcon } from "@/components/SandboxIcon";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
 import { SudoTouchIdBanner } from "@/components/task/SudoTouchIdBanner";
 import { TerminalFindBar } from "@/components/task/TerminalFindBar";
-import { isTerminalFindCombo } from "@/lib/terminalFind";
+import { isTerminalCloseCombo, isTerminalFindCombo } from "@/lib/terminalFind";
 import * as ipc from "@/lib/ipc";
 import { maybeRebuildDockerImageForLaunch } from "@/lib/dockerDailyRebuild";
 import { commandShell, loginShell, loginShellArgs } from "@/lib/loginShell";
@@ -1396,6 +1396,9 @@ const captureArmedRef = useRef(false);
         e.stopPropagation();
         return false;
       }
+      // Ctrl+Shift+W off macOS: not for the PTY, let it bubble to useShortcuts,
+      // which closes the tab (see isTerminalCloseCombo).
+      if (e.type === "keydown" && isTerminalCloseCombo(e, IS_MAC)) return false;
       if (e.type === "keydown") {
         const binds = usePrefs.getState().shortcuts;
         // Off macOS the app's Cmd is Ctrl, and plain Ctrl+letter belongs to

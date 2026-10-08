@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACTIVE_MIX, MATCH_MIX, decorationsFor, findCountLabel, isTerminalFindCombo, mix, parseHex, toHex } from "./terminalFind";
+import { ACTIVE_MIX, MATCH_MIX, decorationsFor, findCountLabel, isTerminalCloseCombo, isTerminalFindCombo, mix, parseHex, toHex } from "./terminalFind";
 
 describe("terminal find colours", () => {
   it("parses the hex forms a theme writes, dropping alpha", () => {
@@ -54,5 +54,17 @@ describe("terminal find key", () => {
   it("is Ctrl+Shift+F elsewhere, leaving Ctrl+F to readline", () => {
     expect(isTerminalFindCombo(key({ ctrlKey: true, shiftKey: true }), false)).toBe(true);
     expect(isTerminalFindCombo(key({ ctrlKey: true }), false)).toBe(false);
+  });
+  it("close-tab from a terminal is Ctrl+Shift+W off macOS, and never plain Ctrl+W", () => {
+    const w = (init: Partial<KeyboardEvent>) => key({ key: "w", ...init });
+    expect(isTerminalCloseCombo(w({ ctrlKey: true, shiftKey: true }), false)).toBe(true);
+    // Shift makes the key an upper-case W on a real keyboard.
+    expect(isTerminalCloseCombo(w({ key: "W", ctrlKey: true, shiftKey: true }), false)).toBe(true);
+    // The shell keeps delete-previous-word.
+    expect(isTerminalCloseCombo(w({ ctrlKey: true }), false)).toBe(false);
+    expect(isTerminalCloseCombo(w({ ctrlKey: true, shiftKey: true, altKey: true }), false)).toBe(false);
+    // macOS has ⌘W and needs no second chord.
+    expect(isTerminalCloseCombo(w({ ctrlKey: true, shiftKey: true }), true)).toBe(false);
+    expect(isTerminalCloseCombo(w({ metaKey: true }), true)).toBe(false);
   });
 });

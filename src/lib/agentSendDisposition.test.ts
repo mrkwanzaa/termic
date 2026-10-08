@@ -56,4 +56,19 @@ describe("agentSendDisposition", () => {
     // its own and the drain handles it in order.
     expect(agentSendDisposition({ ...base, workState: "working", queued: 9 })).toBe("queue");
   });
+
+  it("--now skips the queue: mid-turn, behind a backlog, or both", () => {
+    expect(agentSendDisposition({ ...base, workState: "working", now: true })).toBe("deliver");
+    expect(agentSendDisposition({ ...base, queued: 3, now: true })).toBe("deliver");
+    expect(agentSendDisposition({ ...base, workState: "working", queued: 9, now: true })).toBe("deliver");
+    // Never a flush: it jumps the line, it does not release it.
+    expect(agentSendDisposition({ ...base, delegatedIdle: true, queued: 5, now: true })).toBe("deliver");
+    // Without the flag nothing about those cases changed.
+    expect(agentSendDisposition({ ...base, workState: "working", queued: 9, now: false })).toBe("queue");
+  });
+
+  it("--now still queues behind a draft the user is typing", () => {
+    expect(agentSendDisposition({ ...base, composing: true, now: true })).toBe("queue");
+    expect(agentSendDisposition({ ...base, workState: "working", composing: true, now: true })).toBe("queue");
+  });
 });

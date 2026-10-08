@@ -27,7 +27,7 @@ import { workDoneCapable } from "@/lib/agents";
 import { cn } from "@/lib/utils";
 import { MessageSquarePlus, X, Repeat, CornerDownLeft, Send, SendHorizontal, CalendarClock } from "lucide-react";
 import type { TerminalTab } from "@/lib/types";
-import { dateInputValue, formatScheduleDate, isScheduled, localDateValue, startOfDayIn } from "@/lib/scheduledQueue";
+import { dateInputValue, formatScheduleDate, isScheduled, localDateValue, queueLoopRunning, startOfDayIn } from "@/lib/scheduledQueue";
 
 /** "Send after" presets, in days from today. Each resolves to local midnight
  *  of that day, so "in a week" still sends that morning. Labels are i18n keys
@@ -86,7 +86,7 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
   const activeAgent = targets.find(t => t.id === defaultTabId);
   const queuedCount = (activeAgent?.queue ?? []).reduce((sum, q) => sum + q.remaining, 0);
   const scheduledCount = (activeAgent?.queue ?? []).filter(isScheduled).length;
-  const queueRunning = !!activeAgent?.queueActive;
+  const queueRunning = !!activeAgent && queueLoopRunning(activeAgent);
   const showBadge = queuedCount > 0;
   // Scheduled-only reads "1 scheduled": "1 queued" suggests it is next up.
   const badgeLabel = queuedCount > scheduledCount

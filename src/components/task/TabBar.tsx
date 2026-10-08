@@ -22,6 +22,7 @@ import { TabContextMenu } from "./TabContextMenu";
 import { focusMainTab } from "@/lib/tabFocus";
 import { visibleCliIds, agentDisplayName, isTerminalEntry } from "@/lib/agents";
 import { cn } from "@/lib/utils";
+import { queueLoopRunning } from "@/lib/scheduledQueue";
 import { delegatedTitle } from "@/lib/delegatedWork";
 import { BackgroundRing } from "@/components/ui/BackgroundRing";
 import { formatTerminalTitle } from "@/lib/terminalTitle";
@@ -342,7 +343,7 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
   const workState = tab.type === "terminal" ? tab.workState : undefined;
   const { t } = useTranslation("task");
   const { t: tChrome } = useTranslation("chrome");
-  const queueRunning = tab.type === "terminal" && !!tab.queueActive;
+  const queueRunning = tab.type === "terminal" && queueLoopRunning(tab);
   const agents = useApp(s => s.agents);
   // Experimental work-in-progress spinner — opt-in (Settings → Notifications).
   // The "working" state is force-cleared by TerminalPane's demoters /

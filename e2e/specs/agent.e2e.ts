@@ -3396,6 +3396,15 @@ describe("agent messages wait for your draft", () => {
     await browser.waitUntil(async () => (await queuedCount(taskId)) === 0 && (await echoed("report-from-peer")), {
       timeout: 30_000, timeoutMsg: "the held report never went after the user's turn",
     });
+    // And the button stops saying a queue is running the moment it is empty.
+    // The stored flag behind it is only dropped at the NEXT turn end, so the
+    // button used to stay lit over nothing; for an agent idling on delegated
+    // work that turn end never comes and it stayed lit for good.
+    expect(await browser.execute((id) => {
+      const b = document.querySelector(`[data-task-id="${id}"] [data-testid="queue-button"]`)
+        ?? document.querySelector('[data-testid="queue-button"]');
+      return b ? `${b.getAttribute("data-queued")}/${b.getAttribute("data-queue-running")}` : "no button";
+    }, taskId)).toBe("0/0");
   });
 
   it("sends the held report as soon as you clear your draft instead", async function () {
@@ -3462,6 +3471,51 @@ describe("agent messages wait for your draft", () => {
     await browser.waitUntil(async () => (await queuedCount(taskId)) === 0 && (await echoed("fourth-report")), {
       timeout: 30_000, timeoutMsg: "the report stayed queued behind a draft that was not there",
     });
+  });
+});
+
+// `termic send --now` (MCP `task_send` with `now`): the message that cannot
+// wait for the turn to end. An ordinary send to a busy agent queues; this one
+// is typed at once, ahead of whatever is already waiting.
+describe("an urgent message skips the queue", () => {
+  let taskId: string | null = null;
+  const NAME = "e2e-send-now";
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+
+  it("types into a working agent at once, and leaves the queue and the turn alone", async function () {
+    this.timeout(90_000);
+    await waitForAppShell();
+    await requireTermicApi();
+    await requireWorkBadges();
+    taskId = await openTask(NAME);
+    await waitForAgentReady(taskId);
+
+    await submitToAgent(taskId, "work");
+    await waitForWorkBadge(taskId, "working", {
+      timeout: 10_000,
+      message: "agent never showed a working badge",
+    });
+
+    // The control: without the flag, a busy agent's message waits.
+    const held = await cliRpc({ cmd: "send", task: NAME, prompt: "can-wait" });
+    expect(held.ok).toBe(true);
+    expect(held.data.mode).toBe("queued");
+    expect(await queuedCount(taskId)).toBe(1);
+
+    // With it: delivered, not queued, and the one already waiting still is.
+    const urgent = await cliRpc({ cmd: "send", task: NAME, prompt: "cannot-wait", now: true });
+    expect(urgent.ok).toBe(true);
+    expect(urgent.data.mode).toBe("delivered");
+    expect(await queuedCount(taskId)).toBe(1);
+    // The turn it landed in is still a turn: typing into it is not the agent
+    // finishing, so the spinner stays.
+    expect(await sidebarBadge(taskId)).toBe("working");
+
+    // About a RUNNING agent only: refused with the flags that respawn one.
+    const both = await cliRpc({ cmd: "send", task: NAME, prompt: "x", now: true, resume: true });
+    expect(both.ok).toBe(false);
   });
 });
 

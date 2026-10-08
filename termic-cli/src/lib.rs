@@ -521,7 +521,14 @@ finishes, EXCEPT while the agent is stalled on work it delegated (subagents \
 or shells still running, its own loop stopped): then it is typed at once, so \
 a report back reaches an orchestrator that is waiting on it. It also QUEUES \
 while the user has an unsent draft typed into that agent, so it never lands \
-in the middle of their text; it goes once they send or clear it. An agent with \
+in the middle of their text; it goes once they send or clear it. \
+--now SKIPS THE QUEUE: the prompt is typed at once into an agent that is \
+mid-turn or has messages waiting, for the message that cannot wait for the \
+turn to end (stop, a correction, new information that changes the work). \
+What a prompt arriving mid-turn does is the agent's own business (most take \
+it as steering, some hold it for the next turn), and it jumps ahead of \
+anything already queued, so keep it for what is urgent. The user's unsent \
+draft still wins: --now queues behind it like any other send. An agent with \
 detection disabled gets it typed immediately (with a warning: completion \
 cannot be observed, and --wait refuses such agents). \
 With no agent running, --resume restores the last session and --fresh starts \
@@ -633,6 +640,14 @@ stopped needing input, 4 app not running, 5 CLI disabled, 6 refused, \
         /// tabs only; --resume/--fresh spawn, a --tab target is open).
         #[arg(long, value_name = "SEL", conflicts_with_all = ["resume", "fresh"])]
         tab: Option<String>,
+        /// Skip the queue: type the prompt into the agent at once, even
+        /// mid-turn or with messages already waiting. For the message
+        /// that cannot wait for the turn to end (stop, a correction). The
+        /// agent decides what a prompt arriving mid-turn does; most take
+        /// it as steering. A draft the user is typing in that prompt
+        /// still wins, and the message queues behind it.
+        #[arg(long, conflicts_with_all = ["resume", "fresh"])]
+        now: bool,
         /// Project name, to disambiguate. Requires a task name.
         #[arg(long, requires = "task")]
         project: Option<String>,
@@ -2408,7 +2423,7 @@ fn execute_send(
     format: OutputFormat,
     prompt: Option<String>,
 ) -> Result<Output, CliError> {
-    let Cmd::Send { task, here, prompt: _, library, resume, fresh, wait, timeout, tab, project } =
+    let Cmd::Send { task, here, prompt: _, library, resume, fresh, wait, timeout, tab, now, project } =
         &cli.cmd
     else {
         unreachable!()
@@ -2444,6 +2459,7 @@ fn execute_send(
         wait: *wait,
         timeout_ms,
         tab: tab.clone(),
+        now: *now,
         cwd,
     };
     if *wait && format == OutputFormat::Text {
@@ -3728,6 +3744,13 @@ mod tests {
         // The full forms parse.
         assert!(Cli::try_parse_from(["termic", "send", "foo", "-p", "x"]).is_ok());
         assert!(Cli::try_parse_from(["termic", "send", "--here", "-p", "-"]).is_ok());
+        // --now skips a RUNNING agent's queue, so it excludes the two flags
+        // that are about an agent that is not running; it composes with the
+        // rest (a tab target, --wait).
+        assert!(Cli::try_parse_from(["termic", "send", "foo", "-p", "x", "--now"]).is_ok());
+        assert!(Cli::try_parse_from(["termic", "send", "foo", "-p", "x", "--now", "--tab", "2", "--wait"]).is_ok());
+        assert!(Cli::try_parse_from(["termic", "send", "foo", "-p", "x", "--now", "--resume"]).is_err());
+        assert!(Cli::try_parse_from(["termic", "send", "foo", "-p", "x", "--now", "--fresh"]).is_err());
         assert!(Cli::try_parse_from([
             "termic", "send", "foo", "-p", "x", "--resume", "--wait", "--timeout", "5m",
         ])

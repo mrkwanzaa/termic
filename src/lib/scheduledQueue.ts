@@ -35,6 +35,19 @@ export function pickQueueItem(
   return opts.force && q.length ? 0 : -1;
 }
 
+/** Is the queue loop running, as far as anyone looking at the tab can tell?
+ *
+ *  NOT the stored `queueActive` flag on its own. That flag is only dropped by
+ *  the drain, the next time the agent's turn ends and it finds nothing left,
+ *  which is where "queue finished" is announced. So after the LAST message
+ *  has gone it stays set for that whole turn, and for an agent idling on
+ *  delegated work (its messages are flushed at once and no turn end is
+ *  coming) it stays set indefinitely: the footer button sat lit over an
+ *  empty queue. Running means active AND an ordinary message still waiting;
+ *  a scheduled one for later never needed the loop. */
+export const queueLoopRunning = (t: { queueActive?: boolean; queue?: QueueItem[] }) =>
+  !!t.queueActive && !!t.queue?.some(q => !isScheduled(q));
+
 /** Does the queue hold a scheduled item that is due? The ticker's filter. */
 export const hasDueScheduled = (queue: QueueItem[] | undefined, now: number) =>
   !!queue?.some(q => isDue(q, now));

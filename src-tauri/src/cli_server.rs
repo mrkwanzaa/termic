@@ -2004,7 +2004,7 @@ fn parse_send_error(e: &str) -> (ErrorCode, String) {
 
 fn handle_send(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> Reply {
     let Command::Send {
-        task, project, prompt, prompt_ref, resume, fresh, wait, timeout_ms, tab, cwd,
+        task, project, prompt, prompt_ref, resume, fresh, wait, timeout_ms, tab, now, cwd,
     } = &req.cmd
     else {
         unreachable!("handle_send called with a non-send command")
@@ -2023,6 +2023,15 @@ fn handle_send(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> R
             id,
             ErrorCode::BadRequest,
             "--tab targets a tab that is already open; drop --resume/--fresh",
+        );
+    }
+    // Same shape of guard, same reason: `now` is about an agent that is
+    // RUNNING, and resume/fresh are about one that is not.
+    if *now && (*resume || *fresh) {
+        return Reply::err(
+            id,
+            ErrorCode::BadRequest,
+            "--now skips a running agent's queue; drop --resume/--fresh",
         );
     }
     let (projects, tasks) = host.projects_tasks();
@@ -2065,6 +2074,7 @@ fn handle_send(req: &Request, host: &dyn CliHost, sink: &mut dyn EventSink) -> R
         "resume": resume,
         "fresh": fresh,
         "wait": wait,
+        "now": now,
         "tabId": target.as_ref().map(|rt| rt.id.as_str()),
     });
     // Idle ticks keep the CLI's 30s read timeout honest while a
@@ -10132,6 +10142,7 @@ mod tests {
             wait,
             timeout_ms: None,
             tab: None,
+            now: false,
             cwd: None,
         }
     }
@@ -10155,6 +10166,42 @@ mod tests {
         assert_eq!(params["taskId"], "w3");
         assert_eq!(params["prompt"], "run the tests");
         assert!(params["promptId"].as_str().is_some_and(|p| !p.is_empty()));
+        // Off unless asked for: an ordinary send must keep queueing.
+        assert_eq!(params["now"], false);
+    }
+
+    #[test]
+    fn send_now_reaches_the_webview_and_excludes_resume_and_fresh() {
+        let host = StubHost::default();
+        host.script_rpc(
+            "send_prompt",
+            Ok(serde_json::json!({ "mode": "delivered", "capable": true })),
+        );
+        let mut cmd = send_cmd("solo", false);
+        if let Command::Send { now, .. } = &mut cmd {
+            *now = true;
+        }
+        let reply = handle(&req(cmd, Some("tok")), &host);
+        assert!(reply.ok, "{reply:?}");
+        {
+            let calls = host.rpc_calls.lock().unwrap();
+            let (_, params) = calls.iter().find(|(m, _)| m == "send_prompt").unwrap();
+            // The webview owns the queue, so the flag is only worth anything
+            // if it gets there.
+            assert_eq!(params["now"], true);
+        }
+        // It is about a RUNNING agent; resume and fresh are about one that
+        // is not. A hand-rolled client gets told, not one of the two.
+        for respawn in ["resume", "fresh"] {
+            let mut cmd = send_cmd("solo", false);
+            if let Command::Send { now, resume, fresh, .. } = &mut cmd {
+                *now = true;
+                if respawn == "resume" { *resume = true } else { *fresh = true }
+            }
+            let reply = handle(&req(cmd, Some("tok")), &host);
+            assert!(!reply.ok, "now + {respawn} was accepted");
+            assert!(reply.error.unwrap().message.contains("--now"));
+        }
     }
 
     #[test]

@@ -32,6 +32,9 @@ export interface SendDispositionInput {
   /** The USER has an unsubmitted draft in the prompt. Typing now would land
    *  inside their text and Enter would send both as one message. */
   composing: boolean;
+  /** The sender asked to skip the queue (`termic send --now`, MCP
+   *  `task_send` with `now`): a message that cannot wait for the turn. */
+  now?: boolean;
 }
 
 export function agentSendDisposition(i: SendDispositionInput): SendDisposition {
@@ -39,6 +42,11 @@ export function agentSendDisposition(i: SendDispositionInput): SendDisposition {
   // merging a machine's message into a person's draft is worse than waiting,
   // and the draft ends on its own the moment they press Enter.
   if (i.composing) return "queue";
+
+  // Asked to skip the queue: type it now, mid-turn or behind a backlog. It
+  // sits BELOW the draft rule on purpose. Urgent to another agent does not
+  // make it right to splice a machine's text into what a person is typing.
+  if (i.now) return "deliver";
 
   // No work-done detection: there is no edge to drain on, so queueing is a
   // black hole. This is the pre-existing rule and it stays.
