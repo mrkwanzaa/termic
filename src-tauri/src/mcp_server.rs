@@ -2510,7 +2510,15 @@ mod tests {
         s.write_all(req.as_bytes()).unwrap();
         s.write_all(body).unwrap();
         let mut buf = Vec::new();
-        s.read_to_end(&mut buf).unwrap();
+        // A reset AFTER the response arrived is not a failure. The server
+        // answers and closes (`Connection: close`), and Windows can report
+        // that close as WSAECONNRESET (10054) to a reader that already holds
+        // every byte: this unwrapped the error and failed a Windows run on
+        // a response it had in hand. What was read is kept and judged by
+        // the assertions; only a reset with nothing read is fatal here.
+        if let Err(e) = s.read_to_end(&mut buf) {
+            assert!(!buf.is_empty(), "no response before the connection ended: {e}");
+        }
         let text = String::from_utf8_lossy(&buf);
         let (head, rest) = text.split_once("\r\n\r\n").unwrap_or((&*text, ""));
         let mut lines = head.lines();
@@ -3043,7 +3051,9 @@ mod tests {
         );
         s.write_all(head.as_bytes()).unwrap();
         let mut buf = Vec::new();
-        s.read_to_end(&mut buf).unwrap();
+        // The status line is the verdict; see `http` for why a reset after it
+        // is not one.
+        let _ = s.read_to_end(&mut buf);
         assert!(String::from_utf8_lossy(&buf).starts_with("HTTP/1.1 413"));
     }
 

@@ -570,8 +570,12 @@ describe("settings rail", () => {
     expect(pane).toContain("claude mcp add");
     // One credential path for both clients: the custom header, which is
     // what lets codex's headers helper carry it at all (it refuses
-    // Authorization as reserved).
-    expect(pane).toContain("X-Termic-Token");
+    // Authorization as reserved). Windows names no header in the text: its
+    // helper is the CLI sidecar (`termic-cli.exe mcp-headers <file>`), which
+    // prints the header itself, because claude runs a helper through cmd.exe
+    // there and the POSIX one-liner prints nothing. This asserted the POSIX
+    // text on every platform and failed every Windows run.
+    expect(pane).toContain(process.platform === "win32" ? "mcp-headers" : "X-Termic-Token");
     // The shell setup reads the token file, so the file stays the one
     // durable copy.
     expect(pane).toContain("mcp-token");

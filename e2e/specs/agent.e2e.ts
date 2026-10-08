@@ -2725,9 +2725,28 @@ describe("a stored session that no longer resolves opens the agent's picker (#31
     const id = taskId!;
     await waitForAgentReady(id);
     await waitPickerReady(id, 1);
-    await submitToAgent(id, `pick ${PICKED}`);
+    // The line goes to the pty in ONE write, not through xterm. What is under
+    // test is that a pick is stored, not typing, and typing is two events
+    // (the text, then Enter) that xterm can split: on Windows the picker once
+    // read a bare Enter as its first key, took it for "nothing picked" and
+    // exited, and the text went to the fresh session that replaced it.
+    const spawnsBefore = spawnArgv(id).length;
+    await browser.execute(async (t, line) => {
+      const st = window.__termic!.useApp.getState();
+      const ptyId = (st.tabs[t] ?? [])[0]?.ptyId;
+      await window.__termic!.ipc.ptyWrite(ptyId, [...new TextEncoder().encode(line)]);
+    }, id, `pick ${PICKED}\r`);
+    // On failure, say what the picker read and whether it was still the
+    // picker: the terminal is a canvas and these two files are the story.
+    const story = () => {
+      let log = "<no picker log>";
+      try { log = readFileSync(join(dataDir, "e2e-picker.log"), "utf8").split("\n").filter(l => l.startsWith(id + "\t")).map(l => l.slice(id.length + 1)).join(" | "); } catch {}
+      return `picker read: ${log}; spawns since the pick: ${JSON.stringify(spawnArgv(id).slice(spawnsBefore))}`;
+    };
     await browser.waitUntil(async () => (await stored(id)) === PICKED,
-      { timeout: 20_000, timeoutMsg: "the session picked in the agent's picker was not stored" });
+      { timeout: 20_000 }).catch(() => {
+        throw new Error(`the session picked in the agent's picker was not stored (${story()})`);
+      });
 
     const before = spawnArgv(id).length;
     await relaunch(id);
