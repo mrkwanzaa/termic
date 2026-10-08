@@ -234,6 +234,11 @@ export function CommandPalette() {
       icon: Plus, shortcutId: "new-task-quick", keywords: "create worktree project",
       run: act(() => useUI.getState().openProjectPicker()),
     });
+    cmds.push({
+      id: "task-finder", section: "Task", label: t("commandPalette.cmd.taskFinder"),
+      icon: SquareTerminal, shortcutId: "task-finder", keywords: "switch find search jump open worktree task",
+      run: act(() => useUI.getState().openTaskFinder()),
+    });
     // Its own row rather than a mode of "New task…": starting from an issue is
     // a different intent, and burying it as a link inside the dialog meant you
     // had to already be creating a task to discover it exists. Not gated on

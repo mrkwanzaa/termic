@@ -233,6 +233,16 @@ export function useShortcuts() {
           useUI.getState().openProjectPicker();
           return;
 
+        // ⌘O → global task finder. Quick search and switch tasks across projects.
+        // Fires from anywhere, including inside a focused terminal.
+        case "task-finder": {
+          e.preventDefault();
+          const ui = useUI.getState();
+          if (ui.taskFinderOpen) ui.closeTaskFinder();
+          else ui.openTaskFinder();
+          return;
+        }
+
         // ⇧⌘P → toggle the command palette (open, or close if already open),
         // the VS Code / Sublime convention. MUST fire from anywhere, including
         // while focused in a terminal (the app is terminal-centric), so no

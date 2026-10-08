@@ -62,6 +62,7 @@ export default {
     toastUpToDate: "已是最新版本",
     cmd: {
       newTask: "新建任务…",
+      taskFinder: "打开任务搜索…",
       newTaskIssue: "从 issue 新建任务…",
       addProject: "添加项目…",
       filePicker: "文件选择器",
@@ -522,6 +523,20 @@ export default {
     placeholderIssue: "搜索一个项目以从中挑选 issue",
     noMatching: "没有匹配的项目",
     noProjects: "没有项目",
+  },
+  taskFinder: {
+    srTitle: "任务搜索",
+    srDesc: "跨项目搜索并切换任务。",
+    placeholder: "按名称、项目、分支或智能体搜索任务…",
+    clear: "清除搜索内容",
+    noMatching: "未找到匹配的任务",
+    noTasks: "暂无任务",
+    current: "当前",
+    navigate: "导航",
+    switch: "切换",
+    dismiss: "关闭",
+    count_one: "{{count}} 个任务",
+    count_other: "{{count}} 个任务",
   },
   promptDestination: {
     title: "运行「{{title}}」",

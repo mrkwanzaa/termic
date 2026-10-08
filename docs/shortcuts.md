@@ -216,6 +216,17 @@ view" > Filtering.
 
 `prompt-palette` (default ⌥⌘P) is a plain single-chord shortcut that opens `PromptPalette.tsx`: a searchable list of enabled prompts (fuzzy-filtered by title only). Enter runs the highlighted one; while the query is empty, digits `1-9` fire the top rows directly (a positional accelerator, Raycast-style, not a persisted per-prompt key). Firing goes through `fireOrPickDestination` in `src/lib/promptFire.ts`, which sends straight to the focused agent tab or falls back to the shared destination-picker dialog (`PromptDestinationDialog.tsx`) when there's no focused live agent. The Prompts dropdown in `UnifiedBar.tsx` always opens the picker so you can tweak the body and choose a target.
 
+## Task finder (⌘O)
+
+`task-finder` (default ⌘O) opens `TaskFinderDialog.tsx`: a centered
+fuzzy-search palette to quickly jump to any active task across all
+projects without touching the mouse or disturbing the sidebar tree layout.
+When the query is empty, it orders tasks by recency (`recentTasks`),
+placing the current task first. Querying matches across task names, project
+names, git branches, and agent CLIs. Enter activates the task
+(`setActiveTask`) and focuses its main tab, while Escape restores focus to
+whichever element was previously focused.
+
 ## Add selection to agent (⇧⌘L)
 
 `add-selection-to-agent` is contextual, not global: it has no `case` in `useShortcuts`. `EditorPane` owns it, and answers only when the selection is non-empty AND the editor either holds DOM focus or is the visible active tab (`focused ? focused !== v.dom : !isActive`) — the two are mutually exclusive, so two mounted editors can never both fire on one press. With no selection it does not `preventDefault`, so the chord falls through untouched.

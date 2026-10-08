@@ -49,6 +49,7 @@ export type ShortcutId =
   | "command-palette"
   | "open-settings"
   | "file-finder"
+  | "task-finder"
   | "find-in-files"
   | "toggle-left-sidebar"
   | "toggle-right-sidebar"
@@ -203,6 +204,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     defaultBinding: B(",", { cmd: true }) },
 { id: "file-finder", group: "General", label: "Open file finder",
     defaultBinding: B("p", { cmd: true }) },
+  { id: "task-finder", group: "General", label: "Open task finder",
+    hint: "Quick search and switch tasks across projects",
+    defaultBinding: B("o", { cmd: true }) },
   { id: "find-in-files", group: "General", label: "Find in files",
     defaultBinding: B("f", { cmd: true, shift: true }) },
   { id: "toggle-left-sidebar", group: "General", label: "Toggle left sidebar",

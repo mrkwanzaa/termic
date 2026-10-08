@@ -215,6 +215,8 @@ interface UIState {
   /** Global fuzzy project picker (⌘N) — search any loaded project and
    *  start a new task for it without scrolling the sidebar. */
   projectPickerOpen: boolean;
+  /** Global fuzzy task finder (⌘O) — search across all active tasks and switch immediately. */
+  taskFinderOpen: boolean;
   /** What the picked project is FOR. "task" opens the standard New Task
    *  dialog; "issue" opens it straight into the forge issue picker. Same
    *  picker either way, because "which project" is the first question in
@@ -379,6 +381,8 @@ interface UIState {
   closeSearchEverywhere: () => void;
   openProjectPicker: (intent?: "task" | "issue") => void;
   closeProjectPicker: () => void;
+  openTaskFinder: () => void;
+  closeTaskFinder: () => void;
   openCommandPalette: () => void;
   closeCommandPalette: () => void;
   openPromptPalette: () => void;
@@ -534,6 +538,7 @@ export const useUI = create<UIState>((set, get) => ({
   findInFilesTaskId: null,
   projectPickerOpen: false,
   projectPickerIntent: "task",
+  taskFinderOpen: false,
   commandPaletteOpen: false,
   promptPaletteOpen: false,
   syntaxPaletteFor: null,
@@ -628,6 +633,8 @@ export const useUI = create<UIState>((set, get) => ({
   closeFindInFiles:  () => set({ findInFilesTaskId: null }),
   openProjectPicker: (intent = "task") => set({ projectPickerOpen: true, projectPickerIntent: intent }),
   closeProjectPicker:() => set({ projectPickerOpen: false }),
+  openTaskFinder:    () => set({ taskFinderOpen: true }),
+  closeTaskFinder:   () => set({ taskFinderOpen: false }),
   openCommandPalette: () => set({ commandPaletteOpen: true }),
   closeCommandPalette:() => set({ commandPaletteOpen: false }),
   openPromptPalette: () => set({ promptPaletteOpen: true }),
