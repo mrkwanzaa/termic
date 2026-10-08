@@ -4,6 +4,74 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.14.0] - 2026-10-08
+
+A sidebar filter bar and status chips, HTML preview, and review requests in New Task.
+
+### Features
+- **A filter bar in the sidebar.** The Kanban board's filter now also sits at
+  the top of the sidebar and narrows the status section and the project tree
+  together: type a task name, or use `project:`, `agent:`, `status:`, `pr:`
+  and the rest, with the funnel for the same filters as chips. A long query
+  wraps while you are typing it. Projects with no match fold away, and the
+  open task always stays listed. Thanks to
+  [@wagoodman](https://github.com/wagoodman).
+- **Status chips.** Under the filter, four counts in the order a task moves
+  through them: working, needs you, done and unread, in review. Click one to
+  filter the tree to those tasks. They are always there, so nothing shifts
+  when an agent starts or stops. "Done" is the blue dot: a turn that finished
+  and you have not opened, and `status:done` filters by it anywhere the
+  filter works. Thanks to [@wagoodman](https://github.com/wagoodman).
+- **A task finder on ⌘O.** Type to jump to any task in any project, matched
+  on its name, project and branch, most recent first, without leaving what
+  you are in. Also "Open task finder" in the command palette. Thanks to
+  [@nvkvin](https://github.com/nvkvin).
+- **`termic send --now` skips the queue.** A message to a busy agent normally
+  waits for its turn to end; `--now` (and `now` on the MCP `task_send` tool)
+  types it at once, for the message that cannot wait: stop, a correction, new
+  information. It still never lands in a draft you are typing.
+- **Schedules from the CLI and MCP.** `termic schedule list`, `show`, `set`,
+  `run` and `delete` (and the matching `schedule_*` MCP tools) let an agent
+  or a script create and manage recurring runs, not only the Scheduled view.
+  Setting and deleting ask for `--yes`. Thanks to
+  [@nvkvin](https://github.com/nvkvin).
+- **HTML files preview.** An `.html` file opens on a rendered preview, with
+  source and split views beside it, like markdown and SVG. The page runs in a
+  sandboxed frame with no scripts, and remote images stay off until you allow
+  them. Thanks to [@nvkvin](https://github.com/nvkvin).
+- **New Task lists the work that pulled you in.** "From a PR" now also lists
+  the open pull requests waiting for your review, and "From an issue" can be
+  narrowed to the ones assigned to you or mentioning you. GitHub only for
+  now. Thanks to [@franzkurt](https://github.com/franzkurt).
+- **Config sync pulls when a window comes forward**, if the last attempt is
+  more than five minutes old. It never pushes on its own. A conflict or a
+  sign-in failure is announced once, and being offline stays quiet. Thanks to
+  [@nvkvin](https://github.com/nvkvin).
+
+### Improvements
+- **The sidebar is easier to scan.** Status section headers carry the glyph
+  and colour of their rows, a branch name draws its leading path
+  (`feature/`) faint so rows differ where your eye lands, and a collapsed
+  project or folder shows the marks of the tasks inside it. Thanks to
+  [@nvkvin](https://github.com/nvkvin).
+- **The title bar's waiting pill counts the two kinds separately:** a bell for
+  agents blocked on you and a blue dot for turns you have not read. It is
+  amber only while something is actually blocked.
+- **"Show task git icon" shows the icons it means**, on the menu row and on
+  each choice.
+- **Windows and Linux: Ctrl+Shift+W closes the tab from inside a terminal.**
+  Ctrl+W closes it everywhere else, and in a terminal stays the shell's
+  delete-previous-word.
+- **Settings, Appearance: the Interface tab is now "Interface & Sidebar".**
+
+### Bug fixes
+- An agent that exited in the middle of a turn (one that updated itself and
+  quit, for instance) kept its spinner in the tab and the sidebar.
+- The Queue messages button, and the queue icon on the tab, stayed lit after
+  the last queued message had been sent.
+- In the project list options menu, a ticked row with a long description drew
+  a shrunken checkmark and sat out of line with the rows above it.
+
 ## [1.13.4] - 2026-10-06
 
 Scheduled tasks, config sync through your own git repo, and a sidebar status section.

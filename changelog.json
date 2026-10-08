@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "1.14.0",
+      "date": "2026-10-08",
+      "summary": "A sidebar filter bar and status chips, HTML preview, and review requests in New Task."
+    },
+    {
       "version": "1.13.4",
       "date": "2026-10-06",
       "summary": "Scheduled tasks, config sync through your own git repo, and a sidebar status section."
