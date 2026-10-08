@@ -307,12 +307,37 @@ describe("import worktree", () => {
       document.body.innerText.includes("sbcheck"));
     expect(before).toBe(false);
 
-    // Radix opens a submenu on hover; a pointer sequence is what a spec drives.
-    await openByPointer('[data-testid="import-worktree-sub"]');
-    await waitForText("sbcheck");
-    await snap("import-worktree-submenu.png");
-    await browser.keys(["Escape"]);
-    await browser.keys(["Escape"]);
+    try {
+      // Radix opens a submenu on hover; a pointer sequence is what a spec
+      // drives. RE-OPENED if it is found closed: a submenu closes when focus
+      // lands anywhere but its trigger, and the app defers some focus calls
+      // to a frame (see "The window may be occluded" in docs/e2e-tests.md),
+      // so one of those arriving after the open shuts it again while the
+      // parent menu stays up. That is the shape of the one failure seen here
+      // ("text never appeared: sbcheck", then the next case finding this
+      // menu's row still mounted); the cause was not reproduced.
+      await browser.waitUntil(
+        () => browser.execute(() => {
+          if (document.body.innerText.includes("sbcheck")) return true;
+          const el = document.querySelector('[data-testid="import-worktree-sub"]') as HTMLElement | null;
+          if (el?.getAttribute("data-state") === "closed") {
+            const opts = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0, isPrimary: true, pointerId: 1 } as any;
+            el.dispatchEvent(new PointerEvent("pointerdown", opts));
+            el.dispatchEvent(new PointerEvent("pointerup", opts));
+            el.click();
+          }
+          return false;
+        }),
+        { timeout: 15_000, timeoutMsg: "text never appeared: sbcheck" },
+      );
+      await snap("import-worktree-submenu.png");
+    } finally {
+      // Always shut the menu, pass or fail. Left open, its import row is
+      // still in the DOM for the next case, which asserts that row's ABSENCE
+      // and so fails for a reason that is not its own.
+      await browser.keys(["Escape"]);
+      await browser.keys(["Escape"]);
+    }
     await waitForTextGone("Import worktree");
   });
 
