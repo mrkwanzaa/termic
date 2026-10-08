@@ -38,8 +38,9 @@ The open questions at the end, answered:
    when the synced one is not on `PATH`.
 5. **Pull cadence.** Manual: one pull on launch (after first paint,
    once per process, whichever window asks first) and "Sync now", which
-   exports, commits, fetches, rebases, applies and pushes. No timer, no
-   push on change: that is phase 2.
+   exports, commits, fetches, rebases, applies and pushes. No timer and
+   no push on change. A pull when the window regains focus came later;
+   see "Phase 2".
 6. **Transport** is git, not a file export.
 
 Decided while building, not by the questions above:
@@ -269,7 +270,8 @@ folder, `git add -A`, commits as "sync from <machine name>", then pulls
 
 **Pull.** On launch, on "Sync now", before every push, and when the
 window regains focus if the last pull is older than a few minutes. No
-background timer in v1.
+background timer in v1. Phase 1 built the launch pull and "Sync now".
+The focus pull is built (see "Phase 2"). A timer is not.
 
 **Every network call is bounded.** `fetch_ref` already carries the
 pattern (`GIT_TERMINAL_PROMPT=0`, batch-mode SSH with a short connect
@@ -387,8 +389,8 @@ Measured against the pieces, not a guess at the whole:
 Phase 1 is a manual "Sync now" with keep-local on conflict: roughly a
 week, most of it the `setPref` write path and the Rust classification
 tests.
-Phase 2 is the automatic push and pull, about the same again, most of it
-edge cases. Field-level merging is phase 3 and optional.
+Phase 2, specified below, is the automatic pull and push. Field-level
+merging is phase 3 and optional.
 
 ## Open questions
 
@@ -412,8 +414,129 @@ edge cases. Field-level merging is phase 3 and optional.
    that does not exist on the other machine. Sync it and fall back to
    the local value when the synced one is not on `PATH`, or keep it
    local?
-5. **Pull cadence.** Is launch, focus and before-push enough, or does a
-   long-running window need a timer?
+5. **Pull cadence.** Launch and focus are built. A long-running window
+   that never blurs still has no timer. That proposal is in "Phase 2"
+   below, and it needs the maintainer's approval because it pushes on
+   its own.
 6. **Phase 1 as plain export/import.** Should phase 1 be a file export
    and import with no git at all, which helps users who will never set
    up a repo, and make git the transport in phase 2?
+
+## Phase 2
+
+The focus pull is built. A window that regains focus pulls, without
+pushing, when the later of `last_pull_at` and `last_sync_at` is at
+least five minutes old (`sync_focus_pull`, `focus_pull_due`). Rust
+decides under `SYNC_LOCK`. A conflict or a sign-in failure from that
+pull, or from the launch pull, toasts once and opens Settings > Sync.
+An offline failure does not toast. The rest of this section is not
+approved: the timer and the push-on-change. It is not a schedule, and
+it is not something a user can wire up from outside the app. Add the
+timer only if the maintainer wants users to have that setting. Leave
+the file here until then: an idea does not get an issue.
+
+### Why this is not a schedule
+
+Schedules and sync do different jobs.
+
+A schedule run starts an agent. It creates a task, opens an agent
+terminal, spends model tokens, and writes a report under
+`.termic/schedules/`. A sync is a git operation. When nothing changed
+it does not commit and does not push. No agent is involved.
+
+A schedule belongs to a task inside one project. Sync is one clone for
+the whole machine, under the data dir, shared by every profile. There
+is no project to attach a schedule to.
+
+The clone sits where a caged agent cannot reach it. The Seatbelt
+profile denies the data dir, and Docker never mounts `sync/` (see
+"Where the clone lives" above). There is no `termic sync` command and
+no MCP tool an agent could call.
+
+A schedule fires daily, on weekdays, or weekly, at a clock time. Sync
+wants a pull every few minutes, or when something changed.
+
+What is worth copying is the shape of the two minute timers already
+started from `src/App.tsx`: the queued-message ticker
+(`src/lib/scheduledTicker.ts`) and the schedule runner
+(`src/lib/schedules/runner.ts`). Each is one JavaScript check a minute.
+Neither is a Rust sleep loop, and neither writes when there is nothing
+to do. See [performance.md](../performance.md), bear trap 9.
+
+### Why a user cannot set this up
+
+"Sync now" is the only manual control, and that is the safe one. A cron
+job or a launchd agent that runs `git pull` inside the sync clone is
+not. It can publish this machine's older settings over another
+machine's edits.
+
+`run_core` decides what is new by comparing `origin/<branch>` before
+its own fetch with the same ref after (the `old_up` / `base_up` pair).
+Apply runs only when that fetch moves the ref. An outside `git pull`
+has already moved the ref, HEAD, and the worktree, so the next termic
+run:
+
+- exports this machine's settings over the files the pull just wrote
+  (`export_all` runs before the fetch)
+- commits them when the bytes differ (`commit_if_dirty`)
+- fetches, finds the ref where the outside pull left it, and skips
+  apply
+- on a run that pushes ("Sync now", or any later automatic push),
+  pushes that commit
+
+The branch tip is then this machine's older settings. The other
+machine's edits remain in the parent commit, and not in the files.
+This is a reading of `run_core`. It has not been tested.
+
+### What to build, cheapest first
+
+1. **Pull when a window regains focus.** Built. The loop above already
+   asked for this, and it keeps the promise on Settings > Sync that
+   nothing is pushed until "Sync now" (`sync.desc2` in
+   `src/locales/en/settings.ts`): `sync_focus_pull` uses `push: false`.
+   `sync_launch_pull` cannot be called again (`LAUNCH_PULLED`), so this
+   is its own command. The due check is the later of `last_pull_at`
+   (set at the start of every `run_core`, including a failure) and
+   `last_sync_at`. Several open windows share one answer because the
+   check and the run hold `SYNC_LOCK`. While `state.conflicts` is
+   non-empty the command returns those paths and does not fetch:
+   `run_core` itself does not refuse to start while one is waiting.
+
+2. **A "Sync automatically" toggle** that runs the existing "Sync now"
+   about every fifteen minutes, and on focus. That is an auto-push
+   without a "settings changed" signal, which does not exist yet. When
+   nothing changed, `write_if_changed` leaves the clone's files alone,
+   `commit_if_dirty` makes no commit, and `after_apply` emits no
+   `termic://sync-changed`. The run still fetches, and it still writes
+   `last_sync_at`. This option breaks the current sentence, "Nothing
+   is pushed until you press Sync now", so it needs the maintainer's
+   approval, and the sentence changes in en and zh-CN together.
+
+   The tick should be the minute-check shape above: one JavaScript
+   interval, Rust decides whether fifteen minutes have passed, and a
+   tick that is not due does not fetch. A per-window timer that calls
+   `sync_now` directly would let every open window fetch.
+
+3. **Push about ten seconds after a settings change.** That needs every
+   settings write to go through one function that can act as the change
+   signal. "Cost" above counts about 20 files that still write
+   localStorage directly, and the Rust settings writes are the same
+   kind of gap. Leave this until the focus pull is in, and until the
+   toggle too if the maintainer wants it.
+
+### A background conflict has to show up
+
+Built for the launch pull and the focus pull. The list still lives in
+Settings > Sync (`SyncSection`). `surfaceConflicts` also toasts the set
+once, with Review opening that page, and forgets it when a run or a
+resolve reports that nothing is waiting. The same files can toast
+again if they conflict later. Safety-default changes already
+toasted (`surfaceNotices`).
+
+The same runs stay quiet when the machine is offline
+(`syncFailureKind`) and toast a sign-in failure once per distinct
+error, again after a later run succeeds. Any other failure toasts once
+the same way. A failed run still writes `last_error`, which Settings
+shows as "Last sync failed". `fail` does not move `last_sync_at`;
+`last_pull_at` is what stops an offline laptop retrying on every focus.
+A timer, if one is added, must keep this toast policy.

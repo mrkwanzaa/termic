@@ -227,6 +227,10 @@ pub struct Tombstone {
 #[serde(default)]
 pub struct SyncState {
     pub last_sync_at: Option<String>,
+    /// When a run last started, including one that failed. A failure leaves
+    /// `last_sync_at` alone, so the focus pull gates on this too: otherwise an
+    /// offline machine would fetch on every focus.
+    pub last_pull_at: Option<String>,
     pub last_error: Option<String>,
     /// Repo paths a rebase stopped on. The rebase was aborted and local kept.
     pub conflicts: Vec<String>,
@@ -867,8 +871,8 @@ impl PrefsChanges {
 #[derive(Clone, Debug, Serialize, Default)]
 pub struct SyncRunResult {
     pub ok: bool,
-    /// Nothing ran: not connected, no profile bound, or the launch pull
-    /// already happened in this process.
+    /// Nothing ran: not connected, no profile bound, the launch pull already
+    /// happened in this process, or a focus pull that was not due.
     pub skipped: bool,
     pub pushed: bool,
     /// Namespaces of the profiles whose projects or settings changed.
@@ -1770,6 +1774,30 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// How long after a pull (or a failed attempt) a focus pull waits.
+const FOCUS_PULL_GAP_SECS: i64 = 5 * 60;
+
+fn parsed_stamp(s: &Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
+    let s = s.as_deref()?;
+    chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&chrono::Utc))
+}
+
+/// Whether a focus pull should fetch. The later of the last attempt and the
+/// last success counts, and an outstanding conflict does not: another pull
+/// would not settle it, and `run_core` does not refuse to start while one is
+/// waiting. An unreadable stamp is ignored, so a bad value cannot block pulls
+/// forever.
+fn focus_pull_due(state: &SyncState, now: chrono::DateTime<chrono::Utc>) -> bool {
+    if !state.conflicts.is_empty() {
+        return false;
+    }
+    let last = [parsed_stamp(&state.last_pull_at), parsed_stamp(&state.last_sync_at)].into_iter().flatten().max();
+    match last {
+        None => true,
+        Some(t) => now.signed_duration_since(t).num_seconds() >= FOCUS_PULL_GAP_SECS,
+    }
+}
+
 /// Export, commit, fetch, rebase, apply, and (with `push`) push.
 pub(crate) fn run_core(clone: &Path, opts: &RunOpts) -> SyncRunResult {
     let mut res = SyncRunResult::default();
@@ -1784,6 +1812,11 @@ pub(crate) fn run_core(clone: &Path, opts: &RunOpts) -> SyncRunResult {
         res.skipped = true;
         return res;
     }
+    // Before the fetch, and on the same `state` every exit path saves. A
+    // failure does not move `last_sync_at` (`fail` leaves it), so without
+    // this a focus pull would try again on every focus while offline.
+    state.last_pull_at = Some(now());
+    save_state(&state);
     let mut bound = bound_profiles();
     let branch = match current_branch(clone) {
         Ok(b) => b,
@@ -2873,6 +2906,34 @@ pub async fn sync_launch_pull(app: tauri::AppHandle, prefs: Option<PrefsSnapshot
     Ok(res)
 }
 
+/// A pull when a window regains focus. No push. Not latched for the process
+/// the way `sync_launch_pull` is: `focus_pull_due` decides, under `SYNC_LOCK`,
+/// so every open window shares one answer. An outstanding conflict is returned
+/// and not fetched over.
+#[tauri::command]
+pub async fn sync_focus_pull(app: tauri::AppHandle, prefs: Option<PrefsSnapshot>) -> Result<SyncRunResult, String> {
+    let res = blocking(move || {
+        let _g = SYNC_LOCK.lock();
+        let clone = sync_dir()?;
+        if !is_connected(&clone) || bound_profiles().is_empty() {
+            return Ok(SyncRunResult { skipped: true, ..Default::default() });
+        }
+        let state = load_state();
+        if !state.conflicts.is_empty() {
+            return Ok(SyncRunResult { skipped: true, conflicts: state.conflicts.clone(), ..Default::default() });
+        }
+        if !focus_pull_due(&state, chrono::Utc::now()) {
+            return Ok(SyncRunResult { skipped: true, ..Default::default() });
+        }
+        let machine = machine_name();
+        let finder = Finder { find_repo: &default_find_repo };
+        Ok::<_, String>(run_core(&clone, &opts(false, &machine, prefs.as_ref(), &finder)))
+    })
+    .await??;
+    after_apply(&app, &res);
+    Ok(res)
+}
+
 /// Record a choice for one conflicting file; once every file has one, settle
 /// them and sync.
 #[tauri::command]
@@ -3108,6 +3169,36 @@ mod tests {
         );
         let stale: Vec<&&str> = s.union(&l).filter(|k| !keys.contains(**k)).collect();
         assert!(stale.is_empty(), "{what}: listed but not a serialized field (renamed or removed?): {stale:?}");
+    }
+
+    #[test]
+    fn focus_pull_waits_out_the_gap_and_a_conflict() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-08T12:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        let mut state = SyncState::default();
+        assert!(focus_pull_due(&state, now), "never pulled: due");
+
+        state.last_pull_at = Some("2026-10-08T11:56:00Z".into());
+        assert!(!focus_pull_due(&state, now), "four minutes is inside the gap");
+        state.last_pull_at = Some("2026-10-08T11:55:00Z".into());
+        assert!(focus_pull_due(&state, now), "five minutes is due");
+
+        // A success newer than the attempt holds the gap, and the reverse.
+        state.last_sync_at = Some("2026-10-08T11:58:00Z".into());
+        assert!(!focus_pull_due(&state, now), "a newer success holds the gap");
+        state.last_pull_at = Some("2026-10-08T11:59:00Z".into());
+        state.last_sync_at = Some("2026-10-08T11:50:00Z".into());
+        assert!(!focus_pull_due(&state, now), "a newer attempt holds the gap");
+
+        state.last_pull_at = None;
+        state.last_sync_at = None;
+        state.conflicts.push("profiles/a/settings.json".into());
+        assert!(!focus_pull_due(&state, now), "a waiting conflict is not pulled over");
+
+        state.conflicts.clear();
+        state.last_pull_at = Some("not a date".into());
+        assert!(focus_pull_due(&state, now), "an unreadable stamp does not block");
+        state.last_sync_at = Some("2026-10-08T11:58:00Z".into());
+        assert!(!focus_pull_due(&state, now), "a bad attempt stamp still leaves the success in force");
     }
 
     #[test]
@@ -3555,6 +3646,8 @@ mod tests {
         let opts = RunOpts { adopt: true, push: true, machine: a.name, prefs: Some(&a_prefs), locate: &default_locate, finder: &finder };
         let r = bind(&a.clone_dir(), &ProfileId::Root, None, &opts);
         assert!(r.ok && r.pushed, "{r:?}");
+        a.enter();
+        assert!(load_state().last_pull_at.is_some(), "a run stamps when it pulled, so a later focus can tell");
 
         // What reached the remote: no secret, no local path, a fixed identity.
         let grep = std::process::Command::new("git")

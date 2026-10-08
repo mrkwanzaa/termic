@@ -220,6 +220,35 @@ describe("config sync", () => {
     expect((await fixture()).preview_url).toBe("http://localhost:4321/e2e-sync");
   });
 
+  it("pulls a change when the window regains focus, and not again right away", async () => {
+    onOtherMachine(folder => editJson(path.join(folder, "projects", `${original.id}.json`), d => {
+      d.preview_url = "http://localhost:4321/e2e-focus";
+    }));
+    // The launch pull and Sync now just ran, so a focus pull is not due
+    // until the recorded attempt is older than five minutes.
+    const statePath = path.join(dataDir, "sync-state.json");
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const old = new Date(Date.now() - 6 * 60_000).toISOString();
+    state.last_sync_at = old;
+    state.last_pull_at = old;
+    writeFileSync(statePath, JSON.stringify(state));
+
+    const wasFocused = await browser.execute(() => window.__termic!.useUI.getState().windowFocused);
+    await browser.execute(() => {
+      const ui = window.__termic!.useUI.getState();
+      ui.setWindowFocused(false);
+      ui.setWindowFocused(true);
+    });
+    await browser.waitUntil(async () => (await fixture()).preview_url === "http://localhost:4321/e2e-focus",
+      { timeout: 30_000, timeoutMsg: "the focus pull did not apply the other machine's preview URL" });
+    await browser.execute((focused) => window.__termic!.useUI.getState().setWindowFocused(focused), wasFocused);
+
+    // Still inside the gap: Rust skips, and this machine does not push.
+    const again = await browser.execute(async () => window.__termic!.invoke("sync_focus_pull", { prefs: null }));
+    expect(again.skipped).toBe(true);
+    expect(git(["--git-dir", bare, "log", "-1", "--format=%s", "main"])).toMatch(/^edit on another machine/);
+  });
+
   it("shows a YOLO default another machine changed, until dismissed", async () => {
     onOtherMachine(folder => editJson(path.join(folder, "projects", `${original.id}.json`), d => {
       d.default_yolo = true;

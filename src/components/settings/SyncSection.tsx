@@ -23,7 +23,7 @@ import {
   syncPreview, syncResolve, syncSkip, syncStatus,
 } from "@/lib/ipc";
 import {
-  NEXT_LAUNCH_SETTINGS, SYNC_CHANGED_EVENT, applyRunResult, describeNotice, describeSafety, isNotice, runSync, snapshotFor,
+  NEXT_LAUNCH_SETTINGS, SYNC_CHANGED_EVENT, applyRunResult, describeNotice, describeSafety, isNotice, runSync, snapshotFor, surfaceConflicts,
 } from "@/lib/configSync";
 import type { SyncChange, SyncFolder, SyncRunResult, SyncStatus } from "@/lib/types";
 import { useApp } from "@/store/app";
@@ -51,7 +51,14 @@ export default function SyncSection() {
   const [result, setResult] = useState<SyncRunResult | null>(null);
 
   const refresh = useCallback(async () => {
-    try { setSt(await syncStatus()); } catch (e) { setErr(String(e)); }
+    try {
+      const next = await syncStatus();
+      setSt(next);
+      return next;
+    } catch (e) {
+      setErr(String(e));
+      return null;
+    }
   }, []);
 
   useEffect(() => {
@@ -87,10 +94,10 @@ export default function SyncSection() {
   }
 
   async function finish(res: SyncRunResult | undefined) {
-    if (!res) return;
+    if (!res) return null;
     setResult(res);
     await applyRunResult(res);
-    await refresh();
+    return await refresh();
   }
 
   const connect = () => act("connect", async () => {
@@ -130,8 +137,11 @@ export default function SyncSection() {
   const resolve = (path: string, choice: "local" | "remote") => act("resolve", async () => {
     const cur = await syncStatus();
     const res = await syncResolve(path, choice, snapshotFor(cur));
-    if (res.skipped) await refresh();
-    else await finish(res);
+    // A partial choice leaves the same files waiting. A finished one clears
+    // them. Either way the background toast has to learn which, or the same
+    // paths conflicting again later in this session stay silent.
+    const after = res.skipped ? await refresh() : await finish(res);
+    surfaceConflicts((after?.conflicts ?? []).map(c => c.path), false);
   });
 
   const restore = (folder: string) => act("sync", async () => {
@@ -144,7 +154,8 @@ export default function SyncSection() {
     setFolders(null);
     setPreview(null);
     setResult(null);
-    await refresh();
+    const after = await refresh();
+    surfaceConflicts((after?.conflicts ?? []).map(c => c.path), false);
   });
 
   if (!st) return <SectionTitle title={t("sync.title")} badge={t("shared.experimental")} />;
@@ -441,7 +452,7 @@ function WaitingRow({ id, name, where, onLocate, onSkip }: {
 }
 
 function RemovalRow({ id, name, machine, onDone, onError }: {
-  id: string; name: string; machine: string; onDone: () => Promise<void>; onError: (e: string) => void;
+  id: string; name: string; machine: string; onDone: () => Promise<unknown>; onError: (e: string) => void;
 }) {
   const { t } = useTranslation("settings");
   // Removing archives every task under the project and deletes their

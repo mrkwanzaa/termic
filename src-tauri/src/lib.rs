@@ -25309,7 +25309,7 @@ pub fn run() {
             notify, open_path, reveal_path, open_file_external, open_with_apps, open_with_app, open_external_url, browser_command_check, home_dir, project_tasks_path_default, tasks_path_conflicts, default_shell, script_shell, path_exists, path_is_git_repo, log_line, pty_debug_append, terminal_stage_file, install_notification_sound, play_completion_sound,
             settings_load, settings_save, discovery_dismiss,
             config_sync::sync_status, config_sync::sync_connect, config_sync::sync_preview,
-            config_sync::sync_bind, config_sync::sync_now, config_sync::sync_launch_pull,
+            config_sync::sync_bind, config_sync::sync_now, config_sync::sync_launch_pull, config_sync::sync_focus_pull,
             config_sync::sync_resolve, config_sync::sync_locate, config_sync::sync_skip,
             config_sync::sync_keep, config_sync::sync_dismiss_notices, config_sync::sync_disconnect, config_sync::sync_restore_folder, agents_save, agents_defaults, run_capture_command, discover_repos, detect_clis,
             docker_check, docker_image_status, docker_get_dockerfile, docker_default_dockerfile, docker_set_dockerfile, docker_build_image, docker_agent_dirs, docker_command_preview,

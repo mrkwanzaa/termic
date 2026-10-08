@@ -1,4 +1,6 @@
-// Config sync, the window's half (docs/ideas/config-sync.md, phase 1).
+// Config sync, the window's half (docs/ideas/config-sync.md). Phase 1 is
+// manual sync plus the launch pull. A focus pull (no push) is the first
+// piece of phase 2.
 //
 // Rust (src-tauri/src/config_sync.rs) owns git and the files. This module
 // owns localStorage, which Rust cannot read: every sync command takes a
@@ -19,7 +21,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { PREF_KEYS } from "@/lib/prefsRegistry";
 import { PROFILE_NS } from "@/lib/profileScope";
 import { i18n } from "@/lib/i18n";
-import { syncLaunchPull, syncNow, syncStatus } from "@/lib/ipc";
+import { syncFocusPull, syncLaunchPull, syncNow, syncStatus } from "@/lib/ipc";
 import type { SyncChange, SyncPrefsChanges, SyncPrefsSnapshot, SyncRunResult, SyncStatus } from "@/lib/types";
 import { reloadPrefsFromStorage, usePrefs } from "@/store/prefs";
 import { usePromptLibrary } from "@/store/prompts";
@@ -123,14 +125,39 @@ export function snapshotFor(st: Pick<SyncStatus, "bound">): SyncPrefsSnapshot {
   return snapshotSyncPrefs([PROFILE_NS, ...st.bound.map(b => b.ns)]);
 }
 
-/** "Sync now", or the launch pull. `null` when sync is not set up here. */
-export async function runSync(kind: "now" | "launch"): Promise<SyncRunResult | null> {
+/** "Sync now", the launch pull, or a pull when the window regains focus.
+ *  `null` when sync is not set up here. A focus pull Rust skipped as not due
+ *  writes nothing and announces nothing. */
+export async function runSync(kind: "now" | "launch" | "focus"): Promise<SyncRunResult | null> {
   const st = await syncStatus();
   if (!st.connected || st.bound.length === 0) return null;
   const snap = snapshotFor(st);
-  const res = kind === "now" ? await syncNow(snap) : await syncLaunchPull(snap);
-  await applyRunResult(res);
+  const res = kind === "now" ? await syncNow(snap)
+    : kind === "focus" ? await syncFocusPull(snap)
+    : await syncLaunchPull(snap);
+  // A skipped focus pull did not run. Applying it would re-read status for
+  // notices that did not change.
+  if (!res.skipped) await applyRunResult(res);
+  // Background runs only. "Sync now" already draws the failure and the
+  // conflict list on the page the user is looking at.
+  // "Sync now" is the page the user is looking at, so it remembers the set
+  // without a toast. An empty set forgets it: the same files can toast again
+  // the next time they conflict.
+  surfaceConflicts(res.conflicts, kind !== "now");
+  if (kind !== "now") {
+    if (res.error) surfaceSyncFailure(res.error);
+    else if (res.ok) noteSyncRunSucceeded();
+  }
   return res;
+}
+
+/** The rising edge of window focus: one pull, if Rust says it is due.
+ *  The promise settles when that pull does; a focus that is not a rising
+ *  edge settles immediately. Failures are swallowed: a focus handler must
+ *  not surface an unhandled rejection. */
+export function onConfigSyncFocus(focused: boolean, wasFocused: boolean): Promise<void> {
+  if (!focused || wasFocused) return Promise.resolve();
+  return runSync("focus").then(() => {}).catch(() => {});
 }
 
 // ── safety notices ──
@@ -203,12 +230,116 @@ export async function surfaceNotices(): Promise<void> {
   });
 }
 
+// ── background failures ──
+//
+// A launch pull and a focus pull both happen while the user is not looking at
+// Settings > Sync. A conflict or a sign-in failure has to show up anyway. An
+// offline machine stays quiet: the same fetch will fail again, and a toast
+// per focus is noise. The once-key is the error text, cleared when a run
+// succeeds, so a failure that comes back after a good sync is reported again.
+
+const AUTH_MARKERS = [
+  "authentication failed",
+  "permission denied",
+  "publickey",
+  "could not read username",
+  "terminal prompts disabled",
+  "invalid username or password",
+  "access rights",
+  "gh007",
+  "password authentication was removed",
+  "returned error: 401",
+  "returned error: 403",
+  "http basic: access denied",
+];
+
+const OFFLINE_MARKERS = [
+  "could not resolve host",
+  "could not resolve hostname",
+  "name or service not known",
+  "nodename nor servname",
+  "temporary failure in name resolution",
+  "network is unreachable",
+  "no route to host",
+  "operation timed out",
+  "connection timed out",
+  "timed out",
+  "connection refused",
+  "couldn't connect",
+  "could not connect",
+  "failed to connect",
+  "connection reset",
+  "early eof",
+  "recv failure",
+  "the remote end hung up unexpectedly",
+];
+
+/** How a background sync failure should be told, if at all. Auth is checked
+ *  first: git wraps it in the same "could not read from remote" line it uses
+ *  for a network failure. */
+export function syncFailureKind(error: string): "offline" | "auth" | "other" {
+  const s = error.toLowerCase();
+  if (AUTH_MARKERS.some(m => s.includes(m))) return "auth";
+  if (OFFLINE_MARKERS.some(m => s.includes(m))) return "offline";
+  return "other";
+}
+
+function failureLine(error: string): string {
+  const line = error.split("\n").map(s => s.trim()).find(Boolean) ?? error.trim();
+  return line.length > 160 ? `${line.slice(0, 157)}...` : line;
+}
+
+let lastFailureToasted = "";
+let lastConflictToast = "";
+
+const reviewAction = (t: (k: string) => string) => ({
+  label: t("settings:sync.review"),
+  onClick: () => useApp.getState().openSettings("sync"),
+});
+
+/** Toast a conflict set once while it is still waiting. An empty set means it
+ *  was settled (a resolve, a sync, or a disconnect), and the same paths can
+ *  toast again if they conflict later. `toast` is false when the user is
+ *  already on Settings > Sync: the list is the announcement, but the
+ *  signature still has to move. */
+export function surfaceConflicts(paths: readonly string[], toast = true): void {
+  if (!paths.length) {
+    lastConflictToast = "";
+    return;
+  }
+  const sig = [...paths].sort().join("\n");
+  if (sig === lastConflictToast) return;
+  lastConflictToast = sig;
+  if (!toast) return;
+  const t = i18n.t.bind(i18n) as (k: string) => string;
+  useUI.getState().pushToast(t("settings:sync.conflictToast"), "warning", {
+    sticky: true,
+    action: reviewAction(t),
+  });
+}
+
+/** Toast a background failure once per distinct text. Offline says nothing. */
+export function surfaceSyncFailure(error: string): void {
+  const kind = syncFailureKind(error);
+  if (kind === "offline") return;
+  if (error === lastFailureToasted) return;
+  lastFailureToasted = error;
+  const t = i18n.t.bind(i18n) as (k: string, o?: Record<string, unknown>) => string;
+  const msg = kind === "auth" ? t("settings:sync.authToast") : t("settings:sync.failureToast", { error: failureLine(error) });
+  useUI.getState().pushToast(msg, "error", { sticky: true, action: reviewAction(t) });
+}
+
+function noteSyncRunSucceeded(): void {
+  lastFailureToasted = "";
+}
+
 // ── boot ──
 
 let started = false;
 
 /** Once per window, after first paint: listen for runs other windows make,
- *  and run the launch pull (Rust lets only the first window's through). */
+ *  run the launch pull (Rust lets only the first window's through), and pull
+ *  again when this window regains focus if the last pull is old enough. */
 export function initConfigSync(): void {
   if (started) return;
   started = true;
@@ -218,5 +349,6 @@ export function initConfigSync(): void {
     void surfaceNotices();
   }).catch(() => {});
   void listen(SYNC_PREFS_WRITTEN_EVENT, () => { reloadSyncedStores(); }).catch(() => {});
+  useUI.subscribe((s, prev) => onConfigSyncFocus(s.windowFocused, prev.windowFocused));
   void runSync("launch").catch(() => {});
 }
