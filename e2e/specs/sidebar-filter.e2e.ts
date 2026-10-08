@@ -423,6 +423,87 @@ describe("sidebar filter bar", () => {
     await setQuery("");
   });
 
+  // The query language has to be findable without knowing it: a click in the
+  // empty field lists every key. Only a click (or ArrowDown) does, because the
+  // bar also takes focus on its own and a list nobody asked for covers the
+  // chips and the PROJECTS header.
+  it("a click in the empty bar lists every filter key, and focus alone does not", async () => {
+    const LIST = '[data-testid="sidebar-filter-suggestions"]';
+    const labels = () => browser.execute(sel =>
+      [...document.querySelectorAll(`${sel} [data-board-filter-suggestion]`)]
+        .map(el => el.getAttribute("data-board-filter-suggestion")), LIST) as Promise<string[]>;
+    await setQuery("");
+
+    // Focus without a click: what the palette's "Filter sidebar tasks" does.
+    await browser.execute(sel => (document.querySelector(sel) as HTMLInputElement).focus(), INPUT);
+    expect(await browser.execute(sel => !!document.querySelector(sel), LIST)).toBe(false);
+
+    await clickWhenVisible(INPUT);
+    await waitVisible(LIST);
+    const keys = await labels();
+    expect(keys).toContain("status:");
+    expect(keys).toContain("project:");
+    // No row is marked until an arrow or the pointer marks one, so Enter and
+    // Tab do not insert a key the user never chose.
+    expect(await browser.execute(sel =>
+      document.querySelectorAll(`${sel} [aria-selected="true"]`).length, LIST)).toBe(0);
+    await browser.keys(["Enter"]);
+    expect(await query()).toBe("");
+
+    // A pick writes the key and moves on to its values.
+    await browser.execute(sel => {
+      const row = document.querySelector(`${sel} [data-board-filter-suggestion="status:"]`) as HTMLElement;
+      row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    }, LIST);
+    await browser.waitUntil(async () => (await query()) === "status:", { timeout: 5_000, timeoutMsg: "picking a key did not write it" });
+    await browser.waitUntil(async () => (await labels()).includes("working"), { timeout: 5_000, timeoutMsg: "the key's values were not offered next" });
+
+    await setQuery("");
+    await browser.execute(sel => (document.querySelector(sel) as HTMLInputElement).blur(), INPUT);
+    await waitGone(LIST);
+  });
+
+  // The row used to exist only while a chip had something to count, so it
+  // appeared with the first working agent and went with the last, and the
+  // project tree jumped a row each time.
+  it("draws all three chips whatever they count, and an empty one does nothing", async () => {
+    const chips = () => browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="status-chips"] [data-status-chip]')].map(el => ({
+        chip: el.getAttribute("data-status-chip"),
+        empty: el.hasAttribute("data-empty"),
+        disabled: el.getAttribute("aria-disabled"),
+        count: el.querySelector('[data-testid="status-chip-count"]')?.textContent ?? null,
+      })));
+    const all = await chips();
+    expect(all.map(c => c.chip)).toEqual(["attention", "working", "review"]);
+    // The fixture has no PR, so In review is the chip that is certainly empty.
+    const review = all.find(c => c.chip === "review")!;
+    expect(review).toEqual({ chip: "review", empty: true, disabled: "true", count: "0" });
+    // Every chip agrees with itself: empty exactly when it is disabled.
+    for (const c of all) expect(c.disabled === "true").toBe(c.empty);
+
+    // The row's box is what must not move: same top and height with one chip
+    // counting as with none. `a` still carries the attention seeded above.
+    const box = () => browser.execute(() => {
+      const r = document.querySelector('[data-testid="status-chips"]')!.getBoundingClientRect();
+      return { top: Math.round(r.top), height: Math.round(r.height) };
+    });
+    const withOne = await box();
+    await browser.execute(id => {
+      const app = window.__termic!.useApp.getState();
+      const tab = (app.tabs[id] ?? []).find((t: any) => t.type === "terminal");
+      app.clearAttention(id, tab.id);
+    }, a);
+    await browser.waitUntil(
+      async () => (await chips()).find(c => c.chip === "attention")!.empty,
+      { timeout: 5_000, timeoutMsg: "the attention chip never emptied" },
+    );
+    expect(await box()).toEqual(withOne);
+
+    await clickWhenVisible('[data-status-chip="review"]');
+    expect(await query()).toBe("");
+  });
+
   it("keeps its own query: the board is not filtered by it", async () => {
     await setQuery("sfilter-bravo");
     await clickByText("Kanban");

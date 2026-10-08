@@ -50,11 +50,18 @@ function chipLabel(chip: StatusChip, t: (k: string) => string): string {
 // Colours from STATUS_MARK_COLOR, which the status section's bucket headers
 // share. The PR glyph is the theme's fg, not a PR-state colour: the column
 // means "has a PR", and green read as "checks passed".
-const ICON: Record<StatusChip, React.ReactNode> = {
-  attention: <Bell className="h-3 w-3" style={{ color: STATUS_MARK_COLOR.attention }} strokeWidth={2.5} />,
-  working: <span style={{ color: STATUS_MARK_COLOR.working }}><Spinner size={10} /></span>,
-  review: <GitPullRequest className="h-3 w-3" style={{ color: STATUS_MARK_COLOR.review }} />,
-};
+//
+// An EMPTY chip draws its glyph in the chip's own faint text colour and holds
+// the spinner still: a coloured bell or a turning ring beside a 0 would claim
+// something is waiting or running when nothing is.
+function chipIcon(chip: StatusChip, empty: boolean): React.ReactNode {
+  const color = empty ? undefined : STATUS_MARK_COLOR[chip];
+  switch (chip) {
+    case "attention": return <Bell className="h-3 w-3" style={{ color }} strokeWidth={2.5} />;
+    case "working": return <span style={{ color }}><Spinner size={10} still={empty} /></span>;
+    case "review": return <GitPullRequest className="h-3 w-3" style={{ color }} />;
+  }
+}
 
 export const StatusChips = memo(function StatusChips() {
   const { t } = useTranslation("sidebar");
@@ -79,41 +86,58 @@ export const StatusChips = memo(function StatusChips() {
     () => Object.fromEntries(STATUS_CHIPS.map(c => [c, columnCount(c)])) as Record<StatusChip, number>,
     [columnCount],
   );
-  // Whether a chip is drawn goes by the UNFILTERED column, so typing in the
-  // bar never makes chips come and go: under a query a chip can read 0.
+  // Whether a chip is EMPTY goes by the UNFILTERED column, so typing in the
+  // bar never disables a chip: under a query a live one can read 0.
   const totals = useMemo(() => {
     const n: Record<string, number> = {};
     for (const c of columnOf.values()) n[c] = (n[c] ?? 0) + 1;
     return n;
   }, [columnOf]);
 
-  // An empty chip is hidden, unless the query holds it: it is how that
-  // clause comes back out.
-  const shown = STATUS_CHIPS.filter(c => (totals[c] ?? 0) > 0 || boardClauseState(query, "status", c) !== null);
-  if (shown.length === 0) return null;
+  // All three chips are ALWAYS drawn. They used to come and go with their
+  // counts, so the row appeared when the first agent started working and
+  // vanished when the last one stopped, and the whole project tree moved up
+  // and down under the pointer each time. An empty chip is drawn disabled
+  // instead, unless the query holds its clause: then it stays live, because
+  // it is how that clause comes back out.
   return (
     // One line at any sidebar width: a chip is its glyph and count, and its
     // name lives in the tooltip and the accessible label.
     <div data-testid="status-chips" className="flex min-w-0 flex-nowrap gap-1 overflow-hidden">
-      {shown.map(c => {
-        const on = boardClauseState(query, "status", c) === "include";
+      {STATUS_CHIPS.map(c => {
+        const clause = boardClauseState(query, "status", c);
+        const on = clause === "include";
+        const empty = (totals[c] ?? 0) === 0 && clause === null;
+        const tip = empty
+          ? t("statusChips.tipEmpty", { label: chipLabel(c, t) })
+          : t(on ? "statusChips.tipActive" : "statusChips.tip", { status: c, label: chipLabel(c, t) });
         return (
-          <Tip key={c} content={t(on ? "statusChips.tipActive" : "statusChips.tip", { status: c, label: chipLabel(c, t) })} side="bottom">
+          <Tip key={c} content={tip} side="bottom">
             <button
               type="button"
               data-status-chip={c}
+              data-empty={empty || undefined}
               aria-pressed={on}
+              // aria-disabled, not `disabled`: a disabled button swallows the
+              // hover that shows the tooltip, and the tooltip is the only
+              // place the chip's name is written.
+              aria-disabled={empty || undefined}
               aria-label={`${chipLabel(c, t)} ${counts[c]}`}
-              onClick={() => setText(toggleBoardClause(useUI.getState().sidebarQuery, "status", c))}
+              onClick={() => {
+                if (empty) return;
+                setText(toggleBoardClause(useUI.getState().sidebarQuery, "status", c));
+              }}
               className={cn(
                 "flex h-[22px] shrink-0 items-center gap-1.5 rounded-full border px-2 text-[11.5px] tabular-nums transition-colors",
                 on
                   ? "border-[var(--color-accent)] text-[var(--color-fg)]"
-                  : "border-[var(--color-border-soft)] text-[var(--color-fg-dim)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
+                  : empty
+                    ? "cursor-default border-[var(--color-border-soft)] text-[var(--color-fg-faint)] opacity-60"
+                    : "border-[var(--color-border-soft)] text-[var(--color-fg-dim)] hover:bg-[var(--color-bg-3)] hover:text-[var(--color-fg)]",
               )}
               style={on ? { backgroundColor: "color-mix(in srgb, var(--color-accent) 14%, transparent)" } : undefined}
             >
-              {ICON[c]}
+              {chipIcon(c, empty)}
               <span data-testid="status-chip-count">{counts[c]}</span>
             </button>
           </Tip>

@@ -23,7 +23,7 @@ Left rail + one content pane (`components/settings/Settings.tsx`). Three bands, 
 
 The bands are what the app looks like and runs, then how it behaves while you work, then what it is allowed to do. Sandbox sits low because of the last one, not because it matters least. General leads by convention rather than by that rule: it is app-level and set-once, but every settings UI opens on General and fighting that expectation costs more than the inconsistency does.
 
-Appearance carries its own sub-tabs (Terminal, Editor, Interface) on the strip Settings → Projects uses. Terminal leads.
+Appearance carries its own sub-tabs (Terminal, Editor, Interface & Sidebar) on the strip Settings → Projects uses. Terminal leads.
 
 A per-project page carries four of those sub-tabs: Scripts & run (Members & scripts on a multi-repo project), Sandbox, Code navigation and More. Code navigation is named by `codeIntelName()`, so it reads Code intelligence once type checking is on, exactly like the panel it opens. It earned a tab rather than sitting under Scripts & run, where it started: it shares nothing with the setup/run/archive scripts that tab exists for, it is the size of a page on its own (arming, languages, the server picker, per-language settings), and it is machine-local `projects.json` while that tab's storage strip is switching between personal and the committed `.termic.yaml`. Its live preview is a real `AuxTerminal`, so it is click-armed: a settings visit must never fork a shell on its own, and the pty dies when the tab unmounts.
 
@@ -717,7 +717,15 @@ which keeps the focus that click gave it.
 
 Keys: `/` (when nothing editable has focus) or ⌘F focuses the bar; Esc
 peels one layer per press (completions, then the text, then focus), and
-ArrowDown reopens the completions Esc closed. Enter or Tab accepts. An IME
+ArrowDown reopens the completions Esc closed. Enter or Tab accepts.
+**A click in the field, or ArrowDown, with no token under way lists every
+canonical key** (`boardSuggestions`' `browse`), so the query language can be
+found without knowing it. Focus alone does not: the bar also takes focus on
+its own (the palette's "Filter sidebar tasks", the funnel menu handing the
+keyboard back). A browsed list marks no row until an arrow or the pointer
+does, so Tab still leaves the field and Enter inserts nothing unchosen.
+Typing a space does not open it either, or it would fire on every word of a
+plain-text search. An IME
 composition owns those keys until it commits. Autocomplete completes the
 token at the end of the input: qualifier keys (aliases included) for a bare
 word, values for `key:`, ranked by the palettes' `fuzzyMatch`. A key or a
@@ -736,7 +744,7 @@ on screen while you work (#298).
 **Off by default** (`prefs.showStatusSection`): with two tasks it is clutter,
 with twenty it is the point. Two switches write the one pref: a check row in
 the Project list options menu next to "Collapse inactive projects", and
-Settings > Appearance > Interface > Sidebar. The STATUS header is a label
+Settings > Appearance > Interface & Sidebar > Sidebar. The STATUS header is a label
 exactly like PROJECTS and does not fold: the switch is how the section goes
 away, and a chevron on it made it the odd one out next to PROJECTS. Each
 bucket folds, and those folds are a pref (`statusBucketCollapsed`, a scoped
@@ -918,10 +926,15 @@ the count, and the list is one click away in the tree.
   tried and dropped: the PR glyph is what the board's review column uses.
 - **Three chips, not five.** Settled and Not started are the largest and
   least urgent buckets; the board and the query have them.
-- **An empty chip is hidden**, unless the query holds its clause: it is how
-  that clause comes back out. "Empty" means its unfiltered column, so typing
-  in the bar never makes a chip come and go; under a query one can read 0.
-  With no chip to show the row is not drawn.
+- **All three chips are always drawn.** An empty one is disabled
+  (`aria-disabled`, faint, glyph uncoloured, spinner held still, click does
+  nothing) rather than hidden. Hidden, the row appeared with the first
+  working agent and went with the last, and the project tree jumped a row
+  each time. "Empty" means its unfiltered column, so typing in the bar never
+  disables a chip (under a query a live one can read 0), and a chip whose
+  clause is in the query stays live: it is how that clause comes back out.
+  `aria-disabled` and not `disabled`, because a disabled button swallows the
+  hover and the tooltip is the only place a chip's name is written.
 - **The work prefs gate it as they gate the board:** `attentionIndicator`
   off empties Needs you, `workingIndicator` off empties Working.
 - **Rendering:** its own memoized component calling `useTaskQuery` with

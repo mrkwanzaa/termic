@@ -21,7 +21,7 @@ import { groupOf } from "./projectGroups";
 import { fuzzyMatch } from "./fuzzy";
 
 /** Canonical qualifier keys. Aliases fold into these at parse time. */
-const BOARD_QUALIFIERS = [
+export const BOARD_QUALIFIERS = [
   "project", "group", "agent", "status", "branch", "base", "pr", "checks", "is", "has", "no",
 ] as const;
 export type BoardQualifier = (typeof BOARD_QUALIFIERS)[number];
@@ -339,8 +339,17 @@ export function boardSuggestions(
   input: string,
   valuesFor: (key: BoardQualifier) => readonly string[],
   limit = 8,
+  /** The user ASKED for the list (clicked the field, pressed ArrowDown) with
+   *  no token under way: offer every qualifier key, so the query language can
+   *  be found without knowing it. Canonical keys only, since an alias is a
+   *  second spelling of a row already there. Off while typing: a list that
+   *  opened after every space would fire on each word of a plain-text search. */
+  browse = false,
 ): BoardSuggestion[] {
-  if (input === "" || /\s$/.test(input)) return [];
+  if (input === "" || /\s$/.test(input)) {
+    if (!browse) return [];
+    return BOARD_QUALIFIERS.map(k => ({ label: `${k}:`, next: `${input}${k}:`, matches: [] }));
+  }
   const toks = tokenize(input);
   const last = toks[toks.length - 1] ?? "";
   const head = input.slice(0, input.length - last.length);

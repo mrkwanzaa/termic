@@ -31,6 +31,7 @@ export default {
     review: "审查中",
     tip: "{{label}}：筛选 status:{{status}}",
     tipActive: "{{label}}：移除 status:{{status}}",
+    tipEmpty: "{{label}}：没有任务",
   },
   filterBar: {
     placeholder: "筛选任务",

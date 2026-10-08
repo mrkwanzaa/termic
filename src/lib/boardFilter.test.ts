@@ -25,6 +25,7 @@ import {
   dropBoardClauses,
   setBoardClause,
   boardSuggestions,
+  BOARD_QUALIFIERS,
   boardTaskMatches,
   isBoardQueryActive,
   parseBoardQuery,
@@ -342,6 +343,20 @@ describe("boardSuggestions", () => {
 
   it("uses the enum for closed keys", () => {
     expect(boardSuggestions("is:y", values).map(s => s.label)).toEqual(["yolo"]);
+  });
+
+  it("browsing offers every canonical key where no token is under way, and nothing changes while typing", () => {
+    const keys = boardSuggestions("", values, 8, true);
+    expect(keys.map(s => s.label)).toEqual(BOARD_QUALIFIERS.map(k => `${k}:`));
+    // Canonical keys only: an alias is a second spelling of a row already there.
+    expect(keys.map(s => s.label)).not.toContain("repo:");
+    expect(keys[0].next).toBe(`${BOARD_QUALIFIERS[0]}:`);
+    // After a finished clause the pick is appended, and the clause kept.
+    expect(boardSuggestions("project:acme ", values, 8, true)[0].next).toBe(`project:acme ${BOARD_QUALIFIERS[0]}:`);
+    // A token under way completes exactly as it does without browsing.
+    expect(boardSuggestions("pr", values, 8, true)).toEqual(boardSuggestions("pr", values));
+    // Not browsing, an empty bar still offers nothing.
+    expect(boardSuggestions("", values)).toEqual([]);
   });
 
   it("nothing after a space or for an unknown key", () => {

@@ -92,14 +92,24 @@ export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange:
   // Completions show while typing; Esc or a pick closes them until the next
   // keystroke reopens them.
   const [suggestOpen, setSuggestOpen] = useState(false);
+  // The list was ASKED for (a click in the field, ArrowDown) rather than
+  // opened by typing: with no token under way it then lists every key, so the
+  // query language can be found without knowing it. Only on an explicit ask.
+  // The bar also takes focus on its own (the palette's "Filter sidebar
+  // tasks", the funnel menu handing the keyboard back), and a list over the
+  // chips and the PROJECTS header is not what either of those asked for.
+  const [browse, setBrowse] = useState(false);
+  // -1 = nothing marked. A browsed list starts there: with a row pre-selected,
+  // clicking into the field and pressing Tab to leave it would insert a key.
   const [sel, setSel] = useState(0);
   const suggestions = useMemo(
-    () => (suggestOpen ? boardSuggestions(text, valuesFor) : []),
-    [suggestOpen, text, valuesFor],
+    () => (suggestOpen ? boardSuggestions(text, valuesFor, 8, browse) : []),
+    [suggestOpen, text, valuesFor, browse],
   );
   // Clamped at read, so a list that shrank under the selection still marks
   // (and Enter still picks) a row that exists.
-  const cur = Math.min(sel, Math.max(0, suggestions.length - 1));
+  const cur = Math.min(sel, suggestions.length - 1);
+  const askForList = () => { setBrowse(true); setSel(-1); setSuggestOpen(true); };
 
   // `/` and ⌘F focus the bar. Contextual (docs/shortcuts.md): the board is
   // mounted only while it is the view, and no task owns find while it is up
@@ -132,6 +142,7 @@ export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange:
   const pick = (next: string) => {
     setText(next);
     setSel(0);
+    setBrowse(false);
     // A picked key (`project:`) wants its values next; a picked value ends
     // the token with a space, and the list stays shut until more is typed.
     setSuggestOpen(next.endsWith(":"));
@@ -143,7 +154,9 @@ export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange:
   const active = useMemo(() => isBoardQueryActive(parseBoardQuery(text)), [text]);
   return (
     <div
-      className={sidebar ? "flex shrink-0 flex-col gap-0.5 px-2 pt-2" : "flex shrink-0 items-center gap-2 px-3 pt-3"}
+      // Sidebar: no vertical padding. The sidebar's head spaces its rows
+      // with one gap (Sidebar.tsx), so the bar does not pick its own.
+      className={sidebar ? "flex shrink-0 flex-col gap-0.5 px-2" : "flex shrink-0 items-center gap-2 px-3 pt-3"}
       data-testid={tid}
       data-no-drag
     >
@@ -172,27 +185,36 @@ export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange:
           value={text}
           placeholder={t(sidebar ? "sidebar:filterBar.placeholder" : "board.filterPlaceholder")}
           data-testid={`${tid}-input`}
-          onChange={e => { setText(e.target.value); setSel(0); setSuggestOpen(true); }}
-          onBlur={() => setSuggestOpen(false)}
+          onChange={e => { setText(e.target.value); setSel(0); setBrowse(false); setSuggestOpen(true); }}
+          onBlur={() => { setSuggestOpen(false); setBrowse(false); }}
+          // A click is the ask, wherever focus was: the first click into the
+          // field and a later one on an already-focused field both open it.
+          // Gated on a list actually SHOWING, not on `suggestOpen`: that
+          // flag stays true after typing plain text that completes to
+          // nothing, and a click then did nothing at all.
+          onClick={() => { if (suggestions.length === 0) askForList(); }}
           onKeyDown={e => {
             // An IME composing (pinyin `pr`) owns Enter and the arrows until
             // it commits; same guard as TerminalPane / AuxTerminal.
             if (e.nativeEvent.isComposing || e.keyCode === 229) return;
             if (suggestions.length > 0) {
               if (e.key === "ArrowDown") { e.preventDefault(); setSel((cur + 1) % suggestions.length); return; }
-              if (e.key === "ArrowUp") { e.preventDefault(); setSel((cur - 1 + suggestions.length) % suggestions.length); return; }
+              if (e.key === "ArrowUp") { e.preventDefault(); setSel(cur <= 0 ? suggestions.length - 1 : cur - 1); return; }
               // Tab accepts like Enter; it frees up once a value pick closes
               // the list, so it never traps focus for more than a token.
-              if (e.key === "Enter" || e.key === "Tab") {
+              // Only with a row marked: a browsed list marks none until an
+              // arrow or the pointer does, and Tab then leaves the field.
+              if ((e.key === "Enter" || e.key === "Tab") && cur >= 0) {
                 e.preventDefault();
                 pick(suggestions[cur].next);
                 return;
               }
-            } else if (e.key === "ArrowDown" && !suggestOpen && text !== "") {
-              // Esc shut the list; ArrowDown brings it back without typing.
+            } else if (e.key === "ArrowDown") {
+              // Esc shut the list, or nothing opened it yet; ArrowDown brings
+              // it up without typing, on an empty bar too.
               e.preventDefault();
+              askForList();
               setSel(0);
-              setSuggestOpen(true);
               return;
             }
             if (e.key === "Escape") {
@@ -206,8 +228,24 @@ export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange:
           }}
           autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
           className={cn(
-            "h-7 w-full rounded-md border bg-[var(--color-bg)] pl-8 pr-6 text-[12.5px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)]",
-            active ? "border-[var(--color-accent)]" : "border-[var(--color-border-soft)] focus:border-[var(--color-accent)]",
+            "h-7 w-full rounded-md border pl-8 pr-6 text-[12.5px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)]",
+            // The board's bar sits on --color-bg, so that fill is invisible
+            // there: an outlined field on its own surface. The sidebar is one
+            // step lighter (bg-1, or a profile wash), where the same fill
+            // became a black slot at the top of the list. No fill in the
+            // sidebar gives it the look the board always had, and matches the
+            // outlined chips under it.
+            sidebar ? "bg-transparent" : "bg-[var(--color-bg)]",
+            // Sidebar, list open: square the bottom and quiet its edge, so
+            // the field and the list under it draw as ONE outlined shape with
+            // a hairline between them (see the listbox below).
+            sidebar && suggestions.length > 0 && "rounded-b-none border-b-[var(--color-border-soft)]",
+            // Half-strength accent, not the full token: at full strength a
+            // focused or filtering bar was the loudest thing in the sidebar,
+            // and louder still once the list hangs off it and doubles the
+            // outline's length. The funnel already turns accent to say a
+            // filter is on.
+            active ? "border-[var(--color-accent)]/50" : "border-[var(--color-border-soft)] focus:border-[var(--color-accent)]/50",
           )}
         />
         {text !== "" && (
@@ -225,8 +263,20 @@ export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange:
             role="listbox"
             data-testid={`${tid}-suggestions`}
             // The sidebar clips at its edge, so its list is the input's width.
-            className={cn("absolute left-0 top-full z-40 mt-1 overflow-hidden", sidebar ? "w-full" : "w-[260px]",
-              "rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] py-1 shadow-lg")}
+            // Two shapes, by where the bar is.
+            //
+            // Sidebar: the list is the input's own width, so it HANGS OFF the
+            // field: no gap, no top edge, the field's accent outline carried
+            // down its sides and round its bottom. As a separate bordered box
+            // 4px below, it was a second outlined rectangle stacked under the
+            // first, and read as another input rather than this one's list.
+            //
+            // Board: the list is narrower than the field, so it cannot join
+            // it and stays a menu, in the app's menu chrome (ui/Dropdown.tsx).
+            className={cn("absolute left-0 top-full z-40 overflow-hidden bg-[var(--color-bg-1)] p-1 shadow-xl",
+              sidebar
+                ? "w-full rounded-b-md border border-t-0 border-[var(--color-accent)]/50"
+                : "mt-1 w-[260px] rounded-md border border-[var(--color-border)]")}
           >
             {suggestions.map((s, i) => (
               <div
@@ -238,7 +288,7 @@ export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange:
                 onMouseDown={e => { e.preventDefault(); pick(s.next); }}
                 onMouseEnter={() => setSel(i)}
                 className={cn(
-                  "cursor-pointer truncate px-2.5 py-1 font-mono text-[12px]",
+                  "cursor-pointer truncate rounded-sm px-2 py-1 font-mono text-[12px]",
                   i === cur ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]" : "text-[var(--color-fg-dim)]",
                 )}
               >

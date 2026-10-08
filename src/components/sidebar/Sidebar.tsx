@@ -1223,11 +1223,16 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
       style={sidebarWash ? { backgroundImage: sidebarWash } : undefined}
       className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden border-r border-[var(--color-border-soft)] bg-[var(--color-bg-1)]"
     >
+      {/* The sidebar's head: nav, filter bar, chips. ONE gap spaces them, and
+          none of the three sets vertical padding of its own. Each used to
+          (12/8 on the nav, 8 over the bar, 6 over the chips), which is how
+          three rows ended up three different distances apart. */}
+      <div className={cn("flex shrink-0 flex-col", !compact && "gap-3 pt-3")}>
       {/* Primary nav: Dashboard / History / Kanban / Scheduled. One strip of
           icons in the full sidebar (docs/ui.md "One glyph per meaning"): four
           full-width rows took the top of the sidebar before anything about
           your work showed. The rail keeps its column. */}
-      <nav className={cn("flex gap-0.5", compact ? "flex-col p-1.5 pt-2" : "p-2 pt-3")}>
+      <nav className={cn("flex gap-0.5", compact ? "flex-col p-1.5 pt-2" : "px-2")}>
         <NavItem icon={<LayoutGrid className={iconSize(compact)} />} label={t("navDashboard")}
           active={currentView === "dashboard" && !activeTask} compact={compact}
           onClick={() => setView("dashboard")}
@@ -1271,9 +1276,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           never pushes the chips out from under the pointer. The chips stand
           in for the STATUS section while it is off; with it on they would
           count the same buckets the section lists. `empty:hidden` drops the
-          row when neither has anything to say. */}
+          row when neither has anything to say (the section is on and no
+          filter is set); with the chips it is always there, at one height,
+          so the tree below never shifts. No rule under it: one was tried and
+          read as too harsh against the sidebar. */}
       {!compact && (
-        <div className="flex shrink-0 items-center gap-2 px-2 pt-1.5 empty:hidden">
+        <div className="flex shrink-0 items-center gap-2 px-2 empty:hidden">
           {!showStatusSection && <StatusChips />}
           {queryOn && (
             <span data-testid="sidebar-filter-count" className="ml-auto shrink-0 text-[11.5px] tabular-nums text-[var(--color-fg-faint)]">
@@ -1282,6 +1290,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           )}
         </div>
       )}
+      </div>
 
       {/* Projects section */}
       <div className="relative flex min-h-0 flex-1 flex-col">
@@ -1350,7 +1359,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                         : undefined}
                     >
                       {isActive
-                        ? <Check className="h-5 w-5 text-[var(--color-accent)]" />
+                        ? <Check className="h-5 w-5 shrink-0 text-[var(--color-accent)]" />
                         : <span className="h-5 w-5 shrink-0" />}
                       <div className="flex min-w-0 flex-col gap-0.5">
                         <span className={isActive ? "text-[var(--color-accent)] font-medium" : undefined}>{t(labelKey)}</span>
@@ -1367,7 +1376,12 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       <span className="h-5 w-5 shrink-0" />
                       {t("taskGitIcon")}
                     </span>
-                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+                    {/* The current choice, as the glyphs it draws: the row
+                        says what is on without opening the submenu. */}
+                    <span className="flex items-center gap-2">
+                      <TaskLocationSamples value={taskLocationIcon} />
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+                    </span>
                   </DropdownSubTrigger>
                   <DropdownSubContent>
                     {([
@@ -1376,9 +1390,10 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                       ["worktree", "taskGitIconWorktree"],
                       ["none",     "taskGitIconNone"],
                     ] as const).map(([id, labelKey]) => (
-                      <DropdownItem key={id} data-value={id} onSelect={() => setTaskLocationIcon(id)}>
+                      <DropdownItem key={id} data-value={id} onSelect={() => setTaskLocationIcon(id)} className="items-center">
                         <Check className={cn("h-4 w-4 shrink-0 text-[var(--color-accent)]", taskLocationIcon === id ? "opacity-100" : "opacity-0")} />
-                        <span className={taskLocationIcon === id ? "text-[var(--color-accent)] font-medium" : undefined}>{t(labelKey)}</span>
+                        <span className={cn("flex-1", taskLocationIcon === id && "text-[var(--color-accent)] font-medium")}>{t(labelKey)}</span>
+                        <span className="ml-4 flex items-center"><TaskLocationSamples value={id} /></span>
                       </DropdownItem>
                     ))}
                   </DropdownSubContent>
@@ -1393,7 +1408,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                   {/* Checkmark when on, empty slot when off — same pattern as
                       the expand-mode rows above (no stray icon). */}
                   {hideInactiveProjects
-                    ? <Check className="h-5 w-5 text-[var(--color-accent)]" />
+                    ? <Check className="h-5 w-5 shrink-0 text-[var(--color-accent)]" />
                     : <span className="h-5 w-5 shrink-0" />}
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <span className={hideInactiveProjects ? "text-[var(--color-accent)] font-medium" : undefined}>{t("collapseInactive")}</span>
@@ -1410,7 +1425,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                     : undefined}
                 >
                   {showStatusSection
-                    ? <Check className="h-5 w-5 text-[var(--color-accent)]" />
+                    ? <Check className="h-5 w-5 shrink-0 text-[var(--color-accent)]" />
                     : <span className="h-5 w-5 shrink-0" />}
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <span className={showStatusSection ? "text-[var(--color-accent)] font-medium" : undefined}>{t("showStatusSection")}</span>
@@ -3737,6 +3752,22 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+/** The glyphs a `taskLocationIcon` choice puts on task rows, as a sample
+ *  beside the option that picks it: link for the main checkout, branch for a
+ *  worktree, both split by a hairline. A drawn rule and not a "/" character,
+ *  so the row's text stays its label alone (specs and screen readers match on
+ *  it). "none" draws nothing, which is the sample. */
+function TaskLocationSamples({ value }: { value: "both" | "main" | "worktree" | "none" }) {
+  if (value === "none") return null;
+  return (
+    <span data-testid="task-location-samples" data-value={value} className="flex shrink-0 items-center gap-1.5">
+      {value !== "worktree" && <TaskLocationIcon isMainCheckout size="h-3.5 w-3.5" />}
+      {value === "both" && <span aria-hidden className="h-3 w-px bg-[var(--color-border)]" />}
+      {value !== "main" && <TaskLocationIcon isMainCheckout={false} size="h-3.5 w-3.5" />}
+    </span>
+  );
+}
 
 function NavItem({ icon, label, active, compact, onClick, testId }: {
   icon: React.ReactNode; label: string; active?: boolean; compact: boolean; onClick: () => void; testId?: string;

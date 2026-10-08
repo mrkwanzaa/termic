@@ -305,7 +305,7 @@ export default {
     resetTip: "Restore all Appearance settings (fonts, sizes, zoom, spacing, and terminal options) to their defaults.",
     tabTerminal: "Terminal",
     tabEditor: "Editor",
-    tabInterface: "Interface",
+    tabInterface: "Interface & Sidebar",
     termFont: {
       label: "Terminal font",
       hint: "Font for all xterm terminals (main + scratch shell).",

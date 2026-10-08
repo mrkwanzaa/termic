@@ -304,7 +304,7 @@ export default {
     resetTip: "把所有外观设置（字体、字号、缩放、间距和终端选项）恢复为默认值。",
     tabTerminal: "终端",
     tabEditor: "编辑器",
-    tabInterface: "界面",
+    tabInterface: "界面与侧边栏",
     termFont: {
       label: "终端字体",
       hint: "所有 xterm 终端（主终端 + 临时 shell）使用的字体。",

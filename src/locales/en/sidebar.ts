@@ -31,6 +31,7 @@ export default {
     review: "In review",
     tip: "{{label}}: filter to status:{{status}}",
     tipActive: "{{label}}: remove status:{{status}}",
+    tipEmpty: "{{label}}: no tasks",
   },
   filterBar: {
     placeholder: "Filter tasks",
