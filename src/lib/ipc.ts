@@ -1477,6 +1477,9 @@ export const syncBind = (folder: string | null, prefs: SyncPrefsSnapshot) =>
   invoke<SyncRunResult>("sync_bind", { folder, prefs });
 export const syncNow = (prefs: SyncPrefsSnapshot) => invoke<SyncRunResult>("sync_now", { prefs });
 export const syncLaunchPull = (prefs: SyncPrefsSnapshot) => invoke<SyncRunResult>("sync_launch_pull", { prefs });
+/** Pull (no push) when the window regains focus, if Rust says one is due.
+ *  Several windows can call it; only one fetch runs. */
+export const syncFocusPull = (prefs: SyncPrefsSnapshot) => invoke<SyncRunResult>("sync_focus_pull", { prefs });
 export const syncResolve = (path: string, choice: "local" | "remote", prefs: SyncPrefsSnapshot) =>
   invoke<SyncRunResult>("sync_resolve", { path, choice, prefs });
 export const syncLocate = (projectId: string, path: string) => invoke<void>("sync_locate", { projectId, path });

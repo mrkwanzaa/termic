@@ -8,6 +8,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { PREF_KEYS } from "./prefsRegistry";
 
+vi.mock("@/lib/ipc", () => ({
+  syncStatus: vi.fn(),
+  syncNow: vi.fn(),
+  syncLaunchPull: vi.fn(),
+  syncFocusPull: vi.fn(),
+}));
+
 function countingStorage() {
   const store = new Map<string, string>();
   const s = {
@@ -196,5 +203,116 @@ describe("describeSafety", () => {
     const proj = describeSafety({ kind: "project", target: "app", action: "update", field: "default_sandbox", from: true, to: false, safety: true }, t);
     expect(proj).toBe("app: Sandbox new tasks changed from On to Off");
     expect(line + proj).not.toContain("\u2014");
+  });
+});
+
+describe("syncFailureKind", () => {
+  it("tells a sign-in failure from being offline, and stays quiet for neither when the text is something else", async () => {
+    const { syncFailureKind } = await load();
+    expect(syncFailureKind("git fetch failed: Permission denied (publickey).")).toBe("auth");
+    expect(syncFailureKind("fatal: Authentication failed for 'https://git.acme.com/acme/termic-config.git/'")).toBe("auth");
+    expect(syncFailureKind("The requested URL returned error: 403")).toBe("auth");
+    expect(syncFailureKind("could not read Username for 'https://git.acme.com': terminal prompts disabled")).toBe("auth");
+    // The wrapper line git uses for both. The access-rights sentence is the sign-in.
+    expect(syncFailureKind("Could not read from remote repository.\nPlease make sure you have the correct access rights and the repository exists.")).toBe("auth");
+    expect(syncFailureKind("ssh: Could not resolve hostname git.acme.com: nodename nor servname provided, or not known")).toBe("offline");
+    expect(syncFailureKind("fatal: unable to access 'https://git.acme.com/acme/cfg.git/': Could not resolve host: git.acme.com")).toBe("offline");
+    expect(syncFailureKind("git fetch timed out")).toBe("offline");
+    expect(syncFailureKind("Connection refused")).toBe("offline");
+    expect(syncFailureKind("fatal: 'origin' does not appear to be a git repository")).toBe("other");
+  });
+});
+
+describe("background sync toasts", () => {
+  const emptyRun = {
+    ok: false, skipped: true, pushed: false, changed_profiles: [],
+    prefs: { shared: [], scoped: {} }, themes_changed: false, changes: [],
+    conflicts: [] as string[], error: null as string | null, profiles_changed: false,
+  };
+
+  it("toasts a conflict once, a sign-in failure once, and nothing when offline", async () => {
+    const { surfaceConflicts, surfaceSyncFailure } = await load();
+    const { useUI } = await import("@/store/ui");
+    useUI.setState({ toasts: [] });
+    surfaceConflicts(["profiles/a/settings.json"]);
+    surfaceConflicts(["profiles/a/settings.json"]);
+    // Settled, then the same file conflicts again: that is a new conflict.
+    surfaceConflicts([]);
+    surfaceConflicts(["profiles/a/settings.json"]);
+    expect(useUI.getState().toasts.map(t => t.msg)).toEqual([
+      "Changed on both machines. This machine's copy was kept.",
+      "Changed on both machines. This machine's copy was kept.",
+    ]);
+    expect(useUI.getState().toasts[0].action?.label).toBe("Review");
+    expect(useUI.getState().toasts.map(t => t.msg).join("")).not.toContain("\u2014");
+
+    surfaceSyncFailure("git fetch timed out");
+    expect(useUI.getState().toasts).toHaveLength(2);
+
+    surfaceSyncFailure("Permission denied (publickey).");
+    surfaceSyncFailure("Permission denied (publickey).");
+    expect(useUI.getState().toasts.map(t => t.msg)).toEqual([
+      "Changed on both machines. This machine's copy was kept.",
+      "Changed on both machines. This machine's copy was kept.",
+      "Sync could not sign in to the repo. Check this machine's git login, then press Sync now.",
+    ]);
+
+    surfaceSyncFailure("fatal: 'origin' does not appear to be a git repository");
+    expect(useUI.getState().toasts.at(-1)?.msg).toBe(
+      "Sync failed: fatal: 'origin' does not appear to be a git repository");
+  });
+
+  it("pulls when the window regains focus, and a skipped pull writes nothing", async () => {
+    const { onConfigSyncFocus } = await load();
+    const ipc = await import("@/lib/ipc");
+    const { useUI } = await import("@/store/ui");
+    useUI.setState({ toasts: [] });
+    vi.mocked(ipc.syncFocusPull).mockClear();
+    vi.mocked(ipc.syncStatus).mockResolvedValue({
+      connected: true,
+      bound: [{ ns: "", sync_id: "p" }],
+      notices: [],
+    } as never);
+    vi.mocked(ipc.syncFocusPull).mockResolvedValue({ ...emptyRun, skipped: true });
+    await onConfigSyncFocus(false, true);
+    await onConfigSyncFocus(true, true);
+    expect(ipc.syncFocusPull).not.toHaveBeenCalled();
+    await onConfigSyncFocus(true, false);
+    expect(ipc.syncFocusPull).toHaveBeenCalledTimes(1);
+    expect(useUI.getState().toasts).toEqual([]);
+
+    vi.mocked(ipc.syncFocusPull).mockResolvedValue({
+      ...emptyRun, skipped: true, conflicts: ["profiles/a/settings.json"],
+    });
+    await onConfigSyncFocus(true, false);
+    expect(useUI.getState().toasts).toHaveLength(1);
+    expect(useUI.getState().toasts[0].msg).toBe("Changed on both machines. This machine's copy was kept.");
+  });
+
+  it("reports a sign-in failure again after a pull succeeds", async () => {
+    const { onConfigSyncFocus } = await load();
+    const ipc = await import("@/lib/ipc");
+    const { useUI } = await import("@/store/ui");
+    useUI.setState({ toasts: [] });
+    vi.mocked(ipc.syncFocusPull).mockClear();
+    vi.mocked(ipc.syncStatus).mockResolvedValue({
+      connected: true,
+      bound: [{ ns: "", sync_id: "p" }],
+      notices: [],
+    } as never);
+    const auth = { ...emptyRun, skipped: false, ok: false, error: "Permission denied (publickey)." };
+    vi.mocked(ipc.syncFocusPull).mockResolvedValue(auth);
+    await onConfigSyncFocus(true, false);
+    expect(useUI.getState().toasts).toHaveLength(1);
+    await onConfigSyncFocus(true, false);
+    expect(ipc.syncFocusPull).toHaveBeenCalledTimes(2);
+    expect(useUI.getState().toasts).toHaveLength(1);
+
+    vi.mocked(ipc.syncFocusPull).mockResolvedValue({ ...emptyRun, skipped: false, ok: true, error: null });
+    await onConfigSyncFocus(true, false);
+    expect(ipc.syncFocusPull).toHaveBeenCalledTimes(3);
+    vi.mocked(ipc.syncFocusPull).mockResolvedValue(auth);
+    await onConfigSyncFocus(true, false);
+    expect(useUI.getState().toasts).toHaveLength(2);
   });
 });
