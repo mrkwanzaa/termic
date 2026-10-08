@@ -3261,6 +3261,13 @@ const captureArmedRef = useRef(false);
             useApp.getState().closePane(task.id, tab.paneId);
             return;
           }
+          // A dead process is not working. Nothing else takes the tab out of
+          // "working" here: the signals that end a turn (an idle title, a
+          // hook, a quiet screen) all come from the process that just went
+          // away. Seen with codex updating itself mid-turn and exiting: the
+          // exited banner over a tab, a sidebar row and a Working chip that
+          // all kept spinning.
+          useApp.getState().setWorkState(task.id, tab.id, "idle", "pty exited");
           if (isRunTab) useApp.getState().clearAttention(task.id, tab.id);
           // An agent the archive itself stopped did not die unexpectedly:
           // the user asked for it. Marking it raised an "agent exited" banner

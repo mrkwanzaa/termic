@@ -3464,3 +3464,38 @@ describe("agent messages wait for your draft", () => {
     });
   });
 });
+
+// A process that dies mid-turn takes with it every signal that would have
+// ended the turn (an idle title, a hook, a quiet screen), so nothing clears
+// "working" unless the exit itself does. Seen with an agent that updated
+// itself and quit: the exited banner over a tab that kept spinning, in the
+// tab strip, the sidebar and the Working chip.
+describe("an agent that exits mid-turn", () => {
+  it("stops showing as working once its process is gone", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    await requireWorkBadges();
+    const taskId = await openTask("e2e-exit-midturn");
+    await waitForAgentReady(taskId);
+
+    await submitToAgent(taskId, "work");
+    await waitForWorkBadge(taskId, "working", {
+      timeout: 10_000,
+      message: "agent never showed a working badge",
+    });
+
+    // Kill it while the badge is up. SETUP: the app's own kill IPC, the same
+    // one closing a tab uses.
+    await browser.execute(async (id) => {
+      const t = window.__termic!;
+      const tab = t.useApp.getState().tabs[id].find((x: any) => x.type === "terminal");
+      await t.invoke("pty_kill", { ptyId: tab.ptyId });
+    }, taskId);
+
+    await waitForText("FakeAgent exited.");
+    await waitForWorkBadgeGone(taskId, "working", {
+      timeout: 8_000,
+      message: "a dead agent's row kept its working badge",
+    });
+  });
+});

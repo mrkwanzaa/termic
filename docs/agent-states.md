@@ -27,7 +27,7 @@ that distinction.
 | # | State | What it means | You see | Bell? | What ends it |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `idle` | Nothing running, nothing outstanding | nothing | no | a submit |
-| 2 | `working` | The model is generating right now | solid spinner, 1s | no | a done, an interrupt, the ceiling |
+| 2 | `working` | The model is generating right now | solid spinner, 1s | no | a done, an interrupt, the process exiting, the ceiling |
 | 3 | `working` + delegated | The model STOPPED; waiting on work it delegated | dashed ring, one slow turn per 8s | no | the work reporting back, or the grace |
 | 4 | `working` + delegated `partial` | Some of that work came back; the rest runs on | outlined blue dot, or the ring when `partialDoneIndicator` is off | no | the remaining work, or the grace |
 | 5 | `done` | The turn ended | solid blue dot | YES | focusing the tab, or the next submit |
