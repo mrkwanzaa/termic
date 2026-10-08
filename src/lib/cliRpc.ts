@@ -66,6 +66,7 @@ import {
 import { slugify } from "@/lib/utils";
 import { checkoutTaskName, remoteNames } from "@/lib/existingBranch";
 import { padHandler } from "@/lib/scratchCli";
+import { scheduleHandler } from "@/lib/scheduleCli";
 import type { SandboxMode, Task, TerminalTab } from "@/lib/types";
 import {
   collectTaskProps, propKeyProblem, propValueProblem, PROP_KEYS_PER_TAB, type CollectedProp,
@@ -1343,6 +1344,7 @@ const handlers: Record<string, Handler> = {
   rename_task: renameTaskHandler,
   set_task_group: setTaskGroupHandler,
   pad: padHandler,
+  schedule: scheduleHandler,
   project_add: projectAddHandler,
   project_remove: projectRemoveHandler,
 };

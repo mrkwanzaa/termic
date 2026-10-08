@@ -898,6 +898,38 @@ pub(crate) fn dispatch_authenticated(
         }
         Command::ProjectList => handle_project_list(&req.id, host),
         Command::ProjectRemove { name } => handle_project_remove(&req.id, host, name),
+        Command::ScheduleList { project } => handle_schedule(
+            &req.id, host, None, project.as_deref(), None,
+            serde_json::json!({ "op": "list" }),
+        ),
+        Command::ScheduleShow { task, project, cwd } => handle_schedule(
+            &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
+            serde_json::json!({ "op": "show" }),
+        ),
+        Command::ScheduleSet {
+            task, project, name, cadence, prompt, prompt_ref, keep_runs, report_days, catch_up, enabled, cwd,
+        } => handle_schedule(
+            &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
+            serde_json::json!({
+                "op": "set",
+                "name": name,
+                "cadence": cadence,
+                "prompt": prompt,
+                "promptRef": prompt_ref,
+                "keepRuns": keep_runs,
+                "reportDays": report_days,
+                "catchUp": catch_up,
+                "enabled": enabled,
+            }),
+        ),
+        Command::ScheduleRun { task, project, cwd } => handle_schedule(
+            &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
+            serde_json::json!({ "op": "run" }),
+        ),
+        Command::ScheduleDelete { task, project, delete_reports, cwd } => handle_schedule(
+            &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
+            serde_json::json!({ "op": "delete", "deleteReports": delete_reports }),
+        ),
         Command::Send { .. } => handle_send(req, host, sink),
         Command::Apply { task, project } => {
             handle_apply(&req.id, host, task, project.as_deref())
@@ -3438,6 +3470,47 @@ fn handle_pad(
         .map(|p| proto::PadInfo { title: clip_title(&p.title), ..p })
         .collect();
     Reply::ok(id, ReplyData::Pad(proto::PadData { task_id: t.id, pads, content, truncated }))
+}
+
+fn handle_schedule(
+    id: &str,
+    host: &dyn CliHost,
+    task: Option<&str>,
+    project: Option<&str>,
+    cwd: Option<&str>,
+    mut op: serde_json::Value,
+) -> Reply {
+    let (projects, tasks) = host.projects_tasks();
+    let is_list = op.get("op").and_then(|v| v.as_str()) == Some("list");
+    if is_list {
+        if let Some(name) = project {
+            let Some(p) = find_project(&projects, name) else {
+                return Reply::err(id, ErrorCode::NotFound, format!("no project named \"{name}\""));
+            };
+            op["projectId"] = serde_json::Value::String(p.id.clone());
+        }
+    } else {
+        let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
+            Ok(t) => t.clone(),
+            Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+        };
+        if t.archived {
+            return Reply::err(id, ErrorCode::BadRequest, format!("task {} is archived", t.name));
+        }
+        op["taskId"] = serde_json::Value::String(t.id.clone());
+    }
+
+    let value = match host.rpc("schedule", op, PROJECT_RPC_TIMEOUT) {
+        Ok(v) => v,
+        Err(e) => return Reply::err(id, ErrorCode::BadRequest, &e),
+    };
+
+    let schedule_data: proto::ScheduleData = match serde_json::from_value(value) {
+        Ok(d) => d,
+        Err(e) => return Reply::err(id, ErrorCode::Internal, format!("bad schedule reply from webview: {e}")),
+    };
+
+    Reply::ok(id, ReplyData::Schedule(schedule_data))
 }
 
 // ───────────────────────────── projects ──────────────────────────────

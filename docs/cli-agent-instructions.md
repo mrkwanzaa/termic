@@ -286,6 +286,16 @@ are `scratchpad_new`, `scratchpad_write`, `scratchpad_read` and
 
 Address pads by id: a title works when it is unique, but titles change.
 
+### Recurring task schedules
+
+Termic supports recurring schedules on tasks: recurring runs cut child tasks at specified cadences (daily, weekdays, weekly), run the configured prompt or prompt library template, and generate markdown reports under `.termic/reports/`. Every `schedule` verb targets your own task by default when `$TERMIC_TASK_ID` is set, or accepts `<TASK>` / `--task`. Over MCP the corresponding tools are `schedule_list`, `schedule_show`, `schedule_set`, `schedule_run`, and `schedule_delete`.
+
+- `"$TERMIC_CLI" schedule list --json` - list recurring schedules with cadence, enabled state, next run, and last outcome.
+- `"$TERMIC_CLI" schedule show <task> --json` - detailed schedule configuration, history, and report files.
+- `"$TERMIC_CLI" schedule set <task> --cadence daily --time 09:00 -p "<prompt>" --yes` - configure or update a schedule. Options include `--name`, `--cadence`, `--time`, `--weekday` (0-6 for weekly), `-p`/`--prompt`, `-P`/`--library`, `--keep-runs`, `--report-days`, `--catch-up` / `--no-catch-up`, `--enable` / `--disable`, and `-y`/`--yes`.
+- `"$TERMIC_CLI" schedule run <task>` - trigger an immediate out-of-band run ("Run now"). Refused if a run is already in progress.
+- `"$TERMIC_CLI" schedule delete <task> --yes` - delete a schedule (add `--delete-reports` to also remove report files on disk).
+
 ### Other verbs
 
 - `"$TERMIC_CLI" list --json` - all tasks with live work state

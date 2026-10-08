@@ -1206,6 +1206,10 @@ TTY without --yes), 4 app not running, 5 CLI disabled, 6 refused, \
     #[command(subcommand)]
     Project(ProjectCmd),
 
+    /// Manage recurring task schedules (list, show, set, run, delete).
+    #[command(subcommand, name = "schedule")]
+    Schedule(ScheduleCmd),
+
     /// Print help; `--json` prints the whole surface machine-readably.
     #[command(
         after_help = "With --json, one object on stdout: {app, version, protocol, exit_codes, \
@@ -1463,6 +1467,151 @@ Exit codes: 0 removed, 1 error (unknown project, declined, no TTY without \
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum ScheduleCmd {
+    /// List recurring schedules with cadence, enabled state, next run, and last outcome.
+    #[command(
+        after_help = "Prints a table of schedules on stdout; with -q/--quiet, schedule task ids only. \
+With --output-format json, one object: {\"schedules\": [...]}.
+
+Exit codes: 0 success, 1 unknown project, 4 app not running, 5 CLI disabled, \
+6 refused, 8 connection lost."
+    )]
+    List {
+        /// Print schedule task ids only, one per line.
+        #[arg(short, long)]
+        quiet: bool,
+        /// Only schedules of this project (name).
+        #[arg(long)]
+        project: Option<String>,
+    },
+
+    /// Show detailed schedule info for a task: cadence, run history, and reports.
+    #[command(
+        after_help = "Prints details and recent runs on stdout. With --output-format json, \
+one object: {\"schedule\": {...}, \"history\": [...]}. Without <TASK>, targets your own task \
+($TERMIC_TASK_ID), then falls back to the current directory.
+
+Exit codes: 0 success, 1 unknown or ambiguous task, 4 app not running, \
+5 CLI disabled, 6 refused, 8 connection lost."
+    )]
+    Show {
+        /// Task name, task id, or qualified project/name. Omitted:
+        /// $TERMIC_TASK_ID, then the current directory.
+        task: Option<String>,
+        /// Project name, to disambiguate. Requires a task name.
+        #[arg(long, requires = "task")]
+        project: Option<String>,
+    },
+
+    /// Create or update a recurring schedule on a parent task.
+    #[command(
+        after_help = "Configures recurring runs for a task. The cadence is either daily, weekdays, or weekly \
+(with --time HH:MM and optional --weekday 0-6 for weekly). \
+-p - reads the prompt from stdin. -P/--library delivers a prompt from the prompt library. \
+Without <TASK>, targets your own task ($TERMIC_TASK_ID), then falls back to the current directory.
+
+Prints the updated schedule on stdout. With --output-format json, one object: {\"schedule\": {...}}.
+
+Exit codes: 0 success, 1 error (invalid cadence, time, or prompt), 4 app not running, \
+5 CLI disabled, 6 refused, 8 connection lost."
+    )]
+    Set {
+        /// Task name, task id, or qualified project/name. Omitted:
+        /// $TERMIC_TASK_ID, then the current directory.
+        task: Option<String>,
+        /// Project name, to disambiguate. Requires a task name.
+        #[arg(long, requires = "task")]
+        project: Option<String>,
+        /// Schedule display name (defaults to the task name).
+        #[arg(long)]
+        name: Option<String>,
+        /// Cadence: \"daily\", \"weekdays\", or \"weekly\".
+        #[arg(long, value_parser = ["daily", "weekdays", "weekly"])]
+        cadence: Option<String>,
+        /// Local wall-clock time in \"HH:MM\" 24-hour format.
+        #[arg(long)]
+        time: Option<String>,
+        /// Day of week for weekly cadence: 0 (Sunday) to 6 (Saturday).
+        #[arg(long, value_parser = clap::value_parser!(u8).range(0..=6))]
+        weekday: Option<u8>,
+        /// Prompt to inject on each run. `-` reads stdin.
+        #[arg(short, long)]
+        prompt: Option<String>,
+        /// Prompt-library selector: a prompt id (builtin:review, a custom prompt's UUID) or title.
+        #[arg(short = 'P', long = "library", value_name = "SEL")]
+        library: Option<String>,
+        /// Number of past run tasks to retain (1 to 20, default 7).
+        #[arg(long, value_name = "COUNT")]
+        keep_runs: Option<u32>,
+        /// Days to keep report files (7, 30, 90, or 0 for forever).
+        #[arg(long, value_name = "DAYS")]
+        report_days: Option<u32>,
+        /// Run missed slots after app downtime.
+        #[arg(long)]
+        catch_up: bool,
+        /// Do not run missed slots after app downtime.
+        #[arg(long, conflicts_with = "catch_up")]
+        no_catch_up: bool,
+        /// Enable the schedule.
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        /// Disable (pause) the schedule.
+        #[arg(long, conflicts_with = "enable")]
+        disable: bool,
+        /// Skip the confirmation prompt (required non-interactively).
+        #[arg(short, long)]
+        yes: bool,
+    },
+
+    /// Trigger an immediate out-of-band run of a schedule (\"Run now\").
+    #[command(
+        after_help = "Immediately starts a run for the schedule, creating a child run task. \
+Refused if a run is already in progress. Without <TASK>, targets your own task ($TERMIC_TASK_ID), \
+then falls back to the current directory.
+
+Prints run details on stdout. With --output-format json, one object: {\"run_result\": {...}}.
+
+Exit codes: 0 success, 1 error (task not scheduled, run already in flight), \
+4 app not running, 5 CLI disabled, 6 refused, 8 connection lost."
+    )]
+    Run {
+        /// Task name, task id, or qualified project/name. Omitted:
+        /// $TERMIC_TASK_ID, then the current directory.
+        task: Option<String>,
+        /// Project name, to disambiguate. Requires a task name.
+        #[arg(long, requires = "task")]
+        project: Option<String>,
+    },
+
+    /// Remove a schedule from a task.
+    #[command(
+        after_help = "Deletes the recurring schedule from the task. Future runs will not occur. \
+With --delete-reports, historical markdown reports on disk are also deleted. \
+Asks for confirmation on a TTY unless --yes; non-interactive runs require --yes. \
+Without <TASK>, targets your own task ($TERMIC_TASK_ID), then falls back to the current directory.
+
+Prints confirmation on stdout. With --output-format json, one object: {\"deleted\": true}.
+
+Exit codes: 0 deleted, 1 error (unknown task, declined, no TTY without --yes), \
+4 app not running, 5 CLI disabled, 6 refused, 8 connection lost."
+    )]
+    Delete {
+        /// Task name, task id, or qualified project/name. Omitted:
+        /// $TERMIC_TASK_ID, then the current directory.
+        task: Option<String>,
+        /// Project name, to disambiguate. Requires a task name.
+        #[arg(long, requires = "task")]
+        project: Option<String>,
+        /// Delete report files on disk in addition to removing the schedule.
+        #[arg(long)]
+        delete_reports: bool,
+        /// Skip the confirmation prompt (required non-interactively).
+        #[arg(short, long)]
+        yes: bool,
+    },
+}
+
 /// Help header: the build's version, on `--help` and not just
 /// `--version`.
 ///
@@ -1545,10 +1694,29 @@ fn pre_connect_guard(cmd: &Cmd) -> Result<(), CliError> {
     // than as a server lookup.
     if let Cmd::New { library: Some(l), .. }
     | Cmd::Send { library: Some(l), .. }
-    | Cmd::Tab { library: Some(l), .. } = cmd
+    | Cmd::Tab { library: Some(l), .. }
+    | Cmd::Schedule(ScheduleCmd::Set { library: Some(l), .. }) = cmd
     {
         if l.trim().is_empty() {
             return Err(CliError::new(exit_code::ERROR, "the prompt selector is empty"));
+        }
+    }
+    // Cadence and time on `schedule set` must be specified together.
+    if let Cmd::Schedule(ScheduleCmd::Set { cadence, time, weekday, .. }) = cmd {
+        match (cadence.as_deref(), time.as_deref()) {
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(CliError::new(
+                    exit_code::ERROR,
+                    "--cadence and --time must be specified together",
+                ));
+            }
+            (None, None) if weekday.is_some() => {
+                return Err(CliError::new(
+                    exit_code::ERROR,
+                    "--weekday requires --cadence weekly and --time",
+                ));
+            }
+            _ => {}
         }
     }
     // `tab --wait` without -p/-P: clap cannot express the -p OR -P
@@ -1619,11 +1787,13 @@ outside.",
         Cmd::New { library: Some(_), .. }
             | Cmd::Send { library: Some(_), .. }
             | Cmd::Tab { library: Some(_), .. }
+            | Cmd::Schedule(ScheduleCmd::Set { library: Some(_), .. })
     );
     let prompt = match &cli.cmd {
         Cmd::New { prompt: Some(p), .. }
         | Cmd::Send { prompt: Some(p), .. }
-        | Cmd::Tab { prompt: Some(p), .. } => Some(resolve_prompt(p, has_library)?),
+        | Cmd::Tab { prompt: Some(p), .. }
+        | Cmd::Schedule(ScheduleCmd::Set { prompt: Some(p), .. }) => Some(resolve_prompt(p, has_library)?),
         _ => None,
     };
     // Pad text, from stdin before the socket for the same reason. `pad write`
@@ -1997,6 +2167,7 @@ outside.",
         }
         Cmd::Project(p) => execute_project(&mut conn, &token, format, p, &paths),
         Cmd::Pad(p) => execute_pad(&mut conn, &token, format, p, pad_content),
+        Cmd::Schedule(s) => execute_schedule(&mut conn, &token, format, s, &paths, prompt),
         // The Phase 0 read verbs: one request, one reply.
         Cmd::List { .. } | Cmd::Status { .. } | Cmd::Open { .. } => {
             let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
@@ -2607,6 +2778,198 @@ fn execute_project(
             Ok(Output::ok(final_stdout(format, &output::project_remove_text(&r), &r)))
         }
     }
+}
+
+fn execute_schedule(
+    conn: &mut client::Conn,
+    token: &str,
+    format: OutputFormat,
+    cmd: &ScheduleCmd,
+    paths: &client::SocketPaths,
+    prompt: Option<String>,
+) -> Result<Output, CliError> {
+    let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
+    let mut fresh: Option<client::Conn> = None;
+    let wire = match cmd {
+        ScheduleCmd::List { project, .. } => proto::Command::ScheduleList {
+            project: project.clone(),
+        },
+        ScheduleCmd::Show { task, project } => proto::Command::ScheduleShow {
+            task: task.clone(),
+            project: project.clone(),
+            cwd,
+        },
+        ScheduleCmd::Set {
+            task,
+            project,
+            name,
+            cadence,
+            time,
+            weekday,
+            prompt: _,
+            library,
+            keep_runs,
+            report_days,
+            catch_up,
+            no_catch_up,
+            enable,
+            disable,
+            yes,
+        } => {
+            if !yes {
+                let target = task.as_deref().unwrap_or("current task");
+                let question = format!("termic: configure recurring schedule on {target}?");
+                if !confirm_tty(&question)? {
+                    return Err(CliError::new(exit_code::ERROR, "schedule set declined"));
+                }
+                fresh = Some(reconnect(paths)?);
+            }
+            let cadence = match (cadence.as_deref(), time.as_deref()) {
+                (Some(k), Some(t)) => Some(proto::ScheduleCadence {
+                    kind: k.to_string(),
+                    time: t.to_string(),
+                    weekday: *weekday,
+                }),
+                (None, None) => {
+                    if weekday.is_some() {
+                        return Err(CliError::new(
+                            exit_code::ERROR,
+                            "--weekday requires --cadence weekly and --time",
+                        ));
+                    }
+                    None
+                }
+                _ => {
+                    return Err(CliError::new(
+                        exit_code::ERROR,
+                        "--cadence and --time must be specified together",
+                    ));
+                }
+            };
+            let catch_up = if *catch_up {
+                Some(true)
+            } else if *no_catch_up {
+                Some(false)
+            } else {
+                None
+            };
+            let enabled = if *enable {
+                Some(true)
+            } else if *disable {
+                Some(false)
+            } else {
+                None
+            };
+            let report_days = match report_days {
+                Some(0) => Some(None),
+                Some(n) => Some(Some(*n)),
+                None => None,
+            };
+            proto::Command::ScheduleSet {
+                task: task.clone(),
+                project: project.clone(),
+                name: name.clone(),
+                cadence,
+                prompt,
+                prompt_ref: library.clone(),
+                keep_runs: *keep_runs,
+                report_days,
+                catch_up,
+                enabled,
+                cwd,
+            }
+        }
+        ScheduleCmd::Run { task, project } => proto::Command::ScheduleRun {
+            task: task.clone(),
+            project: project.clone(),
+            cwd,
+        },
+        ScheduleCmd::Delete { task, project, delete_reports, yes } => {
+            let show_res = client::request(
+                conn,
+                proto::Command::ScheduleShow {
+                    task: task.clone(),
+                    project: project.clone(),
+                    cwd: cwd.clone(),
+                },
+                token,
+            )?;
+            let proto::ReplyData::Schedule(show_data) = show_res else {
+                return Err(CliError::new(exit_code::ERROR, "unexpected reply to schedule show"));
+            };
+            let task_display = show_data
+                .schedule
+                .as_ref()
+                .map(|s| format!("{}/{}", s.project_name, s.task_name))
+                .unwrap_or_else(|| task.clone().unwrap_or_else(|| "task".to_string()));
+            if !yes {
+                let question = format!(
+                    "termic: delete recurring schedule for {task_display}?{}",
+                    if *delete_reports { " Historical reports on disk will also be deleted." } else { "" }
+                );
+                if !confirm_tty(&question)? {
+                    return Err(CliError::new(exit_code::ERROR, "schedule delete declined"));
+                }
+                fresh = Some(reconnect(paths)?);
+            }
+            let conn = fresh.as_mut().unwrap_or(conn);
+            let wire = proto::Command::ScheduleDelete {
+                task: task.clone(),
+                project: project.clone(),
+                delete_reports: *delete_reports,
+                cwd,
+            };
+            let data = client::request(conn, wire, token)?;
+            let proto::ReplyData::Schedule(s) = data else {
+                return Err(CliError::new(exit_code::ERROR, "unexpected reply to schedule delete"));
+            };
+            return Ok(Output::ok(final_stdout(format, &output::schedule_delete_text(&task_display), &s)));
+        }
+    };
+
+    let conn = fresh.as_mut().unwrap_or(conn);
+
+    let data = client::request(conn, wire, token)?;
+    let proto::ReplyData::Schedule(s) = data else {
+        return Err(CliError::new(exit_code::ERROR, "unexpected reply to schedule command"));
+    };
+
+    let text = match cmd {
+        ScheduleCmd::List { quiet, .. } => {
+            if *quiet {
+                s.schedules.iter().map(|item| item.task_id.as_str()).collect::<Vec<_>>().join("\n")
+            } else {
+                output::schedule_list_text(&s.schedules)
+            }
+        }
+        ScheduleCmd::Show { .. } => {
+            if let Some(sched) = &s.schedule {
+                output::schedule_show_text(sched, &s.history)
+            } else {
+                String::new()
+            }
+        }
+        ScheduleCmd::Set { .. } => {
+            if let Some(sched) = &s.schedule {
+                output::schedule_set_text(sched)
+            } else {
+                "schedule configured".to_string()
+            }
+        }
+        ScheduleCmd::Run { .. } => {
+            if let Some(run_res) = &s.run_result {
+                if run_res.kind == "started" {
+                    output::schedule_run_text(run_res)
+                } else {
+                    return Err(CliError::new(exit_code::ERROR, output::schedule_run_text(run_res)));
+                }
+            } else {
+                "schedule run triggered".to_string()
+            }
+        }
+        ScheduleCmd::Delete { .. } => unreachable!(),
+    };
+    Ok(Output::ok(final_stdout(format, &text, &s)))
 }
 
 // ───────────────────────────── streaming ─────────────────────────────
@@ -3546,6 +3909,51 @@ mod tests {
     }
 
     #[test]
+    fn schedule_parse_rules() {
+        let l = Cli::try_parse_from(["termic", "schedule", "list", "-q", "--project", "web"]).unwrap();
+        let Cmd::Schedule(ScheduleCmd::List { quiet, project }) = &l.cmd else { panic!("not schedule list") };
+        assert!(*quiet);
+        assert_eq!(project.as_deref(), Some("web"));
+
+        let s = Cli::try_parse_from(["termic", "schedule", "show", "parent-1"]).unwrap();
+        let Cmd::Schedule(ScheduleCmd::Show { task, project }) = &s.cmd else { panic!("not schedule show") };
+        assert_eq!(task.as_deref(), Some("parent-1"));
+        assert_eq!(project, &None);
+
+        let set = Cli::try_parse_from([
+            "termic", "schedule", "set", "parent-1",
+            "--cadence", "daily", "--time", "09:00",
+            "-p", "daily standup", "--keep-runs", "10",
+            "--enable", "--catch-up",
+        ]).unwrap();
+        let Cmd::Schedule(ScheduleCmd::Set {
+            task, cadence, time, prompt, keep_runs, enable, disable, catch_up, no_catch_up, ..
+        }) = &set.cmd else { panic!("not schedule set") };
+        assert_eq!(task.as_deref(), Some("parent-1"));
+        assert_eq!(cadence.as_deref(), Some("daily"));
+        assert_eq!(time.as_deref(), Some("09:00"));
+        assert_eq!(prompt.as_deref(), Some("daily standup"));
+        assert_eq!(*keep_runs, Some(10));
+        assert!(*enable);
+        assert!(!*disable);
+        assert!(*catch_up);
+        assert!(!*no_catch_up);
+
+        let r = Cli::try_parse_from(["termic", "schedule", "run", "parent-1"]).unwrap();
+        let Cmd::Schedule(ScheduleCmd::Run { task, project }) = &r.cmd else { panic!("not schedule run") };
+        assert_eq!(task.as_deref(), Some("parent-1"));
+        assert_eq!(project, &None);
+
+        let d = Cli::try_parse_from(["termic", "schedule", "delete", "parent-1", "--delete-reports", "-y"]).unwrap();
+        let Cmd::Schedule(ScheduleCmd::Delete { task, delete_reports, yes, .. }) = &d.cmd else { panic!("not schedule delete") };
+        assert_eq!(task.as_deref(), Some("parent-1"));
+        assert!(*delete_reports);
+        assert!(*yes);
+
+        assert!(Cli::try_parse_from(["termic", "schedule"]).is_err());
+    }
+
+    #[test]
     fn rename_positional_rules() {
         // One positional is the NAME (task falls back to $TERMIC_TASK_ID
         // then cwd); two are TASK + NAME. allow_missing_positional does
@@ -3658,6 +4066,7 @@ mod tests {
             "project list",
             "project remove", "help", "prompts", "prompts show",
             "scratchpad list", "scratchpad new", "scratchpad write", "scratchpad read",
+            "schedule list", "schedule show", "schedule set", "schedule run", "schedule delete",
         ] {
             assert!(names.contains(&expected), "missing {expected} in {names:?}");
         }

@@ -660,6 +660,65 @@ pub enum Command {
     /// Unregister a project. Archives and deletes ALL its tasks; the
     /// CLI confirms before sending.
     ProjectRemove { name: String },
+    /// List recurring schedules across projects, optionally filtered to one project.
+    ScheduleList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
+    /// Show detailed status and history of a task's schedule.
+    ScheduleShow {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// Create or update a schedule on a parent task.
+    ScheduleSet {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cadence: Option<ScheduleCadence>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_ref: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keep_runs: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        report_days: Option<Option<u32>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        catch_up: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// Trigger an immediate out-of-band run of a schedule ("Run now").
+    ScheduleRun {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// Remove a schedule from a task.
+    ScheduleDelete {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        delete_reports: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
     /// Prompt the task's RUNNING agent. Busy work-done-capable agents
     /// get the prompt QUEUED (delivered when the current turn ends);
     /// opted-out agents get it typed immediately. With no agent
@@ -879,6 +938,7 @@ pub enum ReplyData {
     #[serde(rename = "result")]
     LastResult(ResultData),
     Attach(AttachData),
+    Schedule(ScheduleData),
 }
 
 /// One property as a tab carries it (GH #358).
@@ -1245,6 +1305,91 @@ pub struct ProjectRemoveData {
     pub name: String,
     /// Tasks archived and deleted along with the project.
     pub removed_tasks: u32,
+}
+
+/// One schedule cadence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct ScheduleCadence {
+    pub kind: String,
+    pub time: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weekday: Option<u8>,
+}
+
+/// One schedule's summary row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ScheduleSummary {
+    pub task_id: String,
+    pub task_name: String,
+    pub project_id: String,
+    pub project_name: String,
+    pub name: String,
+    pub slug: String,
+    pub enabled: bool,
+    pub cadence: ScheduleCadence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_run: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_slot: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome: Option<String>,
+    #[serde(default)]
+    pub keep_runs: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_days: Option<u32>,
+    #[serde(default)]
+    pub catch_up: bool,
+}
+
+/// One entry in a schedule's history.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ScheduleRunInfo {
+    pub slot: i64,
+    pub outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub manual: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub report_gone: bool,
+}
+
+/// Immediate run outcome from "Run now".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ScheduleRunResult {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Reply to schedule verbs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ScheduleData {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schedules: Vec<ScheduleSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<ScheduleSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<ScheduleRunInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_result: Option<ScheduleRunResult>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub deleted: bool,
 }
 
 /// One task row for `list` (and embedded in `status` / `open`).
@@ -2117,6 +2262,23 @@ mod tests {
                 task: None, project: None, shell: false, tab: Some("1".into()),
                 cwd: Some("/t".into()),
             },
+            Command::ScheduleList { project: Some("web".into()) },
+            Command::ScheduleShow { task: Some("parent-1".into()), project: None, cwd: None },
+            Command::ScheduleSet {
+                task: Some("parent-1".into()),
+                project: None,
+                name: Some("nightly run".into()),
+                cadence: Some(ScheduleCadence { kind: "daily".into(), time: "09:00".into(), weekday: None }),
+                prompt: Some("check status".into()),
+                prompt_ref: None,
+                keep_runs: Some(7),
+                report_days: Some(Some(30)),
+                catch_up: Some(false),
+                enabled: Some(true),
+                cwd: None,
+            },
+            Command::ScheduleRun { task: Some("parent-1".into()), project: None, cwd: None },
+            Command::ScheduleDelete { task: Some("parent-1".into()), project: None, delete_reports: true, cwd: None },
         ] {
             roundtrip(&Request { id: "r1".into(), token: Some("t".into()), profile: None, cmd });
         }
@@ -2407,6 +2569,30 @@ mod tests {
                 text: "All tests pass.".into(),
             }),
             ReplyData::Attach(AttachData { task_id: "w1".into(), reason: "archived".into() }),
+            ReplyData::Schedule(ScheduleData {
+                schedules: vec![ScheduleSummary {
+                    task_id: "w1".into(),
+                    task_name: "parent-1".into(),
+                    project_id: "p1".into(),
+                    project_name: "web".into(),
+                    name: "nightly run".into(),
+                    slug: "nightly-run".into(),
+                    enabled: true,
+                    cadence: ScheduleCadence { kind: "daily".into(), time: "09:00".into(), weekday: None },
+                    prompt: Some("check status".into()),
+                    prompt_id: None,
+                    next_run: Some(1728400000),
+                    last_slot: Some(1728300000),
+                    last_outcome: Some("fired".into()),
+                    keep_runs: 7,
+                    report_days: Some(30),
+                    catch_up: false,
+                }],
+                schedule: None,
+                history: Vec::new(),
+                run_result: None,
+                deleted: false,
+            }),
         ] {
             roundtrip(&Reply::ok("r1", data));
         }

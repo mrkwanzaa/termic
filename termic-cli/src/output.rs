@@ -1265,3 +1265,91 @@ pub fn pad_list_text(pads: &[termic_proto::PadInfo]) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+pub fn cadence_text(c: &termic_proto::ScheduleCadence) -> String {
+    match c.kind.as_str() {
+        "daily" => format!("daily at {}", c.time),
+        "weekdays" => format!("weekdays at {}", c.time),
+        "weekly" => {
+            let day = match c.weekday.unwrap_or(1) {
+                0 => "Sun", 1 => "Mon", 2 => "Tue", 3 => "Wed", 4 => "Thu", 5 => "Fri", 6 => "Sat",
+                _ => "day",
+            };
+            format!("weekly on {day} at {}", c.time)
+        }
+        _ => format!("{} at {}", c.kind, c.time),
+    }
+}
+
+pub fn schedule_list_text(schedules: &[termic_proto::ScheduleSummary]) -> String {
+    if schedules.is_empty() {
+        return "no schedules".to_string();
+    }
+    schedules
+        .iter()
+        .map(|s| {
+            let status = if s.enabled { "enabled" } else { "paused" };
+            let outcome = s.last_outcome.as_deref().unwrap_or("-");
+            format!("{:<16}  {:<16}  {:<24}  {:<8}  last: {}", s.task_name, s.project_name, cadence_text(&s.cadence), status, outcome)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn schedule_show_text(
+    s: &termic_proto::ScheduleSummary,
+    history: &[termic_proto::ScheduleRunInfo],
+) -> String {
+    let status = if s.enabled { "enabled" } else { "paused" };
+    let mut out = Vec::new();
+    out.push(format!("name: {}", s.name));
+    out.push(format!("task: {} ({})", s.task_name, s.task_id));
+    out.push(format!("project: {} ({})", s.project_name, s.project_id));
+    out.push(format!("slug: {}", s.slug));
+    out.push(format!("status: {}", status));
+    out.push(format!("cadence: {}", cadence_text(&s.cadence)));
+    if let Some(p) = &s.prompt {
+        out.push(format!("prompt: {}", p));
+    }
+    if let Some(p_id) = &s.prompt_id {
+        out.push(format!("prompt_id: {}", p_id));
+    }
+    out.push(format!("keep_runs: {}", s.keep_runs));
+    match s.report_days {
+        Some(d) => out.push(format!("report_retention: {} days", d)),
+        None => out.push("report_retention: forever".to_string()),
+    }
+    out.push(format!("catch_up: {}", s.catch_up));
+    if let Some(slot) = s.last_slot {
+        out.push(format!("last_slot: {}", slot));
+    }
+    if let Some(outc) = &s.last_outcome {
+        out.push(format!("last_outcome: {}", outc));
+    }
+    if !history.is_empty() {
+        out.push(String::new());
+        out.push("history:".to_string());
+        for h in history {
+            let report_str = h.report.as_deref().unwrap_or("-");
+            let title_str = h.title.as_deref().unwrap_or("");
+            out.push(format!("  {}  {:<10}  {:<24}  {}", h.slot, h.outcome, report_str, title_str));
+        }
+    }
+    out.join("\n")
+}
+
+pub fn schedule_set_text(s: &termic_proto::ScheduleSummary) -> String {
+    format!("configured schedule \"{}\" on task {}", s.name, s.task_name)
+}
+
+pub fn schedule_run_text(r: &termic_proto::ScheduleRunResult) -> String {
+    match r.kind.as_str() {
+        "started" => format!("started scheduled run {}", r.run_task_id.as_deref().unwrap_or("")),
+        "busy" => "schedule run skipped: previous run is still in progress".to_string(),
+        _ => format!("schedule run failed: {}", r.error.as_deref().unwrap_or("unknown error")),
+    }
+}
+
+pub fn schedule_delete_text(task: &str) -> String {
+    format!("deleted schedule for task {task}")
+}

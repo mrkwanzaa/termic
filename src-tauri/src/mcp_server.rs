@@ -932,6 +932,14 @@ fn arg_bool(a: &Args, k: &str) -> Result<bool, String> {
     }
 }
 
+fn arg_opt_bool(a: &Args, k: &str) -> Result<Option<bool>, String> {
+    match a.get(k) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(format!("\"{k}\" must be a boolean")),
+    }
+}
+
 fn arg_str_list(a: &Args, k: &str) -> Result<Vec<String>, String> {
     match a.get(k) {
         None | Some(serde_json::Value::Null) => Ok(Vec::new()),
@@ -982,6 +990,13 @@ const P_PAD_TASK: ParamDef = ParamDef {
     required: false,
     description: "Task name or id. Omitted: your own task.",
     cli_flag: Some("--task"),
+};
+const P_SCHEDULE_TASK: ParamDef = ParamDef {
+    name: "task",
+    json_type: "string",
+    required: false,
+    description: "Task name or id. Omitted: your own task.",
+    cli_flag: Some("task"),
 };
 const P_PROJECT: ParamDef = ParamDef {
     name: "project",
@@ -1543,6 +1558,122 @@ const TOOLS: &[ToolDef] = &[
         read_only: false,
         build: |a| Ok(Command::ProjectRemove { name: need_str(a, "name")? }),
     },
+    ToolDef {
+        name: "schedule_list",
+        cli_verb: "schedule list",
+        description: "List recurring schedules with cadence, enabled state, next run, and last outcome. Optionally filter to one project.",
+        params: &[ParamDef {
+            name: "project",
+            json_type: "string",
+            required: false,
+            description: "Only this project's schedules.",
+            cli_flag: Some("--project"),
+        }],
+        destructive: false,
+        read_only: true,
+        build: |a| Ok(Command::ScheduleList { project: arg_str(a, "project")? }),
+    },
+    ToolDef {
+        name: "schedule_show",
+        cli_verb: "schedule show",
+        description: "Detailed schedule information for a task: cadence, status, full run history, and report files.",
+        params: &[P_SCHEDULE_TASK, P_PROJECT],
+        destructive: false,
+        read_only: true,
+        build: |a| Ok(Command::ScheduleShow {
+            task: arg_str(a, "task")?,
+            project: arg_str(a, "project")?,
+            cwd: None,
+        }),
+    },
+    ToolDef {
+        name: "schedule_set",
+        cli_verb: "schedule set",
+        description: "Create or update a recurring schedule on a parent task (cadence, prompt, retention, enable/disable).",
+        params: &[
+            P_SCHEDULE_TASK,
+            P_PROJECT,
+            ParamDef { name: "name", json_type: "string", required: false, description: "Schedule display name (defaults to the task name).", cli_flag: Some("--name") },
+            ParamDef { name: "cadence", json_type: "string", required: false, description: "\"daily\", \"weekdays\", or \"weekly\".", cli_flag: Some("--cadence") },
+            ParamDef { name: "time", json_type: "string", required: false, description: "Local wall-clock time in \"HH:MM\" 24-hour format.", cli_flag: Some("--time") },
+            ParamDef { name: "weekday", json_type: "integer", required: false, description: "Day of week for weekly cadence: 0 (Sunday) to 6 (Saturday).", cli_flag: Some("--weekday") },
+            ParamDef { name: "prompt", json_type: "string", required: false, description: "Prompt to inject on each run.", cli_flag: Some("--prompt") },
+            P_LIBRARY,
+            ParamDef { name: "keepRuns", json_type: "integer", required: false, description: "Number of past run tasks to retain (1 to 20, default 7).", cli_flag: Some("--keep-runs") },
+            ParamDef { name: "reportDays", json_type: "integer", required: false, description: "Days to keep report files (7, 30, 90, or 0 for forever).", cli_flag: Some("--report-days") },
+            ParamDef { name: "catchUp", json_type: "boolean", required: false, description: "Run missed slots after app downtime.", cli_flag: Some("--catch-up") },
+            ParamDef { name: "enabled", json_type: "boolean", required: false, description: "Whether the schedule is enabled.", cli_flag: Some("--enable") },
+        ],
+        destructive: true,
+        read_only: false,
+        build: |a| {
+            let cadence = match (arg_str(a, "cadence")?, arg_str(a, "time")?) {
+                (Some(kind), Some(time)) => {
+                    let weekday = match arg_u64(a, "weekday")? {
+                        Some(w @ 0..=6) => Some(w as u8),
+                        Some(w) => return Err(format!("\"weekday\" must be between 0 (Sunday) and 6 (Saturday), got {w}")),
+                        None => None,
+                    };
+                    Some(proto::ScheduleCadence {
+                        kind,
+                        time,
+                        weekday,
+                    })
+                }
+                (None, None) => None,
+                _ => return Err("both cadence and time are required when setting cadence".to_string()),
+            };
+            let report_days = match arg_u64(a, "reportDays")? {
+                Some(0) => Some(None),
+                Some(n) => Some(Some(n as u32)),
+                None => None,
+            };
+            Ok(Command::ScheduleSet {
+                task: arg_str(a, "task")?,
+                project: arg_str(a, "project")?,
+                name: arg_str(a, "name")?,
+                cadence,
+                prompt: arg_str(a, "prompt")?,
+                prompt_ref: arg_str(a, "library")?,
+                keep_runs: arg_u64(a, "keepRuns")?.map(|k| k as u32),
+                report_days,
+                catch_up: arg_opt_bool(a, "catchUp")?,
+                enabled: arg_opt_bool(a, "enabled")?,
+                cwd: None,
+            })
+        },
+    },
+    ToolDef {
+        name: "schedule_run",
+        cli_verb: "schedule run",
+        description: "Trigger an immediate out-of-band run of a schedule (\"Run now\"). Refused while a previous run is still going.",
+        params: &[P_SCHEDULE_TASK, P_PROJECT],
+        destructive: false,
+        read_only: false,
+        build: |a| Ok(Command::ScheduleRun {
+            task: arg_str(a, "task")?,
+            project: arg_str(a, "project")?,
+            cwd: None,
+        }),
+    },
+    ToolDef {
+        name: "schedule_delete",
+        cli_verb: "schedule delete",
+        description: "Remove a schedule from a task, optionally deleting historical reports.",
+        params: &[
+            P_SCHEDULE_TASK,
+            P_PROJECT,
+            ParamDef { name: "deleteReports", json_type: "boolean", required: false, description: "Delete report files on disk in addition to removing the schedule.", cli_flag: Some("--delete-reports") },
+        ],
+        destructive: true,
+        read_only: false,
+        build: |a| Ok(Command::ScheduleDelete {
+            task: arg_str(a, "task")?,
+            project: arg_str(a, "project")?,
+            delete_reports: arg_bool(a, "deleteReports")?,
+            cwd: None,
+        }),
+    },
 ];
 
 fn tool_schema(t: &ToolDef) -> serde_json::Value {
@@ -1680,6 +1811,7 @@ fn tools_call(server: &McpServer, id: serde_json::Value, params: &serde_json::Va
 const SELF_DEFAULT_TOOLS: &[&str] = &[
     "task_rename", "task_group", "task_tab", "task_prop",
     "scratchpad_new", "scratchpad_write", "scratchpad_read", "scratchpad_list",
+    "schedule_show", "schedule_set", "schedule_run", "schedule_delete",
 ];
 
 /// `args` with the caller's task filled in where the CLI would have used
@@ -3345,7 +3477,9 @@ mod tests {
         // 18400: task_prop (GH #358), the `termic prop` verb: tab properties
         // agents set and the sidebar row collects. One tool for set, clear
         // and list, descriptions cut to a clause, the limits by name only.
-        const RECORDED: usize = 18400;
+        // 21664: schedule_list, schedule_show, schedule_set, schedule_run,
+        // schedule_delete: recurring task schedules on both CLI and MCP.
+        const RECORDED: usize = 21664;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"
@@ -3787,6 +3921,11 @@ mod tests {
             ("apply", "--yes", "a TTY confirmation; the tool carries destructiveHint"),
             ("archive", "--yes", "a TTY confirmation; the tool carries destructiveHint"),
             ("project remove", "--yes", "a TTY confirmation; the tool carries destructiveHint"),
+            ("schedule list", "--quiet", "output formatting; a tool returns structured JSON"),
+            ("schedule set", "--no-catch-up", "the tool takes a boolean `catchUp` param"),
+            ("schedule set", "--disable", "the tool takes a boolean `enabled` param"),
+            ("schedule set", "--yes", "a TTY confirmation; the tool carries destructiveHint"),
+            ("schedule delete", "--yes", "a TTY confirmation; the tool carries destructiveHint"),
         ];
         let help = termic_cli::machine_help();
         for c in help["commands"].as_array().unwrap() {
@@ -3821,7 +3960,7 @@ mod tests {
                 "{name} must say it is not destructive"
             );
         }
-        for name in ["task_archive", "task_apply", "project_remove", "task_tab_close"] {
+        for name in ["task_archive", "task_apply", "project_remove", "task_tab_close", "schedule_delete", "schedule_set"] {
             let t = TOOLS.iter().find(|t| t.name == name).unwrap();
             assert_eq!(tool_entry(t)["annotations"]["destructiveHint"], true, "{name}");
         }
