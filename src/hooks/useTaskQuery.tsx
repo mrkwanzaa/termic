@@ -138,6 +138,7 @@ export interface TaskQuery {
    *  `status:` clauses are dropped, so each status chip answers for its own
    *  column whichever chip is on. Needs columns. */
   columnCount: (column: BoardColumn) => number;
+  doneCount: () => { shown: number; total: number };
   /** A project's folder accent, for chips and the board's headers. */
   projectAccent: (p: Project | undefined) => string | undefined;
 }
@@ -212,6 +213,12 @@ export function useTaskQuery({ text, menuOpen, live, archived, workPrefs, always
     return {
       project: projectById.get(w.project_id),
       column: columnOf.get(w.id),
+      // The dot the ROW draws, so attention wins over it exactly as it does
+      // on the row's badge. A tab that raises attention is also written
+      // `done` (the agent stopped to ask), so without this a blocked task
+      // counted under Needs you AND Done while showing only a bell.
+      done: workPrefs.settledHighlight && !!statusFacts[w.id]?.done
+        && !((workPrefs.attentionIndicator ?? true) && !!statusFacts[w.id]?.attention),
       pr: usePr.getState().byTask[w.id]?.lookup ?? null,
       changed: stat ? stat.files_changed > 0 : null,
       facts: filterFacts[w.id],
@@ -220,7 +227,7 @@ export function useTaskQuery({ text, menuOpen, live, archived, workPrefs, always
     // prKey / changesKey are the re-run triggers for the non-reactive pr and
     // diffStat reads above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectById, columnOf, filterFacts, agents, prKey, changesKey]);
+  }, [projectById, columnOf, statusFacts, workPrefs.settledHighlight, workPrefs.attentionIndicator, filterFacts, agents, prKey, changesKey]);
   const matches = useCallback(
     (w: Task): boolean => boardTaskMatches(w, matchCtx(w), query),
     [matchCtx, query],
@@ -231,6 +238,20 @@ export function useTaskQuery({ text, menuOpen, live, archived, workPrefs, always
     for (const w of live) if (columnOf.get(w.id) === column && boardTaskMatches(w, matchCtx(w), rest)) n++;
     return n;
   }, [query, live, columnOf, matchCtx]);
+  // The Done chip's two numbers, the same pair a column chip gets: what the
+  // rest of the query lets through, and the unfiltered total that decides
+  // whether the chip is empty.
+  const doneCount = useCallback((): { shown: number; total: number } => {
+    const rest = dropBoardClauses(query, "status");
+    let shown = 0, total = 0;
+    for (const w of live) {
+      const ctx = matchCtx(w);
+      if (!ctx.done) continue;
+      total++;
+      if (boardTaskMatches(w, ctx, rest)) shown++;
+    }
+    return { shown, total };
+  }, [query, live, matchCtx]);
 
   // `has:changes` on a task nothing drew: cards and rows ask for their own
   // diffstat when they mount, so a task filtered out from the start would
@@ -357,5 +378,5 @@ export function useTaskQuery({ text, menuOpen, live, archived, workPrefs, always
     ];
   }, [menuOpen, text, live, archived, matchCtx, valuesFor, projects, projectAccent, agents, t]);
 
-  return { query, filtering, matches, sections, valuesFor, columnOf, columnCount, projectAccent };
+  return { query, filtering, matches, sections, valuesFor, columnOf, columnCount, doneCount, projectAccent };
 }

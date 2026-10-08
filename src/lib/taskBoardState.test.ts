@@ -165,7 +165,7 @@ describe("boardColumnFromFacts", () => {
 
   it("the facts are raw: no pref can hide a signal from the cache", () => {
     const facts = boardTaskFacts([tab({ unread: { reason: "attention" } }), tab({ id: "tab2", workState: "working" })]);
-    expect(facts).toEqual({ attention: true, working: true, untouched: false });
+    expect(facts).toEqual({ attention: true, working: true, untouched: false, done: false });
     expect(boardTaskFacts([tab({ lastInputAt: 5 })]).untouched).toBe(false);
     expect(boardTaskFacts([]).untouched).toBe(true);
   });

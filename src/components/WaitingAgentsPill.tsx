@@ -11,7 +11,8 @@ import { usePrefs } from "@/store/prefs";
 import { Tip } from "@/components/ui/Tooltip";
 import { Bell } from "lucide-react";
 import { bindingGlyphs, bindingText } from "@/lib/shortcuts";
-import { waitingCount, jumpToNextWaiting } from "@/lib/waitingAgents";
+import { waitingAttentionCount, waitingDoneCount, jumpToNextWaiting } from "@/lib/waitingAgents";
+import { cn } from "@/lib/utils";
 
 export function WaitingAgentsPill() {
   const { t } = useTranslation("chrome");
@@ -20,7 +21,15 @@ export function WaitingAgentsPill() {
   const settled = usePrefs(s => s.settledHighlight);
   // Selector returns a number, so the pill only re-renders when the COUNT
   // changes, not on every unrelated app-store write.
-  const count = useApp(waitingCount);
+  //
+  // TWO counts, each under its own mark. It used to be one number beside a
+  // bell, which said "1 needs you" for a task that had only finished, right
+  // above a sidebar chip row reading Needs you 0, Done 1. The bell is for an
+  // agent blocked on you and the dot for a turn you have not read, here as
+  // everywhere else (docs/ui.md "One glyph per meaning").
+  const attention = useApp(waitingAttentionCount);
+  const done = useApp(waitingDoneCount);
+  const count = attention + done;
   const binding = usePrefs(s => s.shortcuts["jump-next-waiting"]);
 
   if (!settled || count < 1) return null;
@@ -35,10 +44,30 @@ export function WaitingAgentsPill() {
         data-no-drag
         onClick={() => { jumpToNextWaiting(); }}
         aria-label={label}
-        className="flex select-none items-center gap-1 rounded-full border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/15 px-2 py-0.5 text-[12px] font-medium text-[var(--color-warn)] hover:bg-[var(--color-warn)]/25"
+        data-testid="waiting-agents-pill"
+        data-attention={attention}
+        data-done={done}
+        // Warn-toned only while something is BLOCKED. A pill that is amber
+        // because a turn finished cries wolf for the case that matters.
+        className={cn(
+          "flex select-none items-center gap-1.5 rounded-full border px-2 py-0.5 text-[12px] font-medium",
+          attention > 0
+            ? "border-[var(--color-warn)]/40 bg-[var(--color-warn)]/15 hover:bg-[var(--color-warn)]/25"
+            : "border-[var(--color-info)]/40 bg-[var(--color-info)]/15 hover:bg-[var(--color-info)]/25",
+        )}
       >
-        <Bell className="h-3 w-3" />
-        <span className="tabular-nums leading-none">{count}</span>
+        {attention > 0 && (
+          <span className="flex items-center gap-1 text-[var(--color-warn)]">
+            <Bell className="h-3 w-3" />
+            <span className="tabular-nums leading-none">{attention}</span>
+          </span>
+        )}
+        {done > 0 && (
+          <span className="flex items-center gap-1 text-[var(--color-info)]">
+            <span className="h-2 w-2 rounded-full bg-current" />
+            <span className="tabular-nums leading-none">{done}</span>
+          </span>
+        )}
       </button>
     </Tip>
   );

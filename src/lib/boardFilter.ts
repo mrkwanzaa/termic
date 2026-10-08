@@ -21,7 +21,7 @@ import { groupOf } from "./projectGroups";
 import { fuzzyMatch } from "./fuzzy";
 
 /** Canonical qualifier keys. Aliases fold into these at parse time. */
-export const BOARD_QUALIFIERS = [
+const BOARD_QUALIFIERS = [
   "project", "group", "agent", "status", "branch", "base", "pr", "checks", "is", "has", "no",
 ] as const;
 export type BoardQualifier = (typeof BOARD_QUALIFIERS)[number];
@@ -54,7 +54,10 @@ function resolveKey(raw: string): BoardQualifier | undefined {
 /** Closed value sets. Keys missing here take free values (project names,
  *  agents, branches) that the caller supplies for autocomplete. */
 const BOARD_ENUM_VALUES: Partial<Record<BoardQualifier, readonly string[]>> = {
-  status: [...BOARD_STATE_COLUMNS, "archived"],
+  // `done` is not a column: it is the row's blue dot (a turn finished,
+  // unseen), an overlay on whichever column the task sits in. See
+  // BoardMatchCtx.done.
+  status: [...BOARD_STATE_COLUMNS, "archived", "done"],
   pr: ["open", "draft", "merged", "closed", "none"],
   checks: ["passing", "failing", "pending", "none"],
   is: ["main", "worktree", "yolo", "docker", "sandboxed", "multi", "archived"],
@@ -173,6 +176,11 @@ export function parseBoardQuery(input: string): BoardQuery {
 export interface BoardMatchCtx {
   project: Project | undefined;
   column: BoardColumn | undefined;
+  /** The task shows the done dot: a turn finished and nobody has looked.
+   *  `status:done` matches on this and nothing else, so it cuts across the
+   *  columns (such a task is in settled, or in review with a PR). Session
+   *  state: it does not survive a restart, exactly like the dot. */
+  done?: boolean;
   /** The live PR poll result, null when nothing has been fetched. */
   pr: PrLookup | null;
   /** From the diffStat store: null = not measured, which matches neither
@@ -213,7 +221,7 @@ function clauseValueMatches(task: Task, ctx: BoardMatchCtx, key: BoardQualifier,
     case "group": return !!ctx.project && groupOf(ctx.project).toLowerCase() === v;
     case "agent":
       return task.cli.toLowerCase() === v || agentDisplayName(task.cli, ctx.agents).toLowerCase() === v;
-    case "status": return ctx.column === v;
+    case "status": return v === "done" ? !!ctx.done : ctx.column === v;
     case "branch": return task.branch.toLowerCase().includes(v);
     case "base": return task.base_branch.toLowerCase().includes(v);
     case "pr": return prState(task, ctx.pr) === v;
@@ -339,17 +347,8 @@ export function boardSuggestions(
   input: string,
   valuesFor: (key: BoardQualifier) => readonly string[],
   limit = 8,
-  /** The user ASKED for the list (clicked the field, pressed ArrowDown) with
-   *  no token under way: offer every qualifier key, so the query language can
-   *  be found without knowing it. Canonical keys only, since an alias is a
-   *  second spelling of a row already there. Off while typing: a list that
-   *  opened after every space would fire on each word of a plain-text search. */
-  browse = false,
 ): BoardSuggestion[] {
-  if (input === "" || /\s$/.test(input)) {
-    if (!browse) return [];
-    return BOARD_QUALIFIERS.map(k => ({ label: `${k}:`, next: `${input}${k}:`, matches: [] }));
-  }
+  if (input === "" || /\s$/.test(input)) return [];
   const toks = tokenize(input);
   const last = toks[toks.length - 1] ?? "";
   const head = input.slice(0, input.length - last.length);

@@ -11,6 +11,7 @@
 import type { Agent, Tab, Task } from "./types";
 import {
   taskNeedsAttention,
+  taskWorkDone,
   taskWorking,
   type WorkStatePrefs,
 } from "./taskWorkState";
@@ -55,11 +56,17 @@ export interface BoardTaskFacts {
   readonly attention: boolean;
   readonly working: boolean;
   readonly untouched: boolean;
+  /** A turn finished and nobody has looked: the row's blue dot. NOT a column
+   *  (the task sits in settled, or review with a PR) and not read by the
+   *  precedence below. It is here because the sidebar's Done chip and
+   *  `status:done` need it per task without holding `tabs`, and this record
+   *  is the one that already costs a re-render per work-state flip. */
+  readonly done: boolean;
 }
 
 /** A task whose tabs never loaded this session: no evidence of anything,
  *  the same reading `boardTaskFacts(EMPTY_TABS)` gives. */
-export const NO_TAB_FACTS: BoardTaskFacts = Object.freeze({ attention: false, working: false, untouched: true });
+export const NO_TAB_FACTS: BoardTaskFacts = Object.freeze({ attention: false, working: false, untouched: true, done: false });
 
 // Both helpers apply their prefs; these make them report the raw fact. The
 // gates are re-applied in boardColumnFromFacts, against the caller's prefs.
@@ -70,6 +77,7 @@ export function boardTaskFacts(tabs: Tab[]): BoardTaskFacts {
     attention: taskNeedsAttention(tabs, RAW_PREFS),
     working: taskWorking(tabs, RAW_PREFS),
     untouched: taskUntouched(tabs),
+    done: taskWorkDone(tabs, RAW_PREFS),
   };
 }
 

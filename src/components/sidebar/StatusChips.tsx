@@ -32,16 +32,30 @@ import type { BoardStateColumn } from "@/lib/taskBoardState";
 import type { WorkStatePrefs } from "@/lib/taskWorkState";
 import { cn } from "@/lib/utils";
 
-/** The columns that get a chip, in display order: what needs you first, then
- *  what is in flight. Settled and Not started are the largest and least
- *  urgent; the board and the filter have them. */
-const STATUS_CHIPS = ["attention", "working", "review"] as const satisfies readonly BoardStateColumn[];
+/** The chips, in the order a task moves through them: the agent works, it
+ *  stops to ask you something, it finishes, the result goes to review.
+ *  Urgency-first (the bell leading) was tried and read as an arbitrary list;
+ *  every chip is always drawn in a fixed slot, so position does the work
+ *  that sorting by urgency was for. Settled and Not started are the largest
+ *  and least urgent; the board and the filter have them.
+ *
+ *  Three are board columns. `done` is not: it is the row's blue dot, a turn
+ *  that finished and nobody has looked at, which the board files under
+ *  Settled along with everything that finished last week. That made the
+ *  second most actionable state the one with no count anywhere. It is an
+ *  overlay (`status:done` cuts across columns), so a task in review with an
+ *  unread turn counts under both. */
+const COLUMN_CHIPS = ["attention", "working", "review"] as const satisfies readonly BoardStateColumn[];
+type ColumnChip = (typeof COLUMN_CHIPS)[number];
+const STATUS_CHIPS = ["working", "attention", "done", "review"] as const;
 type StatusChip = (typeof STATUS_CHIPS)[number];
+const isColumnChip = (c: StatusChip): c is ColumnChip => (COLUMN_CHIPS as readonly string[]).includes(c);
 
 /** Literal keys, so usedKeys.test.ts can see them. */
 function chipLabel(chip: StatusChip, t: (k: string) => string): string {
   switch (chip) {
     case "attention": return t("statusChips.attention");
+    case "done": return t("statusChips.done");
     case "working": return t("statusChips.working");
     case "review": return t("statusChips.review");
   }
@@ -54,11 +68,19 @@ function chipLabel(chip: StatusChip, t: (k: string) => string): string {
 // An EMPTY chip draws its glyph in the chip's own faint text colour and holds
 // the spinner still: a coloured bell or a turning ring beside a 0 would claim
 // something is waiting or running when nothing is.
-function chipIcon(chip: StatusChip, empty: boolean): React.ReactNode {
-  const color = empty ? undefined : STATUS_MARK_COLOR[chip];
+//
+// The spinner turns only while the chip COUNTS something, which is not the
+// same as not being empty: a chip whose clause is in the query stays live at
+// 0 (it is how the clause comes back out), and it used to keep turning there,
+// beside "0 of 4 tasks".
+function chipIcon(chip: StatusChip, empty: boolean, count: number): React.ReactNode {
+  // The done dot is the board's settled colour: it is the same dot the row
+  // draws, and a row with it IS in that column unless it has a PR.
+  const color = empty ? undefined : STATUS_MARK_COLOR[chip === "done" ? "settled" : chip];
   switch (chip) {
     case "attention": return <Bell className="h-3 w-3" style={{ color }} strokeWidth={2.5} />;
-    case "working": return <span style={{ color }}><Spinner size={10} still={empty} /></span>;
+    case "done": return <span className="h-2 w-2 rounded-full bg-current" style={{ color }} />;
+    case "working": return <span style={{ color }}><Spinner size={10} still={empty || count === 0} /></span>;
     case "review": return <GitPullRequest className="h-3 w-3" style={{ color }} />;
   }
 }
@@ -81,20 +103,22 @@ export const StatusChips = memo(function StatusChips() {
     const ids = new Set(projects.map(p => p.id));
     return tasks.filter(w => !w.archived && ids.has(w.project_id));
   }, [tasks, projects]);
-  const { query, columnOf, columnCount } = useTaskQuery({ text, menuOpen: false, live, workPrefs, alwaysColumns: true });
+  const { query, columnOf, columnCount, doneCount } = useTaskQuery({ text, menuOpen: false, live, workPrefs, alwaysColumns: true });
+  const done = useMemo(() => doneCount(), [doneCount]);
   const counts = useMemo(
-    () => Object.fromEntries(STATUS_CHIPS.map(c => [c, columnCount(c)])) as Record<StatusChip, number>,
-    [columnCount],
+    () => Object.fromEntries(STATUS_CHIPS.map(c => [c, isColumnChip(c) ? columnCount(c) : done.shown])) as Record<StatusChip, number>,
+    [columnCount, done],
   );
   // Whether a chip is EMPTY goes by the UNFILTERED column, so typing in the
   // bar never disables a chip: under a query a live one can read 0.
   const totals = useMemo(() => {
     const n: Record<string, number> = {};
     for (const c of columnOf.values()) n[c] = (n[c] ?? 0) + 1;
+    n.done = done.total;
     return n;
-  }, [columnOf]);
+  }, [columnOf, done]);
 
-  // All three chips are ALWAYS drawn. They used to come and go with their
+  // Every chip is ALWAYS drawn. They used to come and go with their
   // counts, so the row appeared when the first agent started working and
   // vanished when the last one stopped, and the whole project tree moved up
   // and down under the pointer each time. An empty chip is drawn disabled
@@ -137,7 +161,7 @@ export const StatusChips = memo(function StatusChips() {
               )}
               style={on ? { backgroundColor: "color-mix(in srgb, var(--color-accent) 14%, transparent)" } : undefined}
             >
-              {chipIcon(c, empty)}
+              {chipIcon(c, empty, counts[c])}
               <span data-testid="status-chip-count">{counts[c]}</span>
             </button>
           </Tip>

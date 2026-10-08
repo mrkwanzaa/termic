@@ -21,13 +21,35 @@ function awakeTasks(s: AppState) {
   );
 }
 
-function taskIsWaiting(s: AppState, taskId: string): boolean {
-  return (s.tabs[taskId] ?? []).some(
-    t => t.type === "terminal" &&
-      ((t as TerminalTab).unread?.reason === "attention" ||
-       (t as TerminalTab).workState === "done"),
-  );
+/** Why a task is waiting, or null. Attention wins over done, the order the
+ *  row's own badge uses, so a task counts once and under the mark it draws. */
+function taskWaitingFor(s: AppState, taskId: string): "attention" | "done" | null {
+  let done = false;
+  for (const t of s.tabs[taskId] ?? []) {
+    if (t.type !== "terminal") continue;
+    if ((t as TerminalTab).unread?.reason === "attention") return "attention";
+    if ((t as TerminalTab).workState === "done") done = true;
+  }
+  return done ? "done" : null;
 }
+
+function taskIsWaiting(s: AppState, taskId: string): boolean {
+  return taskWaitingFor(s, taskId) !== null;
+}
+
+function countWaitingFor(s: AppState, why: "attention" | "done"): number {
+  if (!usePrefs.getState().settledHighlight) return 0;
+  let n = 0;
+  for (const w of awakeTasks(s)) if (taskWaitingFor(s, w.id) === why) n++;
+  return n;
+}
+
+/** The two halves of `waitingCount`, for the pill: blocked on you (the bell)
+ *  and finished unread (the blue dot). Two number selectors, not one object,
+ *  so each re-renders its subscriber only when its own count changes. They
+ *  always sum to `waitingCount`. */
+export const waitingAttentionCount = (s: AppState): number => countWaitingFor(s, "attention");
+export const waitingDoneCount = (s: AppState): number => countWaitingFor(s, "done");
 
 /** Number of awake tasks with an agent waiting on the user. 0 when the
  *  settledHighlight pref is off. Cheap enough (O(tabs)) to run as a Zustand

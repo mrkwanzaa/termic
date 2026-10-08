@@ -27,6 +27,7 @@ export default {
   taskGitIconNone: "无",
   statusChips: {
     attention: "需要你",
+    done: "已完成，未读",
     working: "进行中",
     review: "审查中",
     tip: "{{label}}：筛选 status:{{status}}",

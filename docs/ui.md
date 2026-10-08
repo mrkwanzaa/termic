@@ -718,14 +718,16 @@ which keeps the focus that click gave it.
 Keys: `/` (when nothing editable has focus) or ⌘F focuses the bar; Esc
 peels one layer per press (completions, then the text, then focus), and
 ArrowDown reopens the completions Esc closed. Enter or Tab accepts.
-**A click in the field, or ArrowDown, with no token under way lists every
-canonical key** (`boardSuggestions`' `browse`), so the query language can be
-found without knowing it. Focus alone does not: the bar also takes focus on
-its own (the palette's "Filter sidebar tasks", the funnel menu handing the
-keyboard back). A browsed list marks no row until an arrow or the pointer
-does, so Tab still leaves the field and Enter inserts nothing unchosen.
-Typing a space does not open it either, or it would fire on every word of a
-plain-text search. An IME
+**The sidebar's field wraps while focused** and grows down over the chips:
+a query of more than a clause or two does not fit the sidebar, and a clipped
+query cannot be read or edited. It is out of flow, so nothing under it
+moves, and it is one clipped line again on blur. It is a textarea that never
+holds a newline (Enter is swallowed, a pasted one becomes a space). The
+board's bar is wide enough and stays one line.
+A click in the field does NOT list the keys: that was tried (every
+canonical key on click) and removed, because eleven rows dropping over the
+sidebar on every click cost more than they taught, and the funnel beside the
+field already offers the same filters. An IME
 composition owns those keys until it commits. Autocomplete completes the
 token at the end of the input: qualifier keys (aliases included) for a bare
 word, values for `key:`, ranked by the palettes' `fuzzyMatch`. A key or a
@@ -884,16 +886,20 @@ Batches ACROSS projects (a spawn tree via `spawned_by`, drawn as one unit in
 the bucket of its most urgent member: the task-group rule one level up), a
 count on the compact rail, and drops
 as commands (`boardDropCommand` is reusable once there is a vertical hit
-test). Still open: whether a finished turn you have not looked at belongs in
-Needs attention (the title-bar pill says yes, the board says Settled), and
+test). A finished turn you have not looked at is NOT Needs attention: it is the
+Done chip in the sidebar and the blue dot in the title-bar pill, which
+counts the two separately (bell for blocked, dot for finished unread) and
+is amber only while something is blocked. The board still files it under
+Settled. Still open:
 whether `taskBoardColumn` should grow a Merged column so "finished and can
 go" has an answer on both surfaces.
 
 
 ## The sidebar's status chips
 
-Under the filter bar, a row of chips counts the tasks that need you, are
-working, and are in review (`sidebar/StatusChips.tsx`). A chip toggles
+Under the filter bar, a row of chips counts the tasks that are working, need
+you, have finished unread, and are in review, in the order a task moves
+through them (`sidebar/StatusChips.tsx`). A chip toggles
 `status:<column>` in the sidebar's query, so clicking one narrows the tree
 to those tasks and the bar shows the clause it wrote: the board's lane-click
 idea, applied to the sidebar.
@@ -924,9 +930,22 @@ the count, and the list is one click away in the tree.
   means "has an open or draft PR, agent idle", and green on a row's PR
   badge is a PR state, so a green chip read as "checks passed". An eye was
   tried and dropped: the PR glyph is what the board's review column uses.
-- **Three chips, not five.** Settled and Not started are the largest and
+- **Four chips, not six.** Settled and Not started are the largest and
   least urgent buckets; the board and the query have them.
-- **All three chips are always drawn.** An empty one is disabled
+- **Done is the one chip that is not a column.** It counts the rows showing
+  the blue dot: a turn finished and nobody has looked. The board files those
+  under Settled with everything that finished last week (or under In review
+  when the task has a PR), so the second most actionable state had no count
+  anywhere. It writes `status:done`, an overlay the matcher answers from the
+  `done` fact (`BoardMatchCtx.done`, `BoardTaskFacts.done`), not from the
+  column, so a task can count under Done and In review at once and the
+  chips no longer sum to a partition. Attention wins over it, as on the
+  row's badge: a tab that asks for you is also written `done`, and a blocked
+  task must not count under both the bell and the dot. Session state, like the dot: opening
+  the task clears it, a relaunch clears all of them, and `settledHighlight`
+  off empties it. The board's filter menu does not list it (its status
+  chips are the columns); typing `status:done` works there too.
+- **Every chip is always drawn.** An empty one is disabled
   (`aria-disabled`, faint, glyph uncoloured, spinner held still, click does
   nothing) rather than hidden. Hidden, the row appeared with the first
   working agent and went with the last, and the project tree jumped a row

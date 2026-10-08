@@ -27,6 +27,7 @@ export default {
   taskGitIconNone: "None",
   statusChips: {
     attention: "Needs you",
+    done: "Done, unread",
     working: "Working",
     review: "In review",
     tip: "{{label}}: filter to status:{{status}}",

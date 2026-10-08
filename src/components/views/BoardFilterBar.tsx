@@ -10,7 +10,7 @@
 // (`cycleBoardClause`), so the menu is a way to WRITE queries, not a second
 // filter state, and what it did is spelled out in the bar.
 
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { ListFilter, Minus, X } from "lucide-react";
 import { useApp } from "@/store/app";
@@ -80,7 +80,36 @@ export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange:
   const { t } = useTranslation("chrome");
   const sidebar = variant === "sidebar";
   const tid = sidebar ? "sidebar-filter" : "board-filter";
-  const inputRef = useRef<HTMLInputElement>(null);
+  // A textarea, not an input, so the SIDEBAR's field can wrap while focused
+  // (see `grown` below). It never holds a newline: Enter is swallowed and a
+  // pasted one becomes a space, so everywhere else it behaves as one line.
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Sidebar only. A query of more than a clause or two does not fit the
+  // sidebar's width, and a clipped query cannot be read or edited. Focused,
+  // the field wraps and grows DOWN OVER the chips: it is out of flow, so
+  // nothing under it moves (the row jumping on focus would be the same shift
+  // the always-drawn chips were built to stop). Blurred, it is one clipped
+  // line again. `grown` is its measured height, which the list hangs below.
+  //
+  // Measured against the ROW, never a pixel constant: the row is h-7, which
+  // is rem, and this app's root font size is 14px, so it is 24.5px and not
+  // the 28 a hardcoded "h-7 = 28" assumed. With that constant a focused
+  // one-line field stood 3.5px taller than its row.
+  const [focused, setFocused] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const [grown, setGrown] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    const row = rowRef.current;
+    if (!el || !row || !sidebar || !focused) { setGrown(null); return; }
+    const base = row.getBoundingClientRect().height;
+    // Collapse first: scrollHeight never shrinks below the current height.
+    el.style.height = `${base}px`;
+    const h = el.scrollHeight + 2; // + the 1px borders
+    el.style.height = "";
+    // Null while it still fits one line, so nothing is overridden then.
+    setGrown(h > base + 1 ? h : null);
+  }, [text, focused, sidebar]);
   // The palette's "Filter sidebar tasks" (useUI.focusSidebarFilter).
   const focusPending = useUI(s => sidebar && s.sidebarFilterFocusPending);
   useEffect(() => {
@@ -92,24 +121,14 @@ export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange:
   // Completions show while typing; Esc or a pick closes them until the next
   // keystroke reopens them.
   const [suggestOpen, setSuggestOpen] = useState(false);
-  // The list was ASKED for (a click in the field, ArrowDown) rather than
-  // opened by typing: with no token under way it then lists every key, so the
-  // query language can be found without knowing it. Only on an explicit ask.
-  // The bar also takes focus on its own (the palette's "Filter sidebar
-  // tasks", the funnel menu handing the keyboard back), and a list over the
-  // chips and the PROJECTS header is not what either of those asked for.
-  const [browse, setBrowse] = useState(false);
-  // -1 = nothing marked. A browsed list starts there: with a row pre-selected,
-  // clicking into the field and pressing Tab to leave it would insert a key.
   const [sel, setSel] = useState(0);
   const suggestions = useMemo(
-    () => (suggestOpen ? boardSuggestions(text, valuesFor, 8, browse) : []),
-    [suggestOpen, text, valuesFor, browse],
+    () => (suggestOpen ? boardSuggestions(text, valuesFor) : []),
+    [suggestOpen, text, valuesFor],
   );
   // Clamped at read, so a list that shrank under the selection still marks
   // (and Enter still picks) a row that exists.
-  const cur = Math.min(sel, suggestions.length - 1);
-  const askForList = () => { setBrowse(true); setSel(-1); setSuggestOpen(true); };
+  const cur = Math.min(sel, Math.max(0, suggestions.length - 1));
 
   // `/` and ⌘F focus the bar. Contextual (docs/shortcuts.md): the board is
   // mounted only while it is the view, and no task owns find while it is up
@@ -142,7 +161,6 @@ export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange:
   const pick = (next: string) => {
     setText(next);
     setSel(0);
-    setBrowse(false);
     // A picked key (`project:`) wants its values next; a picked value ends
     // the token with a space, and the list stays shut until more is typed.
     setSuggestOpen(next.endsWith(":"));
@@ -160,7 +178,13 @@ export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange:
       data-testid={tid}
       data-no-drag
     >
-      <div className="relative flex min-w-0 flex-1 items-center">
+      {/* The sidebar's bar is a COLUMN, where `flex-1` means "basis 0 on the
+          vertical axis": with the field out of flow this row then has no
+          content and collapses to nothing, and the field lands on top of the
+          chips. It worked only while the input was in flow and gave the row
+          its height. So the row takes its height from h-7 and does not flex
+          there; on the board (a row) flex-1 is its width, as before. */}
+      <div ref={rowRef} className={cn("relative flex h-7 min-w-0 items-center", sidebar ? "shrink-0" : "flex-1")}>
         <BoardFilterMenu
           text={text}
           setText={setText}
@@ -180,41 +204,35 @@ export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange:
             if (!el || el === document.body || el.closest(`[data-testid="${tid}"]`)) inputRef.current?.focus();
           }}
         />
-        <input
+        <textarea
           ref={inputRef}
+          rows={1}
           value={text}
+          style={grown ? { height: grown } : undefined}
+          onFocus={() => setFocused(true)}
           placeholder={t(sidebar ? "sidebar:filterBar.placeholder" : "board.filterPlaceholder")}
           data-testid={`${tid}-input`}
-          onChange={e => { setText(e.target.value); setSel(0); setBrowse(false); setSuggestOpen(true); }}
-          onBlur={() => { setSuggestOpen(false); setBrowse(false); }}
-          // A click is the ask, wherever focus was: the first click into the
-          // field and a later one on an already-focused field both open it.
-          // Gated on a list actually SHOWING, not on `suggestOpen`: that
-          // flag stays true after typing plain text that completes to
-          // nothing, and a click then did nothing at all.
-          onClick={() => { if (suggestions.length === 0) askForList(); }}
+          onChange={e => { setText(e.target.value.replace(/[\r\n]+/g, " ")); setSel(0); setSuggestOpen(true); }}
+          onBlur={() => { setFocused(false); setSuggestOpen(false); }}
           onKeyDown={e => {
             // An IME composing (pinyin `pr`) owns Enter and the arrows until
             // it commits; same guard as TerminalPane / AuxTerminal.
             if (e.nativeEvent.isComposing || e.keyCode === 229) return;
             if (suggestions.length > 0) {
               if (e.key === "ArrowDown") { e.preventDefault(); setSel((cur + 1) % suggestions.length); return; }
-              if (e.key === "ArrowUp") { e.preventDefault(); setSel(cur <= 0 ? suggestions.length - 1 : cur - 1); return; }
+              if (e.key === "ArrowUp") { e.preventDefault(); setSel((cur - 1 + suggestions.length) % suggestions.length); return; }
               // Tab accepts like Enter; it frees up once a value pick closes
               // the list, so it never traps focus for more than a token.
-              // Only with a row marked: a browsed list marks none until an
-              // arrow or the pointer does, and Tab then leaves the field.
-              if ((e.key === "Enter" || e.key === "Tab") && cur >= 0) {
+              if (e.key === "Enter" || e.key === "Tab") {
                 e.preventDefault();
                 pick(suggestions[cur].next);
                 return;
               }
-            } else if (e.key === "ArrowDown") {
-              // Esc shut the list, or nothing opened it yet; ArrowDown brings
-              // it up without typing, on an empty bar too.
+            } else if (e.key === "ArrowDown" && !suggestOpen && text !== "") {
+              // Esc shut the list; ArrowDown brings it back without typing.
               e.preventDefault();
-              askForList();
               setSel(0);
+              setSuggestOpen(true);
               return;
             }
             if (e.key === "Escape") {
@@ -225,17 +243,36 @@ export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange:
               else if (text !== "") setText("");
               else inputRef.current?.blur();
             }
+            // One line, always: Enter that picked nothing must not start a
+            // second one.
+            if (e.key === "Enter") e.preventDefault();
           }}
           autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
           className={cn(
-            "h-7 w-full rounded-md border pl-8 pr-6 text-[12.5px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)]",
+            "w-full resize-none overflow-hidden rounded-md border py-1 pl-8 pr-6 text-[12.5px] leading-[calc(1.25rem-2px)] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-fg-faint)]",
+            // The line height is the row's content box exactly (h-7 less the
+            // 1px borders and py-1), so ONE line is one row tall and a
+            // focused, unwrapped field does not grow. In rem like the row:
+            // the root font size here is 14px, not 16.
+            // Out of flow in the sidebar (the wrapper holds the row's height),
+            // so growing never moves what is under it. Wrapping only while
+            // focused; otherwise, and always on the board, one clipped line.
+            sidebar && "absolute inset-x-0 top-0",
+            // overflow-wrap, not break-all: lines break at the spaces between
+            // clauses first, and only a clause wider than the field is cut.
+            // break-all cut every line at the edge, mid-word ("stat" / "us:").
+            sidebar && focused ? "z-30 whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre",
+            // One row tall unless `grown` (inline) says otherwise.
+            !grown && "h-7",
+            // Opaque once it covers the chips, or they show through the text.
+            sidebar && grown !== null && "bg-[var(--color-bg-1)]",
             // The board's bar sits on --color-bg, so that fill is invisible
             // there: an outlined field on its own surface. The sidebar is one
             // step lighter (bg-1, or a profile wash), where the same fill
             // became a black slot at the top of the list. No fill in the
             // sidebar gives it the look the board always had, and matches the
             // outlined chips under it.
-            sidebar ? "bg-transparent" : "bg-[var(--color-bg)]",
+            sidebar ? (grown !== null ? "" : "bg-transparent") : "bg-[var(--color-bg)]",
             // Sidebar, list open: square the bottom and quiet its edge, so
             // the field and the list under it draw as ONE outlined shape with
             // a hairline between them (see the listbox below).
@@ -255,13 +292,22 @@ export const BoardFilterBar = memo(function BoardFilterBar({ text, onTextChange:
             data-testid={`${tid}-clear`}
             onMouseDown={e => e.preventDefault()}
             onClick={() => setText("")}
-            className="absolute right-1 rounded p-0.5 text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]"
+            // Filled with the surface behind the field. A textarea clips its
+            // text at the PADDING edge, not the content edge an input uses,
+            // so a clipped query ran on underneath this button.
+            className={cn(
+              "absolute right-1 z-40 rounded p-0.5 text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]",
+              sidebar ? "bg-[var(--color-bg-1)]" : "bg-[var(--color-bg)]",
+            )}
           ><X className="h-3.5 w-3.5" /></button>
         )}
         {suggestions.length > 0 && (
           <div
             role="listbox"
             data-testid={`${tid}-suggestions`}
+            // Below the field's CURRENT bottom: a wrapped field is taller
+            // than the row the list is anchored to.
+            style={sidebar && grown ? { top: grown } : undefined}
             // The sidebar clips at its edge, so its list is the input's width.
             // Two shapes, by where the bar is.
             //
@@ -353,7 +399,7 @@ function BoardFilterMenu({ text, setText, tid, side, focusHint, sections, open, 
           aria-label={t("board.filterMenuOpen")}
           data-testid={`${tid}-menu-trigger`}
           className={cn(
-            "absolute left-1 z-10 flex rounded p-1 hover:bg-[var(--color-bg-3)]",
+            "absolute left-1 z-40 flex rounded p-1 hover:bg-[var(--color-bg-3)]",
             "data-[state=open]:bg-[var(--color-bg-3)]",
             active ? "text-[var(--color-accent)]" : "text-[var(--color-fg-faint)] hover:text-[var(--color-fg)]",
           )}

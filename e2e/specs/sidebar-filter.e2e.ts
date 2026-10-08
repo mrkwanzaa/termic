@@ -423,50 +423,56 @@ describe("sidebar filter bar", () => {
     await setQuery("");
   });
 
-  // The query language has to be findable without knowing it: a click in the
-  // empty field lists every key. Only a click (or ArrowDown) does, because the
-  // bar also takes focus on its own and a list nobody asked for covers the
-  // chips and the PROJECTS header.
-  it("a click in the empty bar lists every filter key, and focus alone does not", async () => {
-    const LIST = '[data-testid="sidebar-filter-suggestions"]';
-    const labels = () => browser.execute(sel =>
-      [...document.querySelectorAll(`${sel} [data-board-filter-suggestion]`)]
-        .map(el => el.getAttribute("data-board-filter-suggestion")), LIST) as Promise<string[]>;
+  // A query longer than the sidebar is wide cannot be read or edited in one
+  // clipped line, so the field wraps while it has focus. It grows OVER the
+  // chips, out of flow: nothing below it may move.
+  it("wraps a long query while focused, without moving the chips, and is one line again on blur", async () => {
+    const CHIPS = '[data-testid="status-chips"]';
+    // Against the field's own ROW, never a literal 28: h-7 is rem, and the
+    // app's root font size is 14px, so the row is 24.5px. The component made
+    // the same assumption and stood 3.5px taller than its row when focused.
+    const heights = () => browser.execute((inp, chips) => ({
+      field: Math.round((document.querySelector(inp) as HTMLElement).getBoundingClientRect().height),
+      row: Math.round((document.querySelector(inp) as HTMLElement).parentElement!.getBoundingClientRect().height),
+      chipsTop: Math.round((document.querySelector(chips) as HTMLElement).getBoundingClientRect().top),
+    }), INPUT, CHIPS);
     await setQuery("");
+    await browser.execute(sel => (document.querySelector(sel) as HTMLElement).blur(), INPUT);
+    const idle = await heights();
+    expect(idle.row).toBeGreaterThan(0);
+    expect(idle.field).toBe(idle.row);
+    // Focused with nothing to wrap, it is still exactly its row.
+    await browser.execute(sel => (document.querySelector(sel) as HTMLElement).focus(), INPUT);
+    expect((await heights()).field).toBe(idle.row);
+    // And it has its own row. The field is out of flow, so a row that
+    // collapses puts it straight on top of the chips: that shipped to a beta
+    // build with every other measurement in this case still passing.
+    const fieldBottom = await browser.execute(sel =>
+      Math.round((document.querySelector(sel) as HTMLElement).getBoundingClientRect().bottom), INPUT);
+    expect(fieldBottom).toBeLessThanOrEqual(idle.chipsTop);
 
-    // Focus without a click: what the palette's "Filter sidebar tasks" does.
-    await browser.execute(sel => (document.querySelector(sel) as HTMLInputElement).focus(), INPUT);
-    expect(await browser.execute(sel => !!document.querySelector(sel), LIST)).toBe(false);
-
-    await clickWhenVisible(INPUT);
-    await waitVisible(LIST);
-    const keys = await labels();
-    expect(keys).toContain("status:");
-    expect(keys).toContain("project:");
-    // No row is marked until an arrow or the pointer marks one, so Enter and
-    // Tab do not insert a key the user never chose.
-    expect(await browser.execute(sel =>
-      document.querySelectorAll(`${sel} [aria-selected="true"]`).length, LIST)).toBe(0);
+    // setInputValue focuses, which is the state under test.
+    await setInputValue(INPUT, "status:done,attention agent:fakeagent,claude,codex,gemini branch:feature/some-long-branch-name");
+    await browser.waitUntil(async () => { const h = await heights(); return h.field > h.row; }, { timeout: 5_000, timeoutMsg: "a focused long query stayed on one line" });
+    expect((await heights()).chipsTop).toBe(idle.chipsTop);
+    await snap("sidebar-filter-wrapped.png");
+    // Never a newline, whatever the field looks like: Enter adds none.
     await browser.keys(["Enter"]);
-    expect(await query()).toBe("");
+    const typed = await query();
+    expect(typed).toContain("status:done,attention");
+    expect(typed).not.toContain("\n");
 
-    // A pick writes the key and moves on to its values.
-    await browser.execute(sel => {
-      const row = document.querySelector(`${sel} [data-board-filter-suggestion="status:"]`) as HTMLElement;
-      row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-    }, LIST);
-    await browser.waitUntil(async () => (await query()) === "status:", { timeout: 5_000, timeoutMsg: "picking a key did not write it" });
-    await browser.waitUntil(async () => (await labels()).includes("working"), { timeout: 5_000, timeoutMsg: "the key's values were not offered next" });
-
+    await browser.execute(sel => (document.querySelector(sel) as HTMLElement).blur(), INPUT);
+    await browser.waitUntil(async () => { const h = await heights(); return h.field === h.row; }, { timeout: 5_000, timeoutMsg: "the blurred field stayed tall" });
+    expect((await heights()).chipsTop).toBe(idle.chipsTop);
+    await snap("sidebar-filter-blurred-long.png");
     await setQuery("");
-    await browser.execute(sel => (document.querySelector(sel) as HTMLInputElement).blur(), INPUT);
-    await waitGone(LIST);
   });
 
   // The row used to exist only while a chip had something to count, so it
   // appeared with the first working agent and went with the last, and the
   // project tree jumped a row each time.
-  it("draws all three chips whatever they count, and an empty one does nothing", async () => {
+  it("draws every chip whatever it counts, and an empty one does nothing", async () => {
     const chips = () => browser.execute(() =>
       [...document.querySelectorAll('[data-testid="status-chips"] [data-status-chip]')].map(el => ({
         chip: el.getAttribute("data-status-chip"),
@@ -475,7 +481,7 @@ describe("sidebar filter bar", () => {
         count: el.querySelector('[data-testid="status-chip-count"]')?.textContent ?? null,
       })));
     const all = await chips();
-    expect(all.map(c => c.chip)).toEqual(["attention", "working", "review"]);
+    expect(all.map(c => c.chip)).toEqual(["working", "attention", "done", "review"]);
     // The fixture has no PR, so In review is the chip that is certainly empty.
     const review = all.find(c => c.chip === "review")!;
     expect(review).toEqual({ chip: "review", empty: true, disabled: "true", count: "0" });
