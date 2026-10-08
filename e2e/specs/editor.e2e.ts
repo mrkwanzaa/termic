@@ -2974,21 +2974,29 @@ describe("comment on an editor selection for the agent", () => {
     expect(await browser.execute(() =>
       document.querySelector('[data-testid="review-comments-pill"]')!.textContent))
       .toContain("2 pending comments");
-    // Radix opens on POINTERDOWN, so a bare .click() is not enough: this
-    // failed roughly one run in three with "the Send button never appeared",
-    // on a popover that opens fine by hand. Same sequence the project specs
-    // use for their Radix menus.
-    await browser.execute(() => {
-      const el = document.querySelector('[data-testid="review-comments-pill"]') as HTMLElement;
-      const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
-      el.dispatchEvent(new PointerEvent("pointerdown", opts));
-      el.dispatchEvent(new PointerEvent("pointerup", opts));
-      el.click();
-    });
-    await waitFor('[data-testid="review-comments-send"]', "the Send button never appeared");
-    await browser.execute(() => {
-      (document.querySelector('[data-testid="review-comments-send"]') as HTMLElement).click();
-    });
+    // Open and send in ONE step that retries the open. Activating the agent
+    // tab queues a terminal focus on the next frame (TerminalPane's "refit +
+    // focus" effect), and a Radix popover dismisses when focus leaves it. So
+    // when that frame lands after the click, the popover opens and is closed
+    // again before Send can be found: "the Send button never appeared",
+    // roughly one run in three, on a popover that opens fine by hand (nobody
+    // clicks within a frame of switching tabs). Confirmed by doing it on
+    // purpose: focusing the terminal's textarea with the popover open flips
+    // the pill back to data-state="closed".
+    //
+    // The focus happens once per activation, so re-opening a closed pill is
+    // enough. Send is clicked in the same script that finds it, or the same
+    // focus could close the popover between the two round trips.
+    await browser.waitUntil(
+      () => browser.execute(() => {
+        const send = document.querySelector('[data-testid="review-comments-send"]') as HTMLElement | null;
+        if (send) { send.click(); return true; }
+        const pill = document.querySelector('[data-testid="review-comments-pill"]') as HTMLElement | null;
+        if (pill?.getAttribute("data-state") === "closed") pill.click();
+        return false;
+      }),
+      { timeout: 8_000, timeoutMsg: "the Send button never appeared" },
+    );
 
     // One message carrying BOTH comments, read from the agent's own PTY ring
     // (xterm renders to a canvas, so this is the only place the bytes show).

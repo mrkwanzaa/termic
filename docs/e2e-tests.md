@@ -307,9 +307,9 @@ Control and the window cycle. The menu-bar item is never drawn either
 once per spec file.
 
 The window is still SHOWN, deliberately. An ordered-in window keeps its
-backing store, so layout, script and `takeSnapshot` behave exactly as before:
-`snap()` and the failure screenshot render the web content, not the window, and
-come out opaque. Measured with `CGWindowListCopyWindowInfo` during a run: the
+backing store, so layout, script and `takeSnapshot` keep working: `snap()` and
+the failure screenshot render the web content, not the window, and come out
+opaque. Measured with `CGWindowListCopyWindowInfo` during a run: the
 main and Activity windows report `kCGWindowAlpha` 0, and 1 with the override
 below.
 
@@ -321,12 +321,20 @@ window still does not take focus.
 A window built by a NEW code path (a third `WebviewWindowBuilder`) has to call
 the helper too, or it is the one window that pops up.
 
-### The window is hidden, so nothing animates
+### The window may be occluded, and then nothing animates
 
-`document.hidden` is `true` for the whole run: the harness never brings the
-window to the front. WebKit freezes `requestAnimationFrame` in a window it
-believes is occluded, so **no rAF callback ever fires** in a spec. Anything the
-app defers to a frame is deferred forever.
+The harness never brings the window to the front. When WebKit believes the
+window is occluded, `document.hidden` is `true` and `requestAnimationFrame` is
+frozen: **no rAF callback fires**, and anything the app defers to a frame is
+deferred for as long as that lasts.
+
+**Do not assume either state.** Whether the window counts as occluded depends
+on what else is on the desktop, so it differs between machines and can change
+mid-run. Measured on 2026-10-08 in the invisible mode above:
+`document.hidden` was `false` and rAF ran at 60fps. A spec has to pass with
+frames frozen AND with frames running. The second case bites when the app
+defers a FOCUS to a frame: the comments popover in `editor.e2e.ts` was closed
+by the terminal's focus-on-activate landing one frame after the spec opened it.
 
 CodeMirror schedules its layout measurement that way. Until it runs, CM's
 height map holds its unmeasured default of 14px per line while the rendered
