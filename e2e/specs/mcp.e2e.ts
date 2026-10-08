@@ -316,6 +316,8 @@ describe("MCP endpoint: files, discovery, and the Phase A boundary", () => {
       "scratchpad_new", "scratchpad_write", "scratchpad_read", "scratchpad_list",
       "task_apply", "task_archive", "task_tab", "task_tab_close", "task_prop", "task_agents",
       "prompts", "project_list", "project_add", "project_remove",
+      // #380: recurring schedules, the `termic schedule` verbs.
+      "schedule_list", "schedule_show", "schedule_set", "schedule_run", "schedule_delete",
     ]);
     // Consent surface: destructive verbs are annotated for clients.
     const archive = a.result.tools.find((t: any) => t.name === "task_archive");
