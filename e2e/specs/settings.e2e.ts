@@ -3645,16 +3645,28 @@ describe("cloned agents inherit rather than copy", () => {
     // button never renders (overrideCount is stale at 0) and the failure reads
     // as "reset did nothing".
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("general"));
+    // Wait for the panel to actually GO before asking for it back: two store
+    // writes back to back can land in one render, and then nothing remounts.
+    // This case has failed in CI on Linux and on macOS with the reset button
+    // absent. The cause was not reproduced, so this and the retried click
+    // below close the two windows the steps left open rather than a proven one.
+    await browser.waitUntil(
+      () => browser.execute(() => !document.querySelector('[data-agent-id][data-kind="agent"]')),
+      { timeout: 10_000, timeoutMsg: "the agents panel never unmounted, so it cannot have reloaded" });
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("agents"));
     await waitVisible('[data-agent-id][data-kind="agent"]');
 
     // Only the SELECTED agent renders a card, so the clone's pill has to be
     // clicked first. Without that the button simply is not in the DOM, which
-    // looks exactly like a reset that did nothing.
-    await browser.execute((id) => {
+    // looks exactly like a reset that did nothing. Clicked until the card is
+    // there: the panel's load is async, and a click that lands before it
+    // settles selects a pill the load then replaces.
+    const RESET = `[data-agent-card="${cloneId}"] [data-testid="reset-overrides"]`;
+    await browser.waitUntil(() => browser.execute((id, sel) => {
+      if (document.querySelector(sel)) return true;
       (document.querySelector(`[data-agent-id="${id}"]`) as HTMLElement | null)?.click();
-    }, cloneId!);
-    await waitVisible(`[data-agent-card="${cloneId}"] [data-testid="reset-overrides"]`);
+      return false;
+    }, cloneId!, RESET), { timeout: 15_000, timeoutMsg: `never became visible: ${RESET}` });
     await browser.execute((id) => {
       const card = document.querySelector(`[data-agent-card="${id}"]`);
       (card?.querySelector('[data-testid="reset-overrides"]') as HTMLElement | null)?.click();
