@@ -316,7 +316,18 @@ mod tests {
         });
     }
 
+    /// Serializes every test that touches `$APPIMAGE`.
+    ///
+    /// The environment is PROCESS-wide and cargo runs tests in threads. Without
+    /// this, one test's `remove_var` landed between another's two reads: on
+    /// Linux CI the "real AppImage" case saw the path and then, one line
+    /// later, saw nothing, roughly one run in three.
+    static APPIMAGE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn temp_env_set(key: &str, val: &str, f: impl FnOnce()) {
+        // LOCK FIRST, then read what we are replacing (see
+        // `test_support::with_scratch_data_dir` for what the other order costs).
+        let _g = APPIMAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var_os(key);
         unsafe { std::env::set_var(key, val) };
         f();
@@ -327,6 +338,7 @@ mod tests {
     }
 
     fn temp_env_absent(key: &str, f: impl FnOnce()) {
+        let _g = APPIMAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var_os(key);
         unsafe { std::env::remove_var(key) };
         f();

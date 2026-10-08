@@ -193,21 +193,113 @@ describe("sidebar filter bar", () => {
     }
   });
 
-  it("gives the row's trailing slots one meaning each: the menu is hover-only and never holds state", async () => {
-    // The state slot is always there and rightmost; the menu trigger sits in
-    // its own slot, hidden at rest, and holds no badge.
+  it("PR mark: icon and number by default, and the list options submenu picks one, the other or none", async () => {
+    // The store is the seam on purpose: a real PR would need a forge. What is
+    // under test is the row, not the lookup.
+    const setPr = (on: boolean) => browser.execute((id, on) => {
+      window.__termic!.useApp.setState((s: any) => ({
+        tasks: s.tasks.map((w: any) => w.id === id
+          ? { ...w, pr_url: on ? "https://github.com/acme/repo/pull/42" : null, pr_number: on ? 42 : null, pr_provider: on ? "github" : null }
+          : w),
+      }));
+    }, b, on);
+    const BADGE = `${TREE_ROW(b)} [data-testid="task-pr-badge"]`;
+    // null: no badge at all. Otherwise what it draws.
+    const badge = () => browser.execute(sel => {
+      const el = document.querySelector(sel);
+      return el ? { text: el.textContent?.trim() ?? "", icon: !!el.querySelector("svg") } : null;
+    }, BADGE);
+    const setMode = (m: string) => browser.execute(v => window.__termic!.usePrefs.getState().setTaskPrBadge(v as any), m);
+    const waitBadge = async (want: { text: string; icon: boolean } | null, why: string) => {
+      await browser.waitUntil(async () => JSON.stringify(await badge()) === JSON.stringify(want),
+        { timeout: 5_000, timeoutMsg: `${why}: badge was ${JSON.stringify(await badge())}` });
+    };
+    try {
+      await setPr(true);
+      await waitVisible(BADGE);
+      expect(await browser.execute(() => window.__termic!.usePrefs.getState().taskPrBadge)).toBe("both");
+      expect(await badge()).toEqual({ text: "#42", icon: true });
+      await snap("sidebar-task-pr-both.png");
+
+      for (const [mode, want] of [
+        ["icon", { text: "", icon: true }],
+        ["number", { text: "#42", icon: false }],
+        ["none", null],
+        ["both", { text: "#42", icon: true }],
+      ] as const) {
+        await setMode(mode);
+        await waitBadge(want, mode);
+      }
+
+      // the menu alias writes the same pref
+      await waitVisible('[data-testid="sidebar-list-options"]');
+      await browser.execute(() => {
+        const el = document.querySelector('[data-testid="sidebar-list-options"]') as HTMLElement;
+        const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
+        el.dispatchEvent(new PointerEvent("pointerdown", opts));
+        el.dispatchEvent(new PointerEvent("pointerup", opts));
+        el.click();
+      });
+      await waitVisible('[data-testid="sidebar-task-pr-badge"]');
+      await clickMenuItemUntilReady("Show task PR", () => present('[role="menuitem"][data-pr-value="number"]') as Promise<boolean>);
+      await snap("sidebar-task-pr-menu.png");
+      await clickWhenVisible('[role="menuitem"][data-pr-value="number"]');
+      await waitBadge({ text: "#42", icon: false }, "the submenu's Number only");
+      await dismissOverlays();
+      await snap("sidebar-task-pr-number.png");
+      // The key is profile-scoped, so match it whatever the prefix is here.
+      expect(await browser.execute(() => {
+        const hit = Object.keys(localStorage).find(x => x === "taskPrBadge" || x.endsWith(":taskPrBadge"));
+        return hit ? localStorage.getItem(hit) : null;
+      })).toBe("number");
+
+      // A PR whose number is not known yet keeps its glyph under "number":
+      // dropping both would drop the link.
+      await browser.execute(id => {
+        window.__termic!.useApp.setState((s: any) => ({
+          tasks: s.tasks.map((w: any) => w.id === id ? { ...w, pr_number: null } : w),
+        }));
+      }, b);
+      await waitBadge({ text: "", icon: true }, "number mode with no number");
+
+      // a task with no PR draws nothing in any mode
+      await setMode("both");
+      await setPr(false);
+      await waitBadge(null, "no PR");
+    } finally {
+      await setPr(false);
+      await setMode("both");
+      await dismissOverlays();
+    }
+  });
+
+  it("gives the row one trailing slot: state at rest, the menu on hover, and no dead column between them", async () => {
+    // One fixed 18px slot, always rightmost. The menu trigger shares it,
+    // hidden at rest and holding no badge of its own. It once had a reserved
+    // slot beside the state one, which left every row 22px short on the right.
     const anatomy = await browser.execute(id => {
       const row = document.querySelector(`[data-sidebar-task-row="${id}"]`)!;
       const state = row.querySelector('[data-testid="task-state-slot"]') as HTMLElement | null;
       const menu = row.querySelector('[data-testid="task-menu-trigger"]') as HTMLElement | null;
+      const slot = state?.parentElement ?? null;
       // The wrapper also holds expanded tab rows; the slots live in its header.
+      const header = slot?.parentElement ?? null;
+      const s = state?.getBoundingClientRect(), m = menu?.getBoundingClientRect(), h = header?.getBoundingClientRect();
       return {
-        stateIsLast: !!state && state.parentElement!.lastElementChild === state,
+        slotIsLast: !!slot && header!.lastElementChild === slot,
+        sameSlot: !!slot && menu?.parentElement === slot,
+        sameBox: !!s && !!m && Math.abs(s.left - m.left) < 1 && Math.abs(s.width - m.width) < 1,
+        slotWidth: slot ? Math.round(slot.getBoundingClientRect().width) : null,
+        // Nothing but the row's own padding to the right of the slot.
+        gapToEdge: s && h ? Math.round(h.right - s.right) : null,
         menuOpacity: menu ? getComputedStyle(menu).opacity : null,
         badgeInMenu: !!menu?.querySelector('[data-testid="work-badge"], [data-testid="task-yolo-badge"]'),
       };
     }, b);
-    expect(anatomy).toEqual({ stateIsLast: true, menuOpacity: "0", badgeInMenu: false });
+    expect(anatomy).toEqual({
+      slotIsLast: true, sameSlot: true, sameBox: true, slotWidth: 18, gapToEdge: 4,
+      menuOpacity: "0", badgeInMenu: false,
+    });
   });
 
   it("a project with no matches hides, and the empty state clears the query", async () => {

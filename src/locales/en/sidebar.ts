@@ -25,6 +25,11 @@ export default {
   taskGitIconMain: "Main checkout only",
   taskGitIconWorktree: "Worktree only",
   taskGitIconNone: "None",
+  taskPrBadge: "Show task PR",
+  taskPrBadgeBoth: "Icon and number",
+  taskPrBadgeIcon: "Icon only",
+  taskPrBadgeNumber: "Number only",
+  taskPrBadgeNone: "None",
   statusChips: {
     attention: "Needs you",
     done: "Done, unread",

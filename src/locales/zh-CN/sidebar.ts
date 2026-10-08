@@ -25,6 +25,11 @@ export default {
   taskGitIconMain: "仅主检出",
   taskGitIconWorktree: "仅工作树",
   taskGitIconNone: "无",
+  taskPrBadge: "显示任务 PR",
+  taskPrBadgeBoth: "图标和编号",
+  taskPrBadgeIcon: "仅图标",
+  taskPrBadgeNumber: "仅编号",
+  taskPrBadgeNone: "无",
   statusChips: {
     attention: "需要你",
     done: "已完成，未读",

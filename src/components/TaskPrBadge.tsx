@@ -17,8 +17,11 @@ import { forgeName, prNounShort, prRef } from "@/lib/forge";
 import type { Task } from "@/lib/types";
 
 /** `showNumber`: the sidebar draws the number beside the glyph (`#367`),
- *  so the badge reads as a link to a specific PR rather than one more icon. */
-export function TaskPrBadge({ task, testId = "task-pr-badge", showNumber = false }: { task: Task; testId?: string; showNumber?: boolean }) {
+ *  so the badge reads as a link to a specific PR rather than one more icon.
+ *  `showIcon: false` leaves the number alone, in the state's colour. A PR
+ *  whose number is not known yet keeps its glyph anyway: dropping both would
+ *  drop the link. */
+export function TaskPrBadge({ task, testId = "task-pr-badge", showNumber = false, showIcon = true }: { task: Task; testId?: string; showNumber?: boolean; showIcon?: boolean }) {
   const { t } = useTranslation("chrome");
   const pr = usePr(s => s.byTask[task.id]?.lookup?.pr ?? null);
   const url = pr?.url ?? task.pr_url ?? null;
@@ -56,7 +59,7 @@ export function TaskPrBadge({ task, testId = "task-pr-badge", showNumber = false
         className="flex shrink-0 items-center gap-0.5 rounded p-px hover:bg-[var(--color-bg-3)]"
         style={showNumber ? { color } : undefined}
       >
-        <Icon className="h-3 w-3" style={{ color }} />
+        {(showIcon || !(showNumber && num)) && <Icon className="h-3 w-3" style={{ color }} />}
         {showNumber && num ? <span className="text-[11px] tabular-nums leading-none">{prRef(provider, num)}</span> : null}
       </button>
     </Tip>

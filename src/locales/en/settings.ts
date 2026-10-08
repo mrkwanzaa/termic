@@ -402,6 +402,14 @@ export default {
       worktree: "Worktree",
       none: "None",
     },
+    taskPrBadge: {
+      label: "Task PR",
+      hint: "What a sidebar task row shows for its pull request: the state icon, the number, both, or nothing. Either one opens the PR.",
+      both: "Both",
+      icon: "Icon",
+      number: "Number",
+      none: "None",
+    },
     hoverReveal: {
       label: "Hover to reveal the collapsed sidebar",
       hint: "Slides the full sidebar out over the icon rail on hover.",

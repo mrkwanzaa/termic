@@ -755,6 +755,26 @@ describe("prefs: status section", () => {
     expect(second.usePrefs.getState().taskLocationIcon).toBe("main");
   });
 
+  it("the task PR mark: icon and number by default, and a choice survives a reload", async () => {
+    const first = await import("./prefs");
+    expect(first.usePrefs.getState().taskPrBadge).toBe("both");
+    expect(first.parseTaskPrBadge("junk")).toBe("both");
+    for (const m of ["icon", "number", "none"] as const) expect(first.parseTaskPrBadge(m)).toBe(m);
+    let notified = 0;
+    const unsub = first.usePrefs.subscribe(() => { notified++; });
+    // Already the default: no write, no notify (bear trap 8).
+    first.usePrefs.getState().setTaskPrBadge("both");
+    expect(notified).toBe(0);
+    expect(localStorage.getItem("taskPrBadge")).toBeNull();
+    first.usePrefs.getState().setTaskPrBadge("number");
+    unsub();
+    expect(notified).toBe(1);
+    expect(localStorage.getItem("taskPrBadge")).toBe("number");
+    vi.resetModules();
+    const second = await import("./prefs");
+    expect(second.usePrefs.getState().taskPrBadge).toBe("number");
+  });
+
   it("the profile colour stays off the sidebar until asked for", async () => {
     const first = await import("./prefs");
     expect(first.usePrefs.getState().profileSidebarWash).toBe(false);

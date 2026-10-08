@@ -190,19 +190,28 @@ it keeps now (the "Lens" concept of the sidebar rethink):
   takes the RESOLVED icon id, so a cloned agent (`claude-dpf`) is treated
   as the claude it draws as. With the pref off the spinner stays: it is then
   the only working signal.
-- **A task row's trailing slots each mean one thing, and never swap:** the
-  PR (right-aligned, with its number, `#367`), the mode (sandbox, docker,
-  or a dangerous YOLO; absent when there is none), the task menu (hover
-  only, its width reserved so nothing shifts), then work state (the badge
-  while collapsed), always rightmost so it lines up down the tree. The menu
-  used to share the state slot, with the mode badge underneath, each fading
-  into the other on hover.
+- **A task row's trailing marks, in order:** the PR (right-aligned, with
+  its number, `#367`), the mode (sandbox, docker, or a dangerous YOLO;
+  absent when there is none), then ONE fixed slot, always rightmost so it
+  lines up down the tree: work state at rest (the badge while collapsed),
+  the task menu on hover. Mode has its own slot, so the menu never hides
+  it. For one release the menu had a slot of its own too, reserved and
+  empty at rest, and every row ended 22px short of the sidebar's edge for a
+  button that only exists under the pointer. Do not give a hover-only
+  control a reserved column.
 - **Location glyphs are a choice.** The tree draws a link for the main
   checkout and a branch for a worktree by default; the `taskLocationIcon`
   pref (Settings > Appearance > Sidebar, and a submenu in the Projects
   list options) narrows that to main checkout only, worktree only, or
   none, since whichever one you mostly use is noise. Other surfaces (board
   cards, the dashboard, the breadcrumb) always show both.
+- **The PR mark is a choice too.** A task row with a PR draws the PR glyph
+  and its number (`#367`) by default; the `taskPrBadge` pref (Settings >
+  Appearance > Sidebar, and a submenu in the Projects list options) narrows
+  that to the glyph alone, the number alone, or nothing. Either one keeps
+  the state colour and the link. Under "number", a PR whose number is not
+  known yet keeps its glyph, since dropping both would drop the link. The
+  status section and the dashboard never drew the number.
 - **Project names stay all caps**, like folder names. A project groups its
   tasks the way a folder groups projects, and the caps are what set a
   project's header apart from the task rows under it.

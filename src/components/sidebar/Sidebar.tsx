@@ -12,7 +12,7 @@ import { usePrefs, scheduledNavVisible, taskLocationIconShown } from "@/store/pr
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
-import { LayoutGrid, History, Columns3, CalendarClock, FolderPlus, Settings, Plus, MoreHorizontal, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play } from "lucide-react";
+import { LayoutGrid, History, Columns3, CalendarClock, FolderPlus, Settings, Plus, MoreHorizontal, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -179,6 +179,8 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
   const showStatusSection = usePrefs(s => s.showStatusSection);
   const taskLocationIcon = usePrefs(s => s.taskLocationIcon);
   const setTaskLocationIcon = usePrefs(s => s.setTaskLocationIcon);
+  const taskPrBadge = usePrefs(s => s.taskPrBadge);
+  const setTaskPrBadge = usePrefs(s => s.setTaskPrBadge);
   const showBoard = usePrefs(s => s.showBoard);
   const scheduledNav = usePrefs(s => s.scheduledNav);
   // A boolean out of the selector, so a task write that leaves the answer
@@ -1394,6 +1396,34 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
                         <Check className={cn("h-4 w-4 shrink-0 text-[var(--color-accent)]", taskLocationIcon === id ? "opacity-100" : "opacity-0")} />
                         <span className={cn("flex-1", taskLocationIcon === id && "text-[var(--color-accent)] font-medium")}>{t(labelKey)}</span>
                         <span className="ml-4 flex items-center"><TaskLocationSamples value={id} /></span>
+                      </DropdownItem>
+                    ))}
+                  </DropdownSubContent>
+                </DropdownSub>
+                {/* The same shape for the row's PR mark. Mirrored in Settings
+                    > Appearance > Sidebar, which writes the same pref. */}
+                <DropdownSub>
+                  <DropdownSubTrigger data-testid="sidebar-task-pr-badge" className="justify-between">
+                    <span className="flex items-center gap-2">
+                      <span className="h-5 w-5 shrink-0" />
+                      {t("taskPrBadge")}
+                    </span>
+                    <span className="flex items-center gap-2">
+                      <TaskPrSamples value={taskPrBadge} />
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-fg-faint)]" />
+                    </span>
+                  </DropdownSubTrigger>
+                  <DropdownSubContent>
+                    {([
+                      ["both",   "taskPrBadgeBoth"],
+                      ["icon",   "taskPrBadgeIcon"],
+                      ["number", "taskPrBadgeNumber"],
+                      ["none",   "taskPrBadgeNone"],
+                    ] as const).map(([id, labelKey]) => (
+                      <DropdownItem key={id} data-pr-value={id} onSelect={() => setTaskPrBadge(id)} className="items-center">
+                        <Check className={cn("h-4 w-4 shrink-0 text-[var(--color-accent)]", taskPrBadge === id ? "opacity-100" : "opacity-0")} />
+                        <span className={cn("flex-1", taskPrBadge === id && "text-[var(--color-accent)] font-medium")}>{t(labelKey)}</span>
+                        <span className="ml-4 flex items-center"><TaskPrSamples value={id} /></span>
                       </DropdownItem>
                     ))}
                   </DropdownSubContent>
@@ -2789,6 +2819,7 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
   // a boolean out of the selector, so flipping the pref re-renders only the
   // rows whose glyph comes or goes
   const showLocation = usePrefs(s => taskLocationIconShown(s.taskLocationIcon, w.is_main_checkout));
+  const prBadgeMode = usePrefs(s => s.taskPrBadge);
   const activeTaskId = useApp(s => s.activeTaskId);
   const setActive = useApp(s => s.setActiveTask);
   const setActiveTabId = useApp(s => s.setActiveTabId);
@@ -3213,14 +3244,18 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
         {/* PR/MR state, right-aligned and carrying its number so it reads
             as a link and not one more icon. Falls back to the persisted
             pr_url for tasks not visited this session. Click opens the PR. */}
-        {!taskRenaming && <TaskPrBadge task={w} showNumber />}
+        {!taskRenaming && prBadgeMode !== "none" && (
+          <TaskPrBadge task={w} showNumber={prBadgeMode !== "icon"} showIcon={prBadgeMode !== "number"} />
+        )}
 
-        {/* Three fixed slots, each with ONE meaning, never swapped on hover
-            (docs/ui.md "One glyph per meaning"): mode (sandbox, docker,
-            dangerous YOLO; absent when there is none), the task menu (hover
-            only, its width reserved so nothing shifts), and work state (the
-            badge while collapsed; expanded rows put it on their children).
-            The state slot is always rightmost, so it lines up down the tree. */}
+        {/* Two trailing slots (docs/ui.md "One glyph per meaning"): mode
+            (sandbox, docker, dangerous YOLO; absent when there is none), then
+            ONE fixed slot that is work state at rest (the badge while
+            collapsed; expanded rows put it on their children) and the task
+            menu on hover. The menu used to get a slot of its own, reserved
+            and empty at rest: every row paid 22px of nothing for a button
+            that only exists under the pointer. The slot is always rightmost,
+            so state lines up down the tree, and nothing shifts on hover. */}
         {(() => {
           const wMode = effectiveSandboxMode(w);
           const isLaunched = terminalTabs.length > 0;
@@ -3613,13 +3648,23 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               </DropdownItem>
             </DropdownMenu>
           </DropdownRoot>
-        </span>
-        <span data-testid="task-state-slot" className="flex h-[18px] w-[18px] shrink-0 items-center justify-center">
+          {/* `translate3d(0,0,0)` pins it to its own compositing layer for
+              good. Without it the layer exists only WHILE the opacity
+              transition runs, and WebKit pixel-snaps a layer, so the badge
+              jumped on hover and back on leave. */}
+          <span
+            data-testid="task-state-slot"
+            className={cn(
+              "absolute inset-0 flex items-center justify-center transition-opacity group-hover/wsrow:opacity-0 [transform:translate3d(0,0,0)]",
+              menuOpen && "opacity-0",
+            )}
+          >
           {collapsed && (hasAttention ? <TaskWorkBadge reason="attention" />
             : hasDone ? <TaskWorkBadge reason="done" delegated={rowDelegated} />
             : hasWorking ? <TaskWorkBadge reason="working" delegated={rowDelegated} />
             : hasDelegated ? <TaskWorkBadge reason="delegated" delegated={rowDelegated} />
             : null)}
+          </span>
         </span>
       </div>
 
@@ -3765,6 +3810,19 @@ function TaskLocationSamples({ value }: { value: "both" | "main" | "worktree" | 
       {value !== "worktree" && <TaskLocationIcon isMainCheckout size="h-3.5 w-3.5" />}
       {value === "both" && <span aria-hidden className="h-3 w-px bg-[var(--color-border)]" />}
       {value !== "main" && <TaskLocationIcon isMainCheckout={false} size="h-3.5 w-3.5" />}
+    </span>
+  );
+}
+
+/** The same for a `taskPrBadge` choice: the glyph, the number, or both, drawn
+ *  the way a row draws them. The number is a sample, not a real PR, and it is
+ *  generated content for the reason above: the row's text stays its label. */
+function TaskPrSamples({ value }: { value: "both" | "icon" | "number" | "none" }) {
+  if (value === "none") return null;
+  return (
+    <span data-testid="task-pr-samples" data-value={value} aria-hidden className="flex shrink-0 items-center gap-0.5 text-[var(--color-fg-dim)]">
+      {value !== "number" && <GitPullRequest className="h-3 w-3" />}
+      {value !== "icon" && <span className="text-[11px] tabular-nums leading-none after:content-['#12']" />}
     </span>
   );
 }

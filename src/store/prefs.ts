@@ -107,6 +107,7 @@ const LS_SHOW_STATUS_SECTION = scoped("showStatusSection");
 const LS_SHOW_BOARD = scoped("showBoard");
 const LS_SCHEDULED_NAV = scoped("scheduledNav");
 const LS_TASK_LOCATION_ICON = scoped("taskLocationIcon");
+const LS_TASK_PR_BADGE = scoped("taskPrBadge");
 const LS_STATUS_BUCKET_COLLAPSED = scoped("statusBucketCollapsed");
 const LS_STATUS_TASK_EXPANDED = scoped("statusTaskExpanded");
 const LS_STATUS_GROUP_COLLAPSED = scoped("statusGroupCollapsed");
@@ -824,6 +825,9 @@ interface PrefsState {
   /** Which task rows in the sidebar tree draw their location glyph (link =
    *  main checkout, branch = worktree). Both by default. */
   taskLocationIcon: TaskLocationIconMode;
+  /** What a sidebar task row draws for its PR: the state glyph, the number
+   *  (`#367`), both, or nothing. Both by default. */
+  taskPrBadge: TaskPrBadgeMode;
   /** Per-bucket overrides of the default fold (count-only buckets start
    *  closed). Only buckets the user toggled are stored. */
   statusBucketCollapsed: StatusBucketCollapsed;
@@ -1002,6 +1006,7 @@ interface PrefsState {
   setShowBoard: (v: boolean) => void;
   setScheduledNav: (m: ScheduledNavMode) => void;
   setTaskLocationIcon: (m: TaskLocationIconMode) => void;
+  setTaskPrBadge: (m: TaskPrBadgeMode) => void;
   setStatusBucketCollapsed: (bucket: StatusBucket, collapsed: boolean) => void;
   /** `liveIds`: the tasks that still exist, so dead ids are pruned on write. */
   setStatusTaskExpanded: (taskId: string, expanded: boolean, liveIds: readonly string[]) => void;
@@ -1043,6 +1048,10 @@ export function parseScheduledNav(raw: string): ScheduledNavMode {
 export type TaskLocationIconMode = "both" | "main" | "worktree" | "none";
 export function parseTaskLocationIcon(raw: string): TaskLocationIconMode {
   return raw === "main" || raw === "worktree" || raw === "none" ? raw : "both";
+}
+export type TaskPrBadgeMode = "both" | "icon" | "number" | "none";
+export function parseTaskPrBadge(raw: string): TaskPrBadgeMode {
+  return raw === "icon" || raw === "number" || raw === "none" ? raw : "both";
 }
 /** Whether a task row in the tree draws its location glyph under `mode`. */
 export function taskLocationIconShown(mode: TaskLocationIconMode, isMainCheckout: boolean | undefined): boolean {
@@ -1262,6 +1271,7 @@ function readStoredPrefs() {
   const initialShowBoard = lsGet(LS_SHOW_BOARD, "") !== "0";
   const initialScheduledNav = parseScheduledNav(lsGet(LS_SCHEDULED_NAV, ""));
   const initialTaskLocationIcon = parseTaskLocationIcon(lsGet(LS_TASK_LOCATION_ICON, ""));
+  const initialTaskPrBadge = parseTaskPrBadge(lsGet(LS_TASK_PR_BADGE, ""));
   const initialStatusBucketCollapsed = parseStatusBucketCollapsed(lsGet(LS_STATUS_BUCKET_COLLAPSED, ""));
   const initialStatusTaskExpanded = parseIdFlags(lsGet(LS_STATUS_TASK_EXPANDED, ""));
   const initialStatusGroupCollapsed = parseIdFlags(lsGet(LS_STATUS_GROUP_COLLAPSED, ""));
@@ -1358,6 +1368,7 @@ function readStoredPrefs() {
     showBoard: initialShowBoard,
     scheduledNav: initialScheduledNav,
     taskLocationIcon: initialTaskLocationIcon,
+    taskPrBadge: initialTaskPrBadge,
     statusBucketCollapsed: initialStatusBucketCollapsed,
     statusTaskExpanded: initialStatusTaskExpanded,
     statusGroupCollapsed: initialStatusGroupCollapsed,
@@ -1742,6 +1753,11 @@ export const usePrefs = create<PrefsState>(set => ({
     if (s.taskLocationIcon === m) return s;
     try { localStorage.setItem(LS_TASK_LOCATION_ICON, m); } catch {}
     return { taskLocationIcon: m };
+  }),
+  setTaskPrBadge: (m) => set(s => {
+    if (s.taskPrBadge === m) return s;
+    try { localStorage.setItem(LS_TASK_PR_BADGE, m); } catch {}
+    return { taskPrBadge: m };
   }),
   setStatusBucketCollapsed: (bucket, collapsed) => set(s => {
     // Effective state, not the stored override: an absent override already

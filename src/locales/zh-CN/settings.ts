@@ -409,6 +409,14 @@ export default {
       worktree: "工作树",
       none: "无",
     },
+    taskPrBadge: {
+      label: "任务 PR",
+      hint: "侧边栏任务行为其拉取请求显示什么：状态图标、编号、两者，或都不显示。点击任意一个都会打开该 PR。",
+      both: "两者",
+      icon: "图标",
+      number: "编号",
+      none: "无",
+    },
     scheduledNav: {
       label: "定时任务",
       hint: "在侧边栏导航中显示定时任务。",

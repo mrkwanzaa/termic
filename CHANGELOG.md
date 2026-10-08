@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.14.1] - 2026-10-08
+## [1.14.2] - 2026-10-08
 
 A sidebar filter bar and status chips, HTML preview, and review requests in New Task.
 
@@ -63,6 +63,10 @@ A sidebar filter bar and status chips, HTML preview, and review requests in New 
   amber only while something is actually blocked.
 - **"Show task git icon" shows the icons it means**, on the menu row and on
   each choice.
+- **"Show task PR" in the sidebar.** A task row draws its pull request as
+  an icon and a number; you can now keep just the icon, just the number, or
+  neither. In the Projects list options, and in Settings, Appearance,
+  Interface & Sidebar.
 - **Windows and Linux: Ctrl+Shift+W closes the tab from inside a terminal.**
   Ctrl+W closes it everywhere else, and in a terminal stays the shell's
   delete-previous-word.
@@ -75,6 +79,8 @@ A sidebar filter bar and status chips, HTML preview, and review requests in New 
   the last queued message had been sent.
 - In the project list options menu, a ticked row with a long description drew
   a shrunken checkmark and sat out of line with the rows above it.
+- Sidebar task rows ended in an empty column: the hover-only task menu had
+  been given a reserved slot of its own. It shares the status slot again.
 
 ## [1.13.4] - 2026-10-06
 
