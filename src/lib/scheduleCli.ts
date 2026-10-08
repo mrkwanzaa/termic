@@ -17,6 +17,7 @@ import { lastEntry } from "@/lib/schedules/history";
 import {
   DEFAULT_KEEP_RUNS,
   DEFAULT_REPORT_DAYS,
+  newSchedule,
   type ScheduleInput,
 } from "@/lib/schedules/record";
 import type { ScheduleCadence, ScheduleRun, Task, TaskSchedule } from "@/lib/types";
@@ -250,19 +251,13 @@ export async function scheduleHandler(raw: unknown): Promise<unknown> {
 
     let updated = useApp.getState().tasks.find(t => t.id === taskId);
     if (!updated?.schedule) {
-      useApp.getState().setTaskSchedule(taskId, {
-        enabled: params.enabled !== false,
-        name: input.name,
-        slug: task.name.toLowerCase().replace(/[^a-z0-9-]/g, "-"),
-        prompt: input.prompt,
-        prompt_id: input.prompt_id,
-        cadence: input.cadence,
-        catch_up: input.catch_up,
-        keep_runs: input.keep_runs,
-        report_days: input.report_days,
-        last_slot: null,
-        history: [],
-      });
+      const all = useApp.getState().tasks;
+      const takenSlugs = all
+        .filter(t => t.project_id === task.project_id && t.schedule)
+        .map(t => t.schedule!.slug);
+      const sched = newSchedule(input, now, takenSlugs);
+      if (params.enabled === false) sched.enabled = false;
+      useApp.getState().setTaskSchedule(taskId, sched);
       updated = useApp.getState().tasks.find(t => t.id === taskId);
     }
     if (!updated?.schedule) throw new Error("failed to create schedule");

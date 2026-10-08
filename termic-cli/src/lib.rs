@@ -1559,6 +1559,9 @@ Exit codes: 0 success, 1 error (invalid cadence, time, or prompt), 4 app not run
         /// Disable (pause) the schedule.
         #[arg(long, conflicts_with = "enable")]
         disable: bool,
+        /// Skip the confirmation prompt (required non-interactively).
+        #[arg(short, long)]
+        yes: bool,
     },
 
     /// Trigger an immediate out-of-band run of a schedule (\"Run now\").
@@ -2786,6 +2789,7 @@ fn execute_schedule(
     prompt: Option<String>,
 ) -> Result<Output, CliError> {
     let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
+    let mut fresh: Option<client::Conn> = None;
     let wire = match cmd {
         ScheduleCmd::List { project, .. } => proto::Command::ScheduleList {
             project: project.clone(),
@@ -2810,7 +2814,16 @@ fn execute_schedule(
             no_catch_up,
             enable,
             disable,
+            yes,
         } => {
+            if !yes {
+                let target = task.as_deref().unwrap_or("current task");
+                let question = format!("termic: configure recurring schedule on {target}?");
+                if !confirm_tty(&question)? {
+                    return Err(CliError::new(exit_code::ERROR, "schedule set declined"));
+                }
+                fresh = Some(reconnect(paths)?);
+            }
             let cadence = match (cadence.as_deref(), time.as_deref()) {
                 (Some(k), Some(t)) => Some(proto::ScheduleCadence {
                     kind: k.to_string(),
@@ -2889,7 +2902,6 @@ fn execute_schedule(
                 .as_ref()
                 .map(|s| format!("{}/{}", s.project_name, s.task_name))
                 .unwrap_or_else(|| task.clone().unwrap_or_else(|| "task".to_string()));
-            let mut fresh: Option<client::Conn> = None;
             if !yes {
                 let question = format!(
                     "termic: delete recurring schedule for {task_display}?{}",
@@ -2914,6 +2926,8 @@ fn execute_schedule(
             return Ok(Output::ok(final_stdout(format, &output::schedule_delete_text(&task_display), &s)));
         }
     };
+
+    let conn = fresh.as_mut().unwrap_or(conn);
 
     let data = client::request(conn, wire, token)?;
     let proto::ReplyData::Schedule(s) = data else {

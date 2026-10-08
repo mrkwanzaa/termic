@@ -1591,7 +1591,7 @@ const TOOLS: &[ToolDef] = &[
         cli_verb: "schedule set",
         description: "Create or update a recurring schedule on a parent task (cadence, prompt, retention, enable/disable).",
         params: &[
-            P_TASK,
+            P_SCHEDULE_TASK,
             P_PROJECT,
             ParamDef { name: "name", json_type: "string", required: false, description: "Schedule display name (defaults to the task name).", cli_flag: Some("--name") },
             ParamDef { name: "cadence", json_type: "string", required: false, description: "\"daily\", \"weekdays\", or \"weekly\".", cli_flag: Some("--cadence") },
@@ -1604,15 +1604,22 @@ const TOOLS: &[ToolDef] = &[
             ParamDef { name: "catchUp", json_type: "boolean", required: false, description: "Run missed slots after app downtime.", cli_flag: Some("--catch-up") },
             ParamDef { name: "enabled", json_type: "boolean", required: false, description: "Whether the schedule is enabled.", cli_flag: Some("--enable") },
         ],
-        destructive: false,
+        destructive: true,
         read_only: false,
         build: |a| {
             let cadence = match (arg_str(a, "cadence")?, arg_str(a, "time")?) {
-                (Some(kind), Some(time)) => Some(proto::ScheduleCadence {
-                    kind,
-                    time,
-                    weekday: arg_u64(a, "weekday")?.map(|w| w as u8),
-                }),
+                (Some(kind), Some(time)) => {
+                    let weekday = match arg_u64(a, "weekday")? {
+                        Some(w @ 0..=6) => Some(w as u8),
+                        Some(w) => return Err(format!("\"weekday\" must be between 0 (Sunday) and 6 (Saturday), got {w}")),
+                        None => None,
+                    };
+                    Some(proto::ScheduleCadence {
+                        kind,
+                        time,
+                        weekday,
+                    })
+                }
                 (None, None) => None,
                 _ => return Err("both cadence and time are required when setting cadence".to_string()),
             };
@@ -1622,7 +1629,7 @@ const TOOLS: &[ToolDef] = &[
                 None => None,
             };
             Ok(Command::ScheduleSet {
-                task: Some(need_str(a, "task")?),
+                task: arg_str(a, "task")?,
                 project: arg_str(a, "project")?,
                 name: arg_str(a, "name")?,
                 cadence,
@@ -1804,7 +1811,7 @@ fn tools_call(server: &McpServer, id: serde_json::Value, params: &serde_json::Va
 const SELF_DEFAULT_TOOLS: &[&str] = &[
     "task_rename", "task_group", "task_tab", "task_prop",
     "scratchpad_new", "scratchpad_write", "scratchpad_read", "scratchpad_list",
-    "schedule_show", "schedule_run", "schedule_delete",
+    "schedule_show", "schedule_set", "schedule_run", "schedule_delete",
 ];
 
 /// `args` with the caller's task filled in where the CLI would have used
@@ -3917,6 +3924,7 @@ mod tests {
             ("schedule list", "--quiet", "output formatting; a tool returns structured JSON"),
             ("schedule set", "--no-catch-up", "the tool takes a boolean `catchUp` param"),
             ("schedule set", "--disable", "the tool takes a boolean `enabled` param"),
+            ("schedule set", "--yes", "a TTY confirmation; the tool carries destructiveHint"),
             ("schedule delete", "--yes", "a TTY confirmation; the tool carries destructiveHint"),
         ];
         let help = termic_cli::machine_help();
@@ -3952,7 +3960,7 @@ mod tests {
                 "{name} must say it is not destructive"
             );
         }
-        for name in ["task_archive", "task_apply", "project_remove", "task_tab_close"] {
+        for name in ["task_archive", "task_apply", "project_remove", "task_tab_close", "schedule_delete", "schedule_set"] {
             let t = TOOLS.iter().find(|t| t.name == name).unwrap();
             assert_eq!(tool_entry(t)["annotations"]["destructiveHint"], true, "{name}");
         }
@@ -4211,7 +4219,6 @@ command = \"/bin/true\"\n";
         // Verbs the CLI never aims at "your own task" are left alone.
         assert!(with_caller_defaults("task_archive", &empty, Some("me")).is_empty());
         assert!(with_caller_defaults("task_send", &empty, Some("me")).is_empty());
-        assert!(with_caller_defaults("schedule_set", &empty, Some("me")).is_empty());
         // No header, no defaults.
         assert!(with_caller_defaults("task_new", &empty, None).is_empty());
     }
