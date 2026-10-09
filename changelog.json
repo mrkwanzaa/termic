@@ -1,8 +1,8 @@
 {
   "versions": [
     {
-      "version": "1.14.2",
-      "date": "2026-10-08",
+      "version": "1.14.3",
+      "date": "2026-10-09",
       "summary": "A sidebar filter bar and status chips, HTML preview, and review requests in New Task."
     },
     {

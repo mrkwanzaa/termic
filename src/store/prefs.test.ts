@@ -755,24 +755,26 @@ describe("prefs: status section", () => {
     expect(second.usePrefs.getState().taskLocationIcon).toBe("main");
   });
 
-  it("the task PR mark: icon and number by default, and a choice survives a reload", async () => {
+  it("the task PR mark: the number alone by default, and a choice survives a reload", async () => {
     const first = await import("./prefs");
-    expect(first.usePrefs.getState().taskPrBadge).toBe("both");
-    expect(first.parseTaskPrBadge("junk")).toBe("both");
-    for (const m of ["icon", "number", "none"] as const) expect(first.parseTaskPrBadge(m)).toBe(m);
+    expect(first.usePrefs.getState().taskPrBadge).toBe("number");
+    expect(first.parseTaskPrBadge("junk")).toBe("number");
+    for (const m of ["both", "icon", "number", "none"] as const) expect(first.parseTaskPrBadge(m)).toBe(m);
     let notified = 0;
     const unsub = first.usePrefs.subscribe(() => { notified++; });
     // Already the default: no write, no notify (bear trap 8).
-    first.usePrefs.getState().setTaskPrBadge("both");
+    first.usePrefs.getState().setTaskPrBadge("number");
     expect(notified).toBe(0);
     expect(localStorage.getItem("taskPrBadge")).toBeNull();
-    first.usePrefs.getState().setTaskPrBadge("number");
+    // "both" was the default once, so it has to be a value that is STORED:
+    // falling through to the default would now silently mean "number".
+    first.usePrefs.getState().setTaskPrBadge("both");
     unsub();
     expect(notified).toBe(1);
-    expect(localStorage.getItem("taskPrBadge")).toBe("number");
+    expect(localStorage.getItem("taskPrBadge")).toBe("both");
     vi.resetModules();
     const second = await import("./prefs");
-    expect(second.usePrefs.getState().taskPrBadge).toBe("number");
+    expect(second.usePrefs.getState().taskPrBadge).toBe("both");
   });
 
   it("the profile colour stays off the sidebar until asked for", async () => {

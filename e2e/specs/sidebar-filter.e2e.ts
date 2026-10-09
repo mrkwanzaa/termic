@@ -193,7 +193,7 @@ describe("sidebar filter bar", () => {
     }
   });
 
-  it("PR mark: icon and number by default, and the list options submenu picks one, the other or none", async () => {
+  it("PR mark: the number alone by default, and the list options submenu picks the icon, both or none", async () => {
     // The store is the seam on purpose: a real PR would need a forge. What is
     // under test is the row, not the lookup.
     const setPr = (on: boolean) => browser.execute((id, on) => {
@@ -217,15 +217,18 @@ describe("sidebar filter bar", () => {
     try {
       await setPr(true);
       await waitVisible(BADGE);
-      expect(await browser.execute(() => window.__termic!.usePrefs.getState().taskPrBadge)).toBe("both");
-      expect(await badge()).toEqual({ text: "#42", icon: true });
-      await snap("sidebar-task-pr-both.png");
+      // Set, not assumed: the pref persists in the e2e profile, so what a
+      // run starts on is whatever the last one stored. The default itself is
+      // pinned in prefs.test.ts, where each case gets a clean store.
+      await setMode("number");
+      await waitBadge({ text: "#42", icon: false }, "number");
+      await snap("sidebar-task-pr-number.png");
 
       for (const [mode, want] of [
         ["icon", { text: "", icon: true }],
-        ["number", { text: "#42", icon: false }],
-        ["none", null],
         ["both", { text: "#42", icon: true }],
+        ["none", null],
+        ["number", { text: "#42", icon: false }],
       ] as const) {
         await setMode(mode);
         await waitBadge(want, mode);
@@ -241,20 +244,22 @@ describe("sidebar filter bar", () => {
         el.click();
       });
       await waitVisible('[data-testid="sidebar-task-pr-badge"]');
-      await clickMenuItemUntilReady("Show task PR", () => present('[role="menuitem"][data-pr-value="number"]') as Promise<boolean>);
+      await clickMenuItemUntilReady("Show task PR", () => present('[role="menuitem"][data-pr-value="both"]') as Promise<boolean>);
       await snap("sidebar-task-pr-menu.png");
-      await clickWhenVisible('[role="menuitem"][data-pr-value="number"]');
-      await waitBadge({ text: "#42", icon: false }, "the submenu's Number only");
+      await clickWhenVisible('[role="menuitem"][data-pr-value="both"]');
+      await waitBadge({ text: "#42", icon: true }, "the submenu's Icon and number");
       await dismissOverlays();
-      await snap("sidebar-task-pr-number.png");
+      await snap("sidebar-task-pr-both.png");
       // The key is profile-scoped, so match it whatever the prefix is here.
       expect(await browser.execute(() => {
         const hit = Object.keys(localStorage).find(x => x === "taskPrBadge" || x.endsWith(":taskPrBadge"));
         return hit ? localStorage.getItem(hit) : null;
-      })).toBe("number");
+      })).toBe("both");
 
       // A PR whose number is not known yet keeps its glyph under "number":
       // dropping both would drop the link.
+      await setMode("number");
+      await waitBadge({ text: "#42", icon: false }, "back to number");
       await browser.execute(id => {
         window.__termic!.useApp.setState((s: any) => ({
           tasks: s.tasks.map((w: any) => w.id === id ? { ...w, pr_number: null } : w),
@@ -268,7 +273,7 @@ describe("sidebar filter bar", () => {
       await waitBadge(null, "no PR");
     } finally {
       await setPr(false);
-      await setMode("both");
+      await setMode("number");
       await dismissOverlays();
     }
   });

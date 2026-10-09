@@ -205,11 +205,11 @@ it keeps now (the "Lens" concept of the sidebar rethink):
   list options) narrows that to main checkout only, worktree only, or
   none, since whichever one you mostly use is noise. Other surfaces (board
   cards, the dashboard, the breadcrumb) always show both.
-- **The PR mark is a choice too.** A task row with a PR draws the PR glyph
-  and its number (`#367`) by default; the `taskPrBadge` pref (Settings >
-  Appearance > Sidebar, and a submenu in the Projects list options) narrows
-  that to the glyph alone, the number alone, or nothing. Either one keeps
-  the state colour and the link. Under "number", a PR whose number is not
+- **The PR mark is a choice too.** A task row with a PR draws its number
+  (`#367`) by default, in the state's colour; the `taskPrBadge` pref
+  (Settings > Appearance > Sidebar, and a submenu in the Projects list
+  options) switches that to the glyph alone, glyph and number, or nothing.
+  Every one of them keeps the state colour and the link. Under "number", a PR whose number is not
   known yet keeps its glyph, since dropping both would drop the link. The
   status section and the dashboard never drew the number.
 - **Project names stay all caps**, like folder names. A project groups its

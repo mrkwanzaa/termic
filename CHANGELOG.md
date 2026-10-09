@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.14.2] - 2026-10-08
+## [1.14.3] - 2026-10-09
 
 A sidebar filter bar and status chips, HTML preview, and review requests in New Task.
 
@@ -43,10 +43,11 @@ A sidebar filter bar and status chips, HTML preview, and review requests in New 
   the open pull requests waiting for your review, and "From an issue" can be
   narrowed to the ones assigned to you or mentioning you. GitHub only for
   now. Thanks to [@franzkurt](https://github.com/franzkurt).
-- **Config sync pulls when a window comes forward**, if the last attempt is
-  more than five minutes old. It never pushes on its own. A conflict or a
-  sign-in failure is announced once, and being offline stays quiet. Thanks to
-  [@nvkvin](https://github.com/nvkvin).
+- **Config sync runs when a window comes forward**, if the last attempt is
+  more than five minutes old, and at launch. It pulls and pushes, so a change
+  made on one machine reaches the others without a manual Sync now. A conflict
+  or a sign-in failure is announced once, and being offline stays quiet.
+  Thanks to [@nvkvin](https://github.com/nvkvin).
 
 ### Improvements
 - **Open an HTML file in your browser.** The preview runs without scripts, so
@@ -63,10 +64,14 @@ A sidebar filter bar and status chips, HTML preview, and review requests in New 
   amber only while something is actually blocked.
 - **"Show task git icon" shows the icons it means**, on the menu row and on
   each choice.
-- **"Show task PR" in the sidebar.** A task row draws its pull request as
-  an icon and a number; you can now keep just the icon, just the number, or
-  neither. In the Projects list options, and in Settings, Appearance,
-  Interface & Sidebar.
+- **"Show task PR" in the sidebar.** A task row now draws its pull request
+  as the number alone, in the colour of its state. You can switch to the
+  icon, icon and number, or neither. In the Projects list options, and in
+  Settings, Appearance, Interface & Sidebar.
+- **Deleting a schedule can archive its tasks.** The confirmation offers to
+  archive the schedule's task and its past runs along with it, which also
+  removes their reports. Also `termic schedule delete --archive-tasks`.
+  Thanks to [@nvkvin](https://github.com/nvkvin).
 - **Windows and Linux: Ctrl+Shift+W closes the tab from inside a terminal.**
   Ctrl+W closes it everywhere else, and in a terminal stays the shell's
   delete-previous-word.

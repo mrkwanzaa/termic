@@ -826,7 +826,8 @@ interface PrefsState {
    *  main checkout, branch = worktree). Both by default. */
   taskLocationIcon: TaskLocationIconMode;
   /** What a sidebar task row draws for its PR: the state glyph, the number
-   *  (`#367`), both, or nothing. Both by default. */
+   *  (`#367`), both, or nothing. The number alone by default: it carries the
+   *  state's colour, so the glyph beside it says the same thing twice. */
   taskPrBadge: TaskPrBadgeMode;
   /** Per-bucket overrides of the default fold (count-only buckets start
    *  closed). Only buckets the user toggled are stored. */
@@ -1051,7 +1052,7 @@ export function parseTaskLocationIcon(raw: string): TaskLocationIconMode {
 }
 export type TaskPrBadgeMode = "both" | "icon" | "number" | "none";
 export function parseTaskPrBadge(raw: string): TaskPrBadgeMode {
-  return raw === "icon" || raw === "number" || raw === "none" ? raw : "both";
+  return raw === "both" || raw === "icon" || raw === "none" ? raw : "number";
 }
 /** Whether a task row in the tree draws its location glyph under `mode`. */
 export function taskLocationIconShown(mode: TaskLocationIconMode, isMainCheckout: boolean | undefined): boolean {
