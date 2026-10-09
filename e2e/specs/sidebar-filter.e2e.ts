@@ -211,7 +211,11 @@ describe("sidebar filter bar", () => {
     }, BADGE);
     const setMode = (m: string) => browser.execute(v => window.__termic!.usePrefs.getState().setTaskPrBadge(v as any), m);
     const waitBadge = async (want: { text: string; icon: boolean } | null, why: string) => {
-      await browser.waitUntil(async () => JSON.stringify(await badge()) === JSON.stringify(want),
+      // Field by field: WebView2's driver hands the object back with its keys
+      // in another order, so comparing the JSON text failed on Windows alone.
+      const same = (got: { text: string; icon: boolean } | null) =>
+        got === null || want === null ? got === want : got.text === want.text && got.icon === want.icon;
+      await browser.waitUntil(async () => same(await badge()),
         { timeout: 5_000, timeoutMsg: `${why}: badge was ${JSON.stringify(await badge())}` });
     };
     try {
