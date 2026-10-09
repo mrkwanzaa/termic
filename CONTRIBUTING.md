@@ -177,6 +177,46 @@ manually verified, so the maintainer knows what they are reviewing.
 Termic's own `CLAUDE.md` states this rule for agents working inside this repo;
 it applies to any agent opening a PR against it.
 
+### UI changes come with screenshots
+
+**A PR that adds or changes UI is not accepted without screenshots in its
+description.** A reviewer cannot judge a layout from a diff, and "looks right
+on my machine" is the claim a screenshot exists to replace.
+
+What is asked depends on what the PR does:
+
+- **A new feature, or a design change you are proposing: required, and this
+  is the important case.** Show the new thing in use, in each state that
+  matters (empty, filled, open, the error it can show). If it reads
+  differently in a light theme, show that too. A feature PR with no picture
+  of the feature will be asked for one before anyone reviews the code.
+- **A change to UI that already exists: required.** One screenshot of the
+  result, showing nothing nearby regressed. Before and after, side by side,
+  is better when the change is a visual one.
+- **A small tweak or fix: not required.** A one-line spacing fix, a corrected
+  label, a bug fix with no visual change. Use judgement, and when in doubt
+  attach one: it costs a minute and saves a round trip.
+
+**An agent can take these itself.** It can run the app and capture what it
+built, so "I am an agent" is not a reason to leave them out. The route that
+leaves something behind is the e2e suite: drive the feature in a spec and call
+`snap()` at each state, and the images land in `.e2e/artifacts/` (see
+[docs/e2e-tests.md](docs/e2e-tests.md)). The spec then keeps covering those
+states after the PR merges. Running the app and capturing the window by hand
+works as well.
+
+Two things a screenshot is not:
+
+- **It is not the manual test.** A still image cannot show a flicker, stolen
+  focus or a late repaint. The line about what a human exercised by hand
+  (above) is still required; the screenshot goes beside it.
+- **It is not a place for real data.** This repo is public and its history is
+  permanent. A screenshot showing your employer's repo names, a real
+  hostname, a home path or a colleague's name publishes them. Capture a
+  throwaway project (the e2e fixture profile is one), or crop.
+
+Attach them to the PR description. Do not commit them to the repo.
+
 ### Pull requests
 
 1. **Branch off `main`.** Termic doesn't use long-lived branches.
@@ -189,16 +229,19 @@ it applies to any agent opening a PR against it.
    that repaints late, which is why this is asked separately — see
    [Agent-written PRs](#agent-written-prs), which applies whoever (or whatever)
    wrote the diff.
-5. **Update CLAUDE.md if you change architecture.** It's the source of
+5. **Attach screenshots if you touched UI.** Required for a new feature or a
+   design change, and for any change to existing UI; not for a small tweak or
+   fix. See [UI changes come with screenshots](#ui-changes-come-with-screenshots).
+6. **Update CLAUDE.md if you change architecture.** It's the source of
    truth for invariants ("never re-enable React StrictMode", "WebGL
    addon disposes BEFORE term.dispose()", etc.). New invariant? Add it.
-6. **No new dependencies without justification.** Termic optimizes
+7. **No new dependencies without justification.** Termic optimizes
    aggressively for binary size + cold-start. A 5 MB lib for a one-line
    utility is a no.
-7. **Match the existing code style** — Prettier defaults, no semicolons
+8. **Match the existing code style** — Prettier defaults, no semicolons
    in CSS-in-JS templates, `cn()` from `@/lib/utils` for class composition,
    Zustand selectors stay tight (no destructured stores).
-8. **Don't touch `CHANGELOG.md`, the version, or cut a release.** Releases
+9. **Don't touch `CHANGELOG.md`, the version, or cut a release.** Releases
    and changelog entries are maintainer-only (see below) — the maintainer
    writes the entry when they cut the version. A PR that edits `CHANGELOG.md`
    / `changelog.json` or bumps the version will be asked to drop that change.

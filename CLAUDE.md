@@ -52,6 +52,14 @@ If the answer is no or "not yet", stop and let them drive it. If they say open i
 
 Agent-written PRs are welcome in this repo (see [CONTRIBUTING.md](CONTRIBUTING.md#agent-written-prs), and most of Termic is one). This is the one gate they have to pass, and it is the same gate a hand-written PR passes.
 
+### A PR that touches UI carries screenshots
+
+**A new feature or a proposed design change is not accepted without screenshots of it in the PR description.** Show the new thing in use, in each state that matters. A change to existing UI carries one showing the result and that nothing nearby regressed. A small tweak or fix (a spacing nudge, a corrected label, a fix with no visual change) does not need one.
+
+You can take them yourself, so being an agent is not a reason to leave them out. Drive the feature in an e2e spec and `snap()` each state (the images land in `.e2e/artifacts/`), which also leaves those states covered; this is the same loop as "Building UI unattended" below. Attach the images to the PR description, never commit them, and never capture real data: a screenshot is a fixture (see ## Fixtures).
+
+A screenshot does not answer the manual-test question above. A still image cannot show a flicker, stolen focus or a late repaint, so the PR still carries the line about what a human exercised by hand. Full rules: [CONTRIBUTING.md](CONTRIBUTING.md#ui-changes-come-with-screenshots).
+
 ### Building UI unattended: look at it before you call it done
 
 **Only when no human is going to test it.** If the maintainer is driving the
@@ -195,6 +203,7 @@ yours.
 
 - Commit a fixture, doc example or screenshot built from real output without replacing every hostname, username and path with a placeholder (see ## Fixtures). A public repo's history is permanent.
 - Open a PR without first asking the user whether they manually tested the change (see ## Testing). Every suite in the repo being green is not a substitute, and neither is your own confidence in the diff.
+- Open a PR for a new UI feature or a design change with no screenshots of it in the description (see ## Testing, "A PR that touches UI carries screenshots"). You can capture them yourself; a small tweak or fix is exempt.
 - Ad-hoc live-drive the app (the automation bridge) proactively for exploration. Default to NOT launching the live app for one-off poking. (This does NOT apply to the written e2e suite: running `make e2e` before committing a UI change is expected, per ## Testing.)
 - Switch editor from CodeMirror 6 (Monaco is slower in WKWebView, verified).
 - Re-enable React StrictMode (async PTY race).
