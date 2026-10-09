@@ -23,9 +23,16 @@ const isWindows = process.platform === "win32";
  *  `about:blank`, so a single scan can legitimately miss it. */
 async function activityHandle(): Promise<string | null> {
   for (const h of await browser.getWindowHandles()) {
-    await browser.switchToWindow(h);
-    const href = await browser.execute(() => location.href);
-    if (href.includes("activity.html")) return h;
+    // A handle that cannot be switched to, or answers nothing, is a window on
+    // its way out: WebView2 goes on listing one for a while after it closes.
+    // Letting that throw failed "drops the sampling session" on Windows with
+    // "No window could be found", and left WebDriver pointed at the dead
+    // window, which took the two cases after it down as well.
+    try {
+      await browser.switchToWindow(h);
+      const href = await browser.execute(() => location.href);
+      if (href.includes("activity.html")) return h;
+    } catch { /* gone */ }
   }
   return null;
 }
