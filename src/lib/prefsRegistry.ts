@@ -146,6 +146,7 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "scheduledNav", scoped: true, class: "sync" },
   { key: "taskLocationIcon", scoped: true, class: "sync" },
   { key: "taskPrBadge", scoped: true, class: "sync" },
+  { key: "prSnapshots", scoped: true, class: "local", reason: "last-known PR status per task, a first-paint cache the next poll overwrites" },
   { key: "hideInactiveProjects", scoped: true, class: "local", reason: "sidebar filter toggled in place, over this machine's tasks" },
   { key: "compactSidebar", scoped: false, class: "local", reason: "collapse state" },
   { key: "collapsedProjects", scoped: true, class: "local", reason: "collapse state" },

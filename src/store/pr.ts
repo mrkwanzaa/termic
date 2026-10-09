@@ -38,7 +38,8 @@
 // tab nobody is looking at isn't something anyone asked to see.
 
 import { create } from "zustand";
-import type { ForgeCliStatus, ForgeProvider, MemberPrLookup, PrComment, PrLookup, QueueItem, TerminalTab, Task } from "@/lib/types";
+import type { ForgeCliStatus, ForgeProvider, MemberPrLookup, PrComment, PrLookup, PrStatus, QueueItem, TerminalTab, Task } from "@/lib/types";
+import { scoped } from "@/lib/profileScope";
 import { azurePrThreadsCommand, forgeName, prLabel, prLabelShort, prNoun, prNounShort, prRef } from "@/lib/forge";
 import {
   detectForges, notify, openPath, ptyWrite, taskMemberPrStatus, taskPrComments, taskPrStatus,
@@ -69,11 +70,105 @@ export interface PrEntry {
 
 const EMPTY: PrEntry = Object.freeze({ lookup: null, loading: false, fetchedAt: 0 }) as PrEntry;
 
+// ───────────────────────── last-known status ─────────────────────────
+//
+// The live lookup dies with the app, and the background pass that rebuilds
+// it is sequential subprocesses, eight per minute. So after a launch every
+// PR mark sat grey and they coloured in one at a time, the last of a dozen
+// a full minute later. This is what each one last read, kept across runs.
+//
+// It feeds the MARK and nothing else. `byTask` stays empty until a real poll
+// lands, on purpose: the merged-PR lifecycle (toast, auto-archive) reads the
+// previous LIVE lookup, and a remembered "open" in that slot would make a PR
+// merged while the app was closed look like a transition seen live. Anything
+// that DECIDES something (board columns, status buckets, the lifecycle)
+// keeps reading `byTask`.
+
+/** What a PR mark needs, and no more: no title, no branches, no url. */
+export interface PrSnapshot {
+  provider: ForgeProvider;
+  number: number;
+  state: PrStatus["state"];
+  checks: PrStatus["checks"];
+  review: PrStatus["review"];
+}
+
+const LS_PR_SNAPSHOTS = scoped("prSnapshots");
+const STATES: readonly string[] = ["open", "draft", "merged", "closed"];
+const CHECKS: readonly string[] = ["none", "pending", "passing", "failing"];
+const REVIEWS: readonly string[] = ["none", "approved", "changes_requested", "review_required"];
+
+/** Stored JSON back to snapshots. Anything malformed is dropped entry by
+ *  entry: a cache that cannot be read is an empty cache, never a crash. */
+export function parsePrSnapshots(raw: string | null): Record<string, PrSnapshot> {
+  const out: Record<string, PrSnapshot> = {};
+  if (!raw) return out;
+  let doc: unknown;
+  try { doc = JSON.parse(raw); } catch { return out; }
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return out;
+  for (const [id, v] of Object.entries(doc as Record<string, any>)) {
+    if (!v || typeof v !== "object") continue;
+    if (typeof v.provider !== "string" || !Number.isInteger(v.number) || v.number <= 0) continue;
+    if (!STATES.includes(v.state) || !CHECKS.includes(v.checks)) continue;
+    out[id] = {
+      provider: v.provider, number: v.number, state: v.state, checks: v.checks,
+      // Added after the first shape, so an entry without it is still good.
+      review: REVIEWS.includes(v.review) ? v.review : "none",
+    };
+  }
+  return out;
+}
+
+const sameSnapshot = (a: PrSnapshot | undefined, b: PrSnapshot) =>
+  !!a && a.provider === b.provider && a.number === b.number
+  && a.state === b.state && a.checks === b.checks && a.review === b.review;
+
+/** `snapshots` after a poll for `taskId` came back with `lookup`. Returns the
+ *  SAME object when nothing changed, so a steady poll writes nothing and
+ *  notifies nobody (docs/performance.md bear trap 8). */
+export function snapshotsAfter(
+  snapshots: Record<string, PrSnapshot>, taskId: string, lookup: PrLookup | null,
+): Record<string, PrSnapshot> {
+  // Only a poll that ANSWERED changes what is remembered. A missing CLI or
+  // a network error says nothing about the PR.
+  if (!lookup || lookup.status !== "ok") return snapshots;
+  const pr = lookup.pr;
+  if (!pr) {
+    if (!(taskId in snapshots)) return snapshots;
+    const { [taskId]: _gone, ...rest } = snapshots;
+    return rest;
+  }
+  const next: PrSnapshot = { provider: pr.provider, number: pr.number, state: pr.state, checks: pr.checks, review: pr.review };
+  return sameSnapshot(snapshots[taskId], next) ? snapshots : { ...snapshots, [taskId]: next };
+}
+
+/** Write the cache, dropping tasks that no longer exist. Only prunes once
+ *  the task list has loaded: before that "not in the list" means nothing. */
+function persistSnapshots(snapshots: Record<string, PrSnapshot>) {
+  const tasks = useApp.getState().tasks;
+  const live = tasks.length ? new Set(tasks.filter(t => !t.archived).map(t => t.id)) : null;
+  const kept = live ? Object.fromEntries(Object.entries(snapshots).filter(([id]) => live.has(id))) : snapshots;
+  try { localStorage.setItem(LS_PR_SNAPSHOTS, JSON.stringify(kept)); } catch { /* private mode */ }
+}
+
+/** The remembered status for a task's mark, or null. Only while it still
+ *  describes the PR on the record: a task that moved to another PR must not
+ *  wear the old one's colour. */
+export function cachedPrFor(snapshots: Record<string, PrSnapshot>, task: Task): PrSnapshot | null {
+  const snap = snapshots[task.id];
+  if (!snap || !task.pr_number || snap.number !== task.pr_number) return null;
+  if (task.pr_provider && snap.provider !== task.pr_provider) return null;
+  return snap;
+}
+
 /** Minimum ms between refreshes for one task unless forced. */
 const MIN_REFRESH_MS = 30_000;
 
 interface PrStore {
   byTask: Record<string, PrEntry>;
+  /** What each task's PR last read, kept across launches. Feeds the PR mark
+   *  only; see "last-known status" above. */
+  snapshots: Record<string, PrSnapshot>;
   /** gh/glab/az install + auth status. null until the first detect resolves
    *  (the UI treats null as "still probing", not "missing"). */
   forges: ForgeCliStatus[] | null;
@@ -105,6 +200,9 @@ interface PrStore {
 
 export const usePr = create<PrStore>((set, get) => ({
   byTask: {},
+  snapshots: (() => {
+    try { return parsePrSnapshots(localStorage.getItem(LS_PR_SNAPSHOTS)); } catch { return {}; }
+  })(),
   forges: null,
 
   refreshForges: async () => {
@@ -170,11 +268,16 @@ export const usePr = create<PrStore>((set, get) => ({
       // the dialog) lands mid-flight here - keep its lookup rather than
       // clobbering it with the snapshot we fetched before it existed.
       const raced = prev !== cur.lookup;
+      const before = get().snapshots;
       set(s => ({
         byTask: { ...s.byTask, [taskId]: {
           lookup: raced && s.byTask[taskId] ? s.byTask[taskId].lookup : lookup,
           members: membersOut, loading: false, fetchedAt: Date.now() } },
+        // One write with the lookup, so the mark never draws a frame of the
+        // old colour beside the new state.
+        snapshots: raced ? s.snapshots : snapshotsAfter(s.snapshots, taskId, lookup),
       }));
+      if (get().snapshots !== before) persistSnapshots(get().snapshots);
       // `lookup` is the previous (possibly null) snapshot on the
       // main-checkout path - no host poll ran, so the handlers below
       // self-neutralize (prev === next). A raced write's lookup wins the
@@ -218,11 +321,16 @@ export const usePr = create<PrStore>((set, get) => ({
     }
   },
 
-  setLookup: (taskId, lookup) => set(s => ({
-    // Spread the old entry so a create-seed doesn't drop `members` on a
-    // multi-repo task until the next refresh window.
-    byTask: { ...s.byTask, [taskId]: { ...s.byTask[taskId], lookup, loading: false, fetchedAt: Date.now() } },
-  })),
+  setLookup: (taskId, lookup) => {
+    const before = get().snapshots;
+    set(s => ({
+      // Spread the old entry so a create-seed doesn't drop `members` on a
+      // multi-repo task until the next refresh window.
+      byTask: { ...s.byTask, [taskId]: { ...s.byTask[taskId], lookup, loading: false, fetchedAt: Date.now() } },
+      snapshots: snapshotsAfter(s.snapshots, taskId, lookup),
+    }));
+    if (get().snapshots !== before) persistSnapshots(get().snapshots);
+  },
 
   setWatch: async (taskId, watch) => {
     // Optimistic in-memory flip (the task record mirrors disk).

@@ -674,7 +674,7 @@ fn github_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option
     }
     args.extend([
         "--json",
-        "number,url,title,state,isDraft,reviewDecision,statusCheckRollup,baseRefName,headRefName",
+        "number,url,title,state,isDraft,reviewDecision,latestReviews,statusCheckRollup,baseRefName,headRefName",
     ]);
     let o = run(bin, &args, Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
     if !o.status.success() {
@@ -693,12 +693,7 @@ fn github_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option
         _ if v["isDraft"].as_bool().unwrap_or(false) => "draft",
         _ => "open",
     };
-    let review = match v["reviewDecision"].as_str().unwrap_or("") {
-        "APPROVED" => "approved",
-        "CHANGES_REQUESTED" => "changes_requested",
-        "REVIEW_REQUIRED" => "review_required",
-        _ => "none",
-    };
+    let review = github_review(&v);
     Ok(Some(PrStatus {
         provider: GITHUB.into(),
         number: v["number"].as_u64().unwrap_or(0),
@@ -706,7 +701,7 @@ fn github_pr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option
         title: v["title"].as_str().unwrap_or("").to_string(),
         state: state.into(),
         checks: rollup_to_checks(&v["statusCheckRollup"]),
-        review: review.into(),
+        review,
         base: v["baseRefName"].as_str().unwrap_or("").to_string(),
         head: v["headRefName"].as_str().unwrap_or("").to_string(),
     }))
@@ -811,6 +806,32 @@ fn gitlab_mr_status(bin: &str, cwd: &Path, number: Option<u64>) -> Result<Option
         base: v["target_branch"].as_str().unwrap_or("").to_string(),
         head: v["source_branch"].as_str().unwrap_or("").to_string(),
     }))
+}
+
+/// A `gh pr view` payload onto the shared review vocabulary.
+///
+/// `reviewDecision` is the verdict when it is there. When it is empty, the
+/// reviews themselves answer: each reviewer's latest, where one standing
+/// "changes requested" outweighs any number of approvals, the way the forge's
+/// own merge box reads them. A comment-only review is not a verdict.
+fn github_review(v: &serde_json::Value) -> String {
+    match v["reviewDecision"].as_str().unwrap_or("") {
+        "APPROVED" => return "approved".into(),
+        "CHANGES_REQUESTED" => return "changes_requested".into(),
+        "REVIEW_REQUIRED" => return "review_required".into(),
+        _ => {}
+    }
+    let states: Vec<&str> = v["latestReviews"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|r| r["state"].as_str()).collect())
+        .unwrap_or_default();
+    if states.contains(&"CHANGES_REQUESTED") {
+        "changes_requested".into()
+    } else if states.contains(&"APPROVED") {
+        "approved".into()
+    } else {
+        "none".into()
+    }
 }
 
 /// GitLab's equivalent of GitHub's `reviewDecision`, reconstructed to the
@@ -2750,6 +2771,24 @@ code.internal.acme.com configured to use ssh protocol.\n";
             remote_for_display("https://dev.azure.com/o/p@x/_git/r"),
             "https://dev.azure.com/o/p@x/_git/r"
         );
+    }
+
+    #[test]
+    fn github_review_reads_the_decision_and_falls_back_to_the_reviews() {
+        let j = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+        // The decision wins when the forge gives one, whatever the reviews say.
+        assert_eq!(github_review(&j(r#"{"reviewDecision":"APPROVED"}"#)), "approved");
+        assert_eq!(github_review(&j(r#"{"reviewDecision":"CHANGES_REQUESTED","latestReviews":[{"state":"APPROVED"}]}"#)), "changes_requested");
+        assert_eq!(github_review(&j(r#"{"reviewDecision":"REVIEW_REQUIRED","latestReviews":[{"state":"APPROVED"}]}"#)), "review_required");
+        // No decision: the reviews answer.
+        assert_eq!(github_review(&j(r#"{"reviewDecision":"","latestReviews":[{"state":"APPROVED"}]}"#)), "approved");
+        assert_eq!(github_review(&j(r#"{"reviewDecision":null,"latestReviews":[{"state":"COMMENTED"},{"state":"APPROVED"}]}"#)), "approved");
+        // One standing objection outweighs the approvals beside it.
+        assert_eq!(github_review(&j(r#"{"reviewDecision":"","latestReviews":[{"state":"APPROVED"},{"state":"CHANGES_REQUESTED"}]}"#)), "changes_requested");
+        // A comment is not a verdict, and neither is nothing at all.
+        assert_eq!(github_review(&j(r#"{"reviewDecision":"","latestReviews":[{"state":"COMMENTED"}]}"#)), "none");
+        assert_eq!(github_review(&j(r#"{"reviewDecision":"","latestReviews":[]}"#)), "none");
+        assert_eq!(github_review(&j("{}")), "none");
     }
 
     #[test]

@@ -4,7 +4,7 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
-## [1.14.3] - 2026-10-09
+## [1.14.4] - 2026-10-09
 
 A sidebar filter bar and status chips, HTML preview, and review requests in New Task.
 
@@ -68,6 +68,12 @@ A sidebar filter bar and status chips, HTML preview, and review requests in New 
   as the number alone, in the colour of its state. You can switch to the
   icon, icon and number, or neither. In the Projects list options, and in
   Settings, Appearance, Interface & Sidebar.
+- **An approved pull request is ticked.** A green check follows the PR
+  number on a sidebar task row once the PR is approved and still open.
+  GitHub, GitLab and Azure DevOps.
+- **PR status shows at launch.** Each task's last known PR status (draft,
+  open, failing checks, merged, approved) is remembered, so the sidebar no
+  longer starts grey and colours in one row at a time.
 - **Deleting a schedule can archive its tasks.** The confirmation offers to
   archive the schedule's task and its past runs along with it, which also
   removes their reports. Also `termic schedule delete --archive-tasks`.
@@ -86,6 +92,7 @@ A sidebar filter bar and status chips, HTML preview, and review requests in New 
   a shrunken checkmark and sat out of line with the rows above it.
 - Sidebar task rows ended in an empty column: the hover-only task menu had
   been given a reserved slot of its own. It shares the status slot again.
+- The three dots on a sidebar task row did not open the task menu.
 
 ## [1.13.4] - 2026-10-06
 

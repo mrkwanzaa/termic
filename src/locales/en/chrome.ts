@@ -116,6 +116,7 @@ export default {
     stateDraft: "draft",
     stateOpen: "open",
     checksFailing: "checks failing",
+    approved: "approved",
     openOn: "Open on {{forge}}",
   },
   taskWorkBadge: {

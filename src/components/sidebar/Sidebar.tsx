@@ -3655,7 +3655,10 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
           <span
             data-testid="task-state-slot"
             className={cn(
-              "absolute inset-0 flex items-center justify-center transition-opacity group-hover/wsrow:opacity-0 [transform:translate3d(0,0,0)]",
+              // pointer-events-none is load-bearing: this sits OVER the menu
+              // trigger in the same box, and an invisible element still takes
+              // the click. Without it the three dots could not be pressed.
+              "pointer-events-none absolute inset-0 flex items-center justify-center transition-opacity group-hover/wsrow:opacity-0 [transform:translate3d(0,0,0)]",
               menuOpen && "opacity-0",
             )}
           >

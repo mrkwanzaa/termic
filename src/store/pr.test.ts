@@ -34,6 +34,7 @@ import {
   pollableTasks, prStatusPassNow, initPrRefreshOnFocus, stopPrRefreshOnFocus,
   prFocusEligible,
   mergeAlreadyHandled,
+  parsePrSnapshots, snapshotsAfter, cachedPrFor,
 } from "@/store/pr";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
@@ -70,7 +71,7 @@ function seedApp(onPrMerge?: "ask" | "auto" | "off", wsOverrides: Partial<Task> 
 
 beforeEach(() => {
   vi.clearAllMocks();
-  usePr.setState({ byTask: {}, forges: null });
+  usePr.setState({ byTask: {}, forges: null, snapshots: {} });
   useUI.setState({ toasts: [] });
   // "This merge was already announced" is persisted (it has to survive a
   // relaunch, or every launch re-toasts a merged PR). Tests reuse task ids
@@ -994,5 +995,111 @@ describe("merge bookkeeping survives the key gaining a provider segment", () => 
 
   it("says nothing is handled when nothing is stored", () => {
     expect(mergeAlreadyHandled("t1", "github", 7)).toBe(false);
+  });
+});
+
+// The live lookup dies with the app, and the pass that rebuilds it is slow,
+// so each PR's last reading is kept for the MARK. It must never reach the
+// lifecycle: a remembered "open" in `byTask` would turn a merge that
+// happened while the app was closed into a transition seen live.
+describe("last-known PR status, kept across launches", () => {
+  const stored = () => parsePrSnapshots(localStorage.getItem("prSnapshots"));
+
+  it("remembers what a poll read, and writes it where the next launch looks", async () => {
+    seedApp();
+    const l = lookupWith("open");
+    l.pr!.checks = "failing";
+    l.pr!.review = "approved";
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(l);
+    await usePr.getState().refresh("ws1", true);
+    const want = { provider: "github", number: 7, state: "open", checks: "failing", review: "approved" };
+    expect(usePr.getState().snapshots.ws1).toEqual(want);
+    expect(stored().ws1).toEqual(want);
+  });
+
+  it("follows the PR through its states", async () => {
+    seedApp("off");
+    for (const state of ["draft", "open", "merged"] as const) {
+      vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith(state));
+      await usePr.getState().refresh("ws1", true);
+      expect(stored().ws1.state).toBe(state);
+    }
+  });
+
+  it("writes nothing when a poll reads the same thing again (bear trap 8)", async () => {
+    seedApp();
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
+    await usePr.getState().refresh("ws1", true);
+    const first = usePr.getState().snapshots;
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    await usePr.getState().refresh("ws1", true);
+    expect(usePr.getState().snapshots).toBe(first);
+    expect(setItem.mock.calls.filter(c => c[0] === "prSnapshots")).toEqual([]);
+    setItem.mockRestore();
+  });
+
+  it("keeps the last reading when a poll could not answer, and drops it when the PR is gone", () => {
+    const snaps = snapshotsAfter({}, "ws1", lookupWith("open"));
+    // A missing CLI or a network error says nothing about the PR.
+    expect(snapshotsAfter(snaps, "ws1", { ...lookupWith(null), status: "error" })).toBe(snaps);
+    expect(snapshotsAfter(snaps, "ws1", { ...lookupWith(null), status: "cli-missing" })).toBe(snaps);
+    expect(snapshotsAfter(snaps, "ws1", null)).toBe(snaps);
+    // An answer of "no PR" is an answer.
+    expect(snapshotsAfter(snaps, "ws1", lookupWith(null))).toEqual({});
+  });
+
+  it("drops tasks that are gone when it writes", async () => {
+    seedApp();
+    usePr.setState({ snapshots: { gone: { provider: "github", number: 3, state: "open", checks: "none", review: "none" } } });
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("open"));
+    await usePr.getState().refresh("ws1", true);
+    expect(Object.keys(stored())).toEqual(["ws1"]);
+  });
+
+  it("only speaks for the PR still on the record", () => {
+    const snaps = snapshotsAfter({}, "ws1", lookupWith("open", 7, "github"));
+    const task = (o: Partial<Task>) => ({ id: "ws1", pr_number: 7, pr_provider: "github", ...o }) as Task;
+    expect(cachedPrFor(snaps, task({}))?.state).toBe("open");
+    // The task moved to another PR, or another forge: the old colour is not its.
+    expect(cachedPrFor(snaps, task({ pr_number: 8 }))).toBeNull();
+    expect(cachedPrFor(snaps, task({ pr_provider: "gitlab" }))).toBeNull();
+    expect(cachedPrFor(snaps, task({ pr_number: null }))).toBeNull();
+    expect(cachedPrFor(snaps, task({ id: "other" }))).toBeNull();
+  });
+
+  it("reads back only what is well formed", () => {
+    expect(parsePrSnapshots(null)).toEqual({});
+    expect(parsePrSnapshots("not json")).toEqual({});
+    expect(parsePrSnapshots("[1,2]")).toEqual({});
+    const good = { provider: "gitlab", number: 4, state: "draft", checks: "pending", review: "review_required" };
+    expect(parsePrSnapshots(JSON.stringify({
+      ok: good,
+      // An entry written before `review` existed is still good.
+      old: { provider: "github", number: 9, state: "open", checks: "passing" },
+      badState: { ...good, state: "exploded" },
+      badChecks: { ...good, checks: 3 },
+      badNumber: { ...good, number: "4" },
+      junk: 12,
+    }))).toEqual({ ok: good, old: { provider: "github", number: 9, state: "open", checks: "passing", review: "none" } });
+  });
+
+  it("never reaches the merged-PR lifecycle", async () => {
+    // Remembered as open, merged while the app was closed. The first poll of
+    // this launch must behave exactly as it did before there was a cache:
+    // `byTask` held nothing, so there is no live transition to announce twice.
+    seedApp("ask", { pr_number: 7, pr_provider: "github" });
+    usePr.setState({ snapshots: snapshotsAfter({}, "ws1", lookupWith("open")) });
+    expect(usePr.getState().byTask.ws1).toBeUndefined();
+    // And still due a poll at once: a remembered status is not a fresh one.
+    expect(pollableTasks().map(t => t.id)).toEqual(["ws1"]);
+    vi.mocked(ipc.taskPrStatus).mockResolvedValue(lookupWith("merged"));
+    await usePr.getState().refresh("ws1", true);
+    const toastsWithCache = useUI.getState().toasts.length;
+
+    localStorage.clear();
+    usePr.setState({ byTask: {}, snapshots: {} });
+    useUI.setState({ toasts: [] });
+    await usePr.getState().refresh("ws1", true);
+    expect(toastsWithCache).toBe(useUI.getState().toasts.length);
   });
 });

@@ -207,7 +207,8 @@ describe("sidebar filter bar", () => {
     // null: no badge at all. Otherwise what it draws.
     const badge = () => browser.execute(sel => {
       const el = document.querySelector(sel);
-      return el ? { text: el.textContent?.trim() ?? "", icon: !!el.querySelector("svg") } : null;
+      // The PR glyph, not the approval tick, which is an svg in the same button.
+      return el ? { text: el.textContent?.trim() ?? "", icon: !!el.querySelector('svg:not([data-testid="task-pr-approved"])') } : null;
     }, BADGE);
     const setMode = (m: string) => browser.execute(v => window.__termic!.usePrefs.getState().setTaskPrBadge(v as any), m);
     const waitBadge = async (want: { text: string; icon: boolean } | null, why: string) => {
@@ -282,6 +283,104 @@ describe("sidebar filter bar", () => {
     }
   });
 
+  it("PR status: the last one known colours the mark before any poll, and an approved PR is ticked", async () => {
+    // The stores are the seam on purpose: a real PR needs a forge, and an
+    // approval needs a second account. What is under test is what the row
+    // draws from a status, remembered or live.
+    const BADGE = `${TREE_ROW(b)} [data-testid="task-pr-badge"]`;
+    const TICK = `${BADGE} [data-testid="task-pr-approved"]`;
+    const setPr = (on: boolean) => browser.execute((id, on) => {
+      window.__termic!.useApp.setState((s: any) => ({
+        tasks: s.tasks.map((w: any) => w.id === id
+          ? { ...w, pr_url: on ? "https://github.com/acme/repo/pull/42" : null, pr_number: on ? 42 : null, pr_provider: on ? "github" : null }
+          : w),
+      }));
+    }, b, on);
+    /** `live: null` leaves no lookup, which is a launch before its first poll.
+     *  `fetchedAt` is now either way, so the background pass leaves it alone. */
+    const seed = (remembered: any, live: any) => browser.execute((id, remembered, live) => {
+      const pr = (p: any) => ({ provider: "github", number: 42, url: "https://github.com/acme/repo/pull/42", title: "t", base: "main", head: "h", ...p });
+      window.__termic!.usePr.setState((s: any) => {
+        const key = String(id);
+        const rest = { ...s.snapshots }; delete rest[key];
+        return {
+          snapshots: remembered ? { ...rest, [key]: { provider: "github", number: 42, ...remembered } } : rest,
+          byTask: { ...s.byTask, [key]: {
+            lookup: live ? { provider: "github", remote_url: "", status: "ok", message: "", pr: pr(live) } : null,
+            loading: false, fetchedAt: Date.now() } },
+        };
+      });
+    }, b, remembered, live);
+    const mark = () => browser.execute((sel, tickSel) => {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      if (!el) return null;
+      const tick = document.querySelector(tickSel) as HTMLElement | null;
+      // What --color-ok computes to here, read off a probe rather than
+      // hard-coded: themes recolour it.
+      const probe = document.createElement("span");
+      probe.style.color = "var(--color-ok)";
+      document.body.appendChild(probe);
+      const ok = getComputedStyle(probe).color;
+      probe.remove();
+      return {
+        state: el.dataset.prState ?? "",
+        cached: "prCached" in el.dataset,
+        ticked: !!tick,
+        tickIsOk: tick ? getComputedStyle(tick).color === ok : null,
+        // the tick comes AFTER the number
+        tickLast: tick ? el.lastElementChild === tick : null,
+      };
+    }, BADGE, TICK);
+    const waitMark = async (want: Record<string, unknown>, why: string) => {
+      await browser.waitUntil(async () => {
+        const got = await mark() as Record<string, unknown> | null;
+        return !!got && Object.entries(want).every(([k, v]) => got[k] === v);
+      }, { timeout: 5_000, timeoutMsg: `${why}: mark was ${JSON.stringify(await mark())}` });
+    };
+    try {
+      await setPr(true);
+      // No poll yet, nothing remembered: an identity, not a state.
+      await seed(null, null);
+      await waitMark({ state: "unknown", cached: false, ticked: false }, "nothing known");
+
+      // Remembered from the last run: the colour is there before any poll.
+      await seed({ state: "open", checks: "passing", review: "none" }, null);
+      await waitMark({ state: "open", cached: true, ticked: false }, "remembered open");
+      await seed({ state: "merged", checks: "passing", review: "approved" }, null);
+      // merged is done: approved no longer says anything
+      await waitMark({ state: "merged", cached: true, ticked: false }, "remembered merged");
+      await seed({ state: "open", checks: "failing", review: "approved" }, null);
+      await waitMark({ state: "open", cached: true, ticked: true, tickIsOk: true, tickLast: true }, "remembered approved");
+
+      // The live poll wins over what was remembered.
+      await seed({ state: "open", checks: "passing", review: "approved" }, { state: "draft", checks: "none", review: "none" });
+      await waitMark({ state: "draft", cached: false, ticked: false }, "live draft over a remembered open");
+      await seed(null, { state: "open", checks: "passing", review: "changes_requested" });
+      await waitMark({ state: "open", ticked: false }, "changes requested is not a tick");
+      await seed(null, { state: "open", checks: "passing", review: "approved" });
+      await waitMark({ state: "open", cached: false, ticked: true, tickIsOk: true, tickLast: true }, "live approved");
+      await snap("sidebar-task-pr-approved.png");
+
+      // A remembered status for ANOTHER PR is not this one's.
+      await browser.execute(id => {
+        window.__termic!.usePr.setState((s: any) => ({
+          byTask: { ...s.byTask, [id]: { lookup: null, loading: false, fetchedAt: Date.now() } },
+          snapshots: { ...s.snapshots, [id]: { provider: "github", number: 41, state: "merged", checks: "passing", review: "none" } },
+        }));
+      }, b);
+      await waitMark({ state: "unknown", cached: false }, "a snapshot of another PR");
+    } finally {
+      await browser.execute(id => {
+        window.__termic!.usePr.setState((s: any) => {
+          const byTask = { ...s.byTask }; delete byTask[id as string];
+          const snapshots = { ...s.snapshots }; delete snapshots[id as string];
+          return { byTask, snapshots };
+        });
+      }, b);
+      await setPr(false);
+    }
+  });
+
   it("gives the row one trailing slot: state at rest, the menu on hover, and no dead column between them", async () => {
     // One fixed 18px slot, always rightmost. The menu trigger shares it,
     // hidden at rest and holding no badge of its own. It once had a reserved
@@ -309,6 +408,54 @@ describe("sidebar filter bar", () => {
       slotIsLast: true, sameSlot: true, sameBox: true, slotWidth: 18, gapToEdge: 4,
       menuOpacity: "0", badgeInMenu: false,
     });
+  });
+
+  it("the three dots can be pressed: the status layer over them takes no pointer events", async () => {
+    // The slot holds the status badge AND the menu trigger in one box. The
+    // badge's layer comes later in the DOM, so it is on top, and once it was
+    // left able to take pointer events: invisible on hover, and still eating
+    // every click meant for the dots. No spec caught it, because specs press
+    // things with element.click(), which never asks what is on top.
+    //
+    // So this asks. CSS :hover cannot be driven from here, but it does not
+    // need to be: the question is whether the layer on top is click-through,
+    // and `elementsFromPoint` lists exactly the elements a pointer can hit.
+    const ROW = `[data-sidebar-task-row="${b}"]`;
+    const TRIGGER = `${ROW} [data-testid="task-menu-trigger"]`;
+    const probe = () => browser.execute(sel => {
+      const trigger = document.querySelector(sel) as HTMLElement;
+      const state = trigger.parentElement!.querySelector('[data-testid="task-state-slot"]') as HTMLElement;
+      const r = trigger.getBoundingClientRect();
+      const hittable = document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return {
+        stateOverTrigger: !!(trigger.compareDocumentPosition(state) & Node.DOCUMENT_POSITION_FOLLOWING),
+        statePointerEvents: getComputedStyle(state).pointerEvents,
+        stateHittable: hittable.includes(state),
+      };
+    }, TRIGGER);
+    try {
+      // On top, and yet nothing a pointer can land on.
+      expect(await probe()).toEqual({ stateOverTrigger: true, statePointerEvents: "none", stateHittable: false });
+
+      // Hidden at rest, so not clickWhenVisible. Radix opens on pointerdown.
+      await browser.execute(sel => {
+        const el = document.querySelector(sel) as HTMLElement;
+        const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
+        el.dispatchEvent(new PointerEvent("pointerdown", opts));
+        el.dispatchEvent(new PointerEvent("pointerup", opts));
+        el.click();
+      }, TRIGGER);
+      await browser.waitUntil(
+        () => browser.execute(() => [...document.querySelectorAll('[role="menu"] [role="menuitem"]')]
+          .some(el => el.textContent?.includes("Archive"))),
+        { timeout: 5_000, timeoutMsg: "the three dots opened no task menu" });
+      await snap("sidebar-task-menu-open.png");
+      // Still click-through with the menu open, when the badge is hidden by
+      // a class rather than by hover.
+      expect((await probe()).statePointerEvents).toBe("none");
+    } finally {
+      await dismissOverlays();
+    }
   });
 
   it("a project with no matches hides, and the empty state clears the query", async () => {

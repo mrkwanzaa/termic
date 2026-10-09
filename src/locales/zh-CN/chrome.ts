@@ -116,6 +116,7 @@ export default {
     stateDraft: "草稿",
     stateOpen: "开放",
     checksFailing: "检查失败",
+    approved: "已批准",
     openOn: "在 {{forge}} 上打开",
   },
   taskWorkBadge: {

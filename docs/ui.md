@@ -198,7 +198,9 @@ it keeps now (the "Lens" concept of the sidebar rethink):
   it. For one release the menu had a slot of its own too, reserved and
   empty at rest, and every row ended 22px short of the sidebar's edge for a
   button that only exists under the pointer. Do not give a hover-only
-  control a reserved column.
+  control a reserved column. The state layer sits OVER the trigger and is
+  `pointer-events-none`: without that it takes every click meant for the
+  three dots while invisible, which shipped once.
 - **Location glyphs are a choice.** The tree draws a link for the main
   checkout and a branch for a worktree by default; the `taskLocationIcon`
   pref (Settings > Appearance > Sidebar, and a submenu in the Projects
@@ -209,7 +211,22 @@ it keeps now (the "Lens" concept of the sidebar rethink):
   (`#367`) by default, in the state's colour; the `taskPrBadge` pref
   (Settings > Appearance > Sidebar, and a submenu in the Projects list
   options) switches that to the glyph alone, glyph and number, or nothing.
-  Every one of them keeps the state colour and the link. Under "number", a PR whose number is not
+  Every one of them keeps the state colour and the link.
+- **An approved PR is ticked.** An OPEN PR whose review verdict is
+  "approved" draws a small `--color-ok` check after its number, whatever
+  the mark's own colour, so approved with a failing build is amber and
+  ticked. Merged and closed PRs do not: the verdict no longer says
+  anything. The verdict is `PrStatus.review`, which all three forges
+  already report; GitHub's falls back to the reviews themselves when
+  `reviewDecision` is empty.
+- **The mark remembers its last status across launches.** The live lookup
+  dies with the app and the background pass rebuilds it one subprocess at
+  a time, so `usePr.snapshots` (localStorage `prSnapshots`) keeps each
+  task's last state, checks and review, and `TaskPrBadge` wears it until
+  this session's first poll lands. It feeds the mark ONLY. Board columns,
+  status buckets and the merged-PR lifecycle keep reading the live
+  `byTask`, because a remembered "open" there would turn a merge that
+  happened while the app was closed into a transition seen live. Under "number", a PR whose number is not
   known yet keeps its glyph, since dropping both would drop the link. The
   status section and the dashboard never drew the number.
 - **Project names stay all caps**, like folder names. A project groups its
