@@ -14391,7 +14391,13 @@ async fn task_discard(id: String, dir_name: String, paths: Vec<String>) -> Resul
 /// instead of being silently joined.
 fn reject_escaping_segments(rel: &str) -> Result<PathBuf, String> {
     let pb = Path::new(rel);
-    if pb.is_absolute() {
+    // Not `is_absolute()` alone: on Windows `/etc/passwd` and `C:foo` are both
+    // "relative" (no drive, or no root) and `join` still lets either one
+    // replace the base, so a rooted or drive-prefixed path is refused by its
+    // components.
+    if pb.is_absolute()
+        || pb.components().any(|c| matches!(c, std::path::Component::RootDir | std::path::Component::Prefix(_)))
+    {
         return Err(format!("absolute paths not allowed: {rel}"));
     }
     if pb.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
@@ -30664,6 +30670,21 @@ mod tests {
                 assert!(scratch_path_reveal("global".into(), None, "../escape".into()).await.is_err());
             });
         });
+    }
+
+    #[test]
+    fn rooted_and_drive_relative_paths_are_refused_on_every_platform() {
+        // Windows calls `/etc/passwd` relative (it has a root but no drive),
+        // and `root.join` of it lands on the drive's root all the same.
+        assert!(reject_escaping_segments("/etc/passwd").is_err());
+        assert!(reject_escaping_segments("a/../b").is_err());
+        assert!(reject_escaping_segments("a/b/c").is_ok());
+        #[cfg(windows)]
+        {
+            assert!(reject_escaping_segments("\\Windows\\win.ini").is_err());
+            assert!(reject_escaping_segments("C:secrets.txt").is_err());
+            assert!(reject_escaping_segments("C:\\Windows\\win.ini").is_err());
+        }
     }
 
     #[test]
