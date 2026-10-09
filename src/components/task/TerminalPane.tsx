@@ -1700,6 +1700,14 @@ const captureArmedRef = useRef(false);
     };
     const goWorking = (reason: string) => {
       if (!workDoneEnabled) return;
+      // A dead process is not working, whatever its last bytes say. The exit
+      // handler sets the tab idle, but `term.write` parses on a later task, so
+      // a spinner title in the final chunk can reach here AFTER the exit and
+      // re-arm "working" on a tab that has nothing left to end the turn.
+      if (ptyRef.current === null) {
+        wdlog(`working ignored, the process has exited (${reason})`);
+        return;
+      }
       cancelSettle(reason);
       // Any sign of work means the agent is no longer stalled waiting on its
       // delegated work, so another agent's message queues again. Guarded:
@@ -3104,6 +3112,7 @@ const captureArmedRef = useRef(false);
             // work-state log: `done-while-watching: OSC 133;D`, then
             // `req=working why=-`).
             if (workDoneEnabled
+                && ptyRef.current !== null
                 && senderStateRef.current === null
                 && !hookSeenRef.current
                 && now < submitWindowUntilRef.current

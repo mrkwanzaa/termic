@@ -108,6 +108,34 @@ exposed the bug in a previously working Termic window. Compare builds after
 resetting that state and type jamo; a different app ID or pasted text is not
 an equivalent test.
 
+## Two `invoke`s in a row are not two writes in a row
+
+`ipc.ptyWrite` is ordered per PTY (`src/lib/orderedSend.ts`), and has to be.
+xterm and the IME bridge both write the same PTY, each with its own
+`invoke`, and back-to-back requests are not guaranteed to be handled in
+call order. The Windows e2e log showed it plainly: the bridge's `DEL` +
+syllable arrived after the Enter that was sent later, so the line was
+submitted without it and the syllable opened the next prompt. Only seen on
+WebView2 so far, and only when the calls are microseconds apart, which an
+IME replacement followed by Enter is.
+
+The wrapper sends immediately when nothing is in flight for that PTY, so an
+idle terminal pays nothing per keystroke. Do not bypass it with a raw
+`invoke("pty_write")`, and give any new byte path to a PTY the same
+treatment.
+
+## A dead agent can be told it is working
+
+`term.write` does not parse in the task that calls it. The last chunk a
+process printed is queued, the `pty-exit` handler runs and sets the tab
+idle, and THEN xterm parses the chunk and fires `onTitleChange` with a
+spinner title. That re-armed `working` on a tab whose process was gone, and
+nothing can end that turn: every signal that would comes from the process.
+`goWorking` (and the submit-window promotion) now refuse while
+`ptyRef.current` is null. The mechanism is inferred from the code and a CI
+failure of "an agent that exits mid-turn" (both badges still `working`
+after the exited banner was up); it did not reproduce on demand.
+
 ## React/Zustand traps
 
 - Don't return new objects/arrays from selectors without memo. Use frozen constants for defaults.

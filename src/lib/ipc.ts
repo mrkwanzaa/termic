@@ -3,6 +3,7 @@
 // expects (camelCase vs snake_case quirks handled here so call-sites stay clean).
 
 import { invoke } from "@tauri-apps/api/core";
+import { orderedPerKey } from "@/lib/orderedSend";
 import type { AgentUsage, StatusLineOwner } from "@/lib/agentUsage";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
@@ -1097,7 +1098,10 @@ export interface SpawnResult {
   account: string | null;
 }
 export const ptySpawn  = (a: SpawnArgs) => invoke<SpawnResult>("pty_spawn", { args: a });
-export const ptyWrite  = (ptyId: string, data: number[]) => invoke<void>("pty_write", { ptyId, data });
+/** Ordered per PTY: xterm and the IME bridge both write the same PTY, and two
+ *  back-to-back `invoke`s are not handled in call order on every platform
+ *  (see lib/orderedSend.ts). */
+export const ptyWrite  = orderedPerKey((ptyId: string, data: number[]) => invoke<void>("pty_write", { ptyId, data }));
 export const ptyResize = (ptyId: string, rows: number, cols: number) => invoke<void>("pty_resize", { ptyId, rows, cols });
 export const ptyKill   = (ptyId: string) => invoke<void>("pty_kill", { ptyId });
 
